@@ -1,23 +1,23 @@
-# Install-Exchange15.ps1 — Projekt-Kontext für Claude Code
+# Install-Exchange15.ps1 — Project Context for Claude Code
 
 ---
 
-## Was ist dieses Skript?
+## What is this script?
 
-`Install-Exchange15.ps1` ist ein PowerShell-Automatisierungsskript zur vollständigen
-Installation von Microsoft Exchange Server 2016, 2019 und Exchange SE (Subscription Edition)
-inkl. aller Voraussetzungen, AD-Vorbereitung und Post-Konfiguration.
+`Install-Exchange15.ps1` is a PowerShell automation script for fully unattended installation
+of Microsoft Exchange Server 2016, 2019, and Exchange SE (Subscription Edition),
+including all prerequisites, Active Directory preparation, and post-configuration.
 
-**Autor:** Michel de Rooij (michel@eightwone.com)  
-**Aktuelle Version:** 4.22 (Dezember 2025)  
-**PowerShell-Anforderung:** `#Requires -Version 5.1`  
-**Ausführung:** Muss als Administrator gestartet werden  
+**Author:** Michel de Rooij (michel@eightwone.com)
+**Current Version:** 4.30 (March 2026)
+**PowerShell Requirement:** `#Requires -Version 5.1`
+**Execution:** Must be run as Administrator
 
 ---
 
-## Unterstützte Umgebungen
+## Supported Environments
 
-| Exchange-Version | Windows Server |
+| Exchange Version | Windows Server |
 |---|---|
 | Exchange 2016 CU23 | Windows Server 2016 |
 | Exchange 2019 CU10–CU14 | Windows Server 2019, 2022 |
@@ -26,105 +26,105 @@ inkl. aller Voraussetzungen, AD-Vorbereitung und Post-Konfiguration.
 
 ---
 
-## Architektur
+## Architecture
 
-### Phasen (InstallPhase 0–6)
+### Phases (InstallPhase 0–6)
 
-Das Skript arbeitet phasenbasiert. Der Zustand wird in einer XML-Datei persistiert,
-sodass nach jedem Reboot automatisch in der richtigen Phase fortgefahren wird.
+The script operates in phases. State is persisted in an XML file so that after
+each reboot the script automatically resumes at the correct phase.
 
-| Phase | Inhalt |
+| Phase | Description |
 |---|---|
-| 0 | Initialisierung, Preflight-Checks, AD-Vorbereitung |
-| 1 | Windows-Features installieren, .NET Framework |
-| 2 | Reboots abwarten, Prereqs installieren (VC++, URL Rewrite, etc.) |
-| 3 | Weitere Prereqs und Hotfixes |
-| 4 | Exchange Setup ausführen, Transport-Dienste auf Manual setzen |
-| 5 | Post-Konfiguration (Defender-Ausschlüsse, TLS, SSL3, AMSI, ECC, CBC) |
-| 6 | Dienste wiederherstellen, IIS-Healthcheck, Aufräumen |
+| 0 | Initialization, preflight checks, AD preparation |
+| 1 | Install Windows features, .NET Framework |
+| 2 | Wait for reboots, install prerequisites (VC++, URL Rewrite, etc.) |
+| 3 | Additional prerequisites and hotfixes |
+| 4 | Run Exchange Setup, set transport services to Manual |
+| 5 | Post-configuration (Defender exclusions, TLS, security hardening, performance tuning) |
+| 6 | Restore services, IIS health check, cleanup |
 
-### State-Management
+### State Management
 
 ```powershell
 $StateFile = "$InstallPath\${env:computerName}_Install-Exchange15_state.xml"
 Save-State $State      # Export-Clixml
-Restore-State          # Import-Clixml (gibt leere Hashtable wenn nicht vorhanden)
+Restore-State          # Import-Clixml (returns empty hashtable if not found)
 ```
 
-Der State-Hashtable enthält alle übergebenen Parameter plus Laufzeitvariablen
-(Phase, Versionen, Pfade, Flags).
+The state hashtable contains all passed parameters plus runtime variables
+(phase, versions, paths, flags).
 
-### AutoPilot-Modus
+### AutoPilot Mode
 
-Mit `-AutoPilot` fährt das Skript nach jeder Phase automatisch den Server neu hoch
-und setzt sich selbst per `RunOnce`-Registry-Eintrag fort. Credentials werden
-verschlüsselt im State gespeichert.
+With `-AutoPilot`, the script automatically reboots the server after each phase
+and resumes itself via a `RunOnce` registry entry. Credentials are stored
+encrypted in the state file.
 
 ```powershell
-# RunOnce-Eintrag (seit Optimierung: dynamischer PS-Interpreter-Pfad)
-$PSExe = (Get-Process -Id $PID).Path   # powershell.exe oder pwsh.exe
+# RunOnce entry (optimized: dynamic PS interpreter path)
+$PSExe = (Get-Process -Id $PID).Path   # powershell.exe or pwsh.exe
 ```
 
 ---
 
-## Wichtige Konstanten
+## Key Constants
 
 ```powershell
-# OS-Versionen (Build-Präfix)
+# OS versions (build prefix)
 $WS2016_MAJOR   = '10.0'
 $WS2019_PREFULL = '10.0.17709'
 $WS2022_PREFULL = '10.0.20348'
-$WS2025_PREFULL = '10.0.26100'   # WICHTIG: war fälschlicherweise '10.0.20348'
+$WS2025_PREFULL = '10.0.26100'   # IMPORTANT: was incorrectly '10.0.20348' (= WS2022)
 
-# Exchange Setup-Versionen (ExSetup.exe)
+# Exchange Setup versions (ExSetup.exe)
 $EX2016SETUPEXE_CU23    = '15.01.2507.006'
-$EX2019SETUPEXE_CU10–15 = '15.02.xxxx.xxx'
+$EX2019SETUPEXE_CU10-15 = '15.02.xxxx.xxx'
 $EXSESETUPEXE_RTM       = '15.02.2562.017'
 
 # .NET Framework
 $NETVERSION_48  = 528040
 $NETVERSION_481 = 533320
 
-# Autodiscover SCP LDAP-Filter (zentrale Konstante, 4× verwendet)
+# Autodiscover SCP LDAP filter (central constant, used 4x)
 $AUTODISCOVER_SCP_FILTER    = '(&(cn={0})(objectClass=serviceConnectionPoint)...)'
-$AUTODISCOVER_SCP_MAX_RETRIES = 30   # 30 × 10 Sek = 5 Min Timeout
+$AUTODISCOVER_SCP_MAX_RETRIES = 30   # 30 x 10 sec = 5 min timeout
 ```
 
 ---
 
-## Funktions-Übersicht
+## Function Overview
 
 ### Logging
 
 ```powershell
-Write-ToTranscript $Level $Text   # Interne Hilfsfunktion (neu seit Refactoring)
+Write-ToTranscript $Level $Text   # Internal helper function (added during refactoring)
 Write-MyOutput  $Text             # Write-Output + Transcript [INFO]
 Write-MyWarning $Text             # Write-Warning + Transcript [WARNING]
 Write-MyError   $Text             # Write-Error + Transcript [ERROR]
 Write-MyVerbose $Text             # Write-Verbose + Transcript [VERBOSE]
 ```
 
-### Preflight-Checks (`Test-Preflight`)
+### Preflight Checks (`Test-Preflight`)
 
-Prüft: Admin-Rechte, Domänenmitgliedschaft, OS-Version, Exchange-Version,
-AD-Forest/-Domain-Level, statische IP, Rollen, Organisations-Name, Setup-Pfad.
+Validates: admin rights, domain membership, OS version, Exchange version,
+AD Forest/Domain level, static IP, roles, organization name, setup path.
 
-### Paket-Installation
+### Package Installation
 
 ```powershell
 Get-MyPackage   $Package $URL $FileName $InstallPath   # Download via BITS
 Install-MyPackage $PackageID $Package $FileName $URL $Arguments
-Test-MyPackage  $PackageID                              # Registry + WMI-Prüfung
+Test-MyPackage  $PackageID                              # Registry + CIM check
 Invoke-Process  $FilePath $FileName $ArgumentList       # MSU/MSI/MSP/EXE
 Invoke-Extract  $FilePath $FileName                     # ZIP via Expand-Archive
 ```
 
-### TLS/Kryptografie
+### TLS/Cryptography
 
 ```powershell
-Set-SchannelProtocol -Protocol 'TLS 1.2' -Enable $true/$false   # Hilfsfunktion
-Set-NetFrameworkStrongCrypto                                      # Hilfsfunktion
-Set-TLSSettings -TLS12 -TLS13                                    # Hauptfunktion
+Set-SchannelProtocol -Protocol 'TLS 1.2' -Enable $true/$false   # Helper
+Set-NetFrameworkStrongCrypto                                      # Helper
+Set-TLSSettings -TLS12 -TLS13                                    # Main function
 Disable-SSL3
 Disable-RC4
 Enable-ECC
@@ -144,102 +144,125 @@ Set-AutodiscoverServiceConnectionPoint $Name $ServiceBinding [-Wait]
 Initialize-Exchange          # PrepareAD / PrepareSchema
 ```
 
-### Post-Konfiguration
+### Post-Configuration
 
 ```powershell
-Enable-WindowsDefenderExclusions   # Ordner- und Prozess-Ausschlüsse
+Enable-WindowsDefenderExclusions   # Folder and process exclusions
 Enable-HighPerformancePowerPlan
 Disable-NICPowerManagement
 Set-Pagefile
 Set-TCPSettings                    # RPC Timeout, Keep-Alive
+Disable-SMBv1                      # Security: disable legacy protocol
+Disable-WindowsSearchService       # Exchange has own content indexing
+Disable-WDigestCredentialCaching   # Security: prevent cleartext creds in LSASS
+Disable-HTTP2                      # Exchange MAPI/RPC compatibility
+Disable-TCPOffload                 # Performance: disable chimney/offload
+Test-DiskAllocationUnitSize        # Verify 64KB allocation units
+Disable-UnnecessaryScheduledTasks  # Disable defrag etc.
+Set-CRLCheckTimeout                # Prevent startup delays
 ```
 
 ---
 
-## Bekannte Fallstricke & Designentscheidungen
+## Known Pitfalls & Design Decisions
 
-### 1. CIM statt WMI (vollständig migriert)
-Alle `Get-WmiObject`-Aufrufe wurden auf `Get-CimInstance` umgestellt.
-Bei Schreibzugriffen: `Set-CimInstance -InputObject $obj -Property @{...}`
-statt `$obj.Eigenschaft = ...; $obj.psbase.Put()`.
+### 1. CIM instead of WMI (fully migrated)
+All `Get-WmiObject` calls have been replaced with `Get-CimInstance`.
+For write operations: `Set-CimInstance -InputObject $obj -Property @{...}`
+instead of `$obj.Property = ...; $obj.psbase.Put()`.
 
-### 2. Get-WindowsFeature prüft immer `.Installed`
+### 2. Get-WindowsFeature always checks `.Installed`
 ```powershell
-# FALSCH - gibt immer ein Objekt zurück, auch wenn nicht installiert
+# WRONG - always returns an object, even if not installed
 if (Get-WindowsFeature 'Web-Server') { ... }
 
-# RICHTIG
+# CORRECT
 if ((Get-WindowsFeature -Name 'Web-Server').Installed) { ... }
 ```
 
-### 3. Autodiscover-SCP Background-Jobs
-`Clear-` und `Set-AutodiscoverServiceConnectionPoint` starten Jobs mit `do..while($true)`.
-Der `$AUTODISCOVER_SCP_MAX_RETRIES`-Counter verhindert Endlosschlaufen.
-Filter-Template wird als Parameter übergeben, da Skript-Scope in Jobs nicht verfügbar ist.
+### 3. Autodiscover SCP Background Jobs
+`Clear-` and `Set-AutodiscoverServiceConnectionPoint` start jobs with `do..while($true)`.
+The `$AUTODISCOVER_SCP_MAX_RETRIES` counter prevents infinite loops.
+The filter template is passed as a parameter because script scope is not available in jobs.
 
-### 4. AutoLogon schreibt Klartext-Passwort
-`Enable-AutoLogon` schreibt das Passwort nach `HKLM:\...\Winlogon\DefaultPassword`.
-`Disable-AutoLogon` entfernt es beim nächsten Login. Intentional by Design.
+### 4. AutoLogon writes plaintext password
+`Enable-AutoLogon` writes the password to `HKLM:\...\Winlogon\DefaultPassword`.
+`Disable-AutoLogon` removes it on the next login. This is intentional by design.
 
 ### 5. `Invoke-WebRequest -SkipCertificateCheck`
-Nur ab PowerShell 6+ verfügbar. Bei PS 5.1 Einsatz ggf. Fallback einbauen.
+Only available in PowerShell 6+. For PS 5.1, a fallback may be needed.
 
-### 6. `$AUTODISCOVER_SCP_FILTER` als Template
-Der Filter enthält `{0}` als Platzhalter für den Servernamen:
+### 6. `$AUTODISCOVER_SCP_FILTER` as template
+The filter contains `{0}` as a placeholder for the server name:
 ```powershell
 $LDAPSearch.Filter = $AUTODISCOVER_SCP_FILTER -f $Name
 ```
 
-### 7. Error-Handling in catch-Blöcken
-Immer `$_.Exception.Message` verwenden, nicht `$Error[0].ExceptionMessage`
-(kann durch parallele Fehler überschrieben werden).
+### 7. Error handling in catch blocks
+Always use `$_.Exception.Message`, not `$Error[0].ExceptionMessage`
+(can be overwritten by concurrent errors).
 
 ---
 
-## Optimierungs-Historie (2025-03-21)
+## Optimization History
 
-### Runde 1 — Kritische Fixes
-| # | Was | Zeile(n) vorher |
+### 2025-03-21 — Round 1: Critical Fixes
+| # | Change | Lines (before) |
 |---|---|---|
-| Bug | `$WS2025_PREFULL` = `10.0.26100` (war `10.0.20348` = WS2022) | 645 |
-| Refactor | `Write-ToTranscript` Hilfsfunktion, alle 4 `Write-My*` vereinfacht | 709–739 |
-| API | `Get-WmiObject` (MSExchangeServiceHost) → `Get-CimInstance` | 2797 |
-| API | `WebClient`/`ServerCertificateValidationCallback` → `Invoke-WebRequest -SkipCertificateCheck` | 2838–2851 |
-| Feature | `Test-RebootPending` um Windows-Update-Key ergänzt | 805–814 |
+| Bug | `$WS2025_PREFULL` = `10.0.26100` (was `10.0.20348` = WS2022) | 645 |
+| Refactor | `Write-ToTranscript` helper, simplified all 4 `Write-My*` functions | 709-739 |
+| API | `Get-WmiObject` (MSExchangeServiceHost) to `Get-CimInstance` | 2797 |
+| API | `WebClient`/`ServerCertificateValidationCallback` to `Invoke-WebRequest -SkipCertificateCheck` | 2838-2851 |
+| Feature | `Test-RebootPending` added Windows Update registry key | 805-814 |
 
-### Runde 2 — Sicherheit & Codequalität
-| # | Was |
+### 2025-03-21 — Round 2: Security & Code Quality
+| # | Change |
 |---|---|
-| Konstanten | `$AUTODISCOVER_SCP_FILTER` + `$AUTODISCOVER_SCP_MAX_RETRIES` eingeführt |
-| Sicherheit | Kommentar in `Enable-AutoLogon` zu Klartext-Risiko |
-| API | `Enable-RunOnce`: `$PSHome\powershell.exe` → `(Get-Process -Id $PID).Path` |
-| API | `Invoke-Extract`: COM `shell.application` → `Expand-Archive` |
-| Bug | Endlosschleifen in SCP-Background-Jobs: Retry-Limit + Timeout |
-| API | `Get-WmiObject win32_quickfixengineering` → `Get-CimInstance Win32_QuickFixEngineering` |
-| Konvention | `get-FullDomainAccount` → `Get-FullDomainAccount` |
-| Typo | `'Wil run Setup'` → `'Will run Setup'` |
-| Exception | `$Error[0].ExceptionMessage` → `$_.Exception.Message` in allen catch-Blöcken |
+| Constants | Introduced `$AUTODISCOVER_SCP_FILTER` + `$AUTODISCOVER_SCP_MAX_RETRIES` |
+| Security | Added comment in `Enable-AutoLogon` about plaintext password risk |
+| API | `Enable-RunOnce`: `$PSHome\powershell.exe` to `(Get-Process -Id $PID).Path` |
+| API | `Invoke-Extract`: COM `shell.application` to `Expand-Archive` |
+| Bug | Infinite loops in SCP background jobs: added retry limit + timeout |
+| API | `Get-WmiObject win32_quickfixengineering` to `Get-CimInstance Win32_QuickFixEngineering` |
+| Convention | `get-FullDomainAccount` to `Get-FullDomainAccount` |
+| Typo | `'Wil run Setup'` to `'Will run Setup'` |
+| Exception | `$Error[0].ExceptionMessage` to `$_.Exception.Message` in all catch blocks |
 
-### Runde 3 — Weitere WMI-Migration & Bugs
-| # | Was |
+### 2025-03-21 — Round 3: WMI Migration & Bug Fixes
+| # | Change |
 |---|---|
-| API | `mkdir` → `New-Item -ItemType Directory` |
-| Bug | `Remove-NETFrameworkInstallBlock`: Fehlermeldung "set" → "remove" |
-| Bug | Streunende `$Location`-Ausgabe in `Enable-WindowsDefenderExclusions` entfernt |
-| API | `$CS = Get-WmiObject Win32_ComputerSystem` + `.Put()` → CIM + `Set-CimInstance` |
-| API | `Get-WmiObject Win32_NetworkAdapter` + `MSPower_DeviceEnable` + `psbase.Put()` → CIM |
-| API | `Get-WmiObject Win32_ComputerSystem/Win32_NetworkAdapterConfiguration` → CIM |
-| API | `Get-WmiObject Win32_PowerPlan` → CIM |
-| Bug | `Get-WindowsFeature` Prüfung: `if (Get-WindowsFeature $x)` → `.Installed` |
-| Refactor | `Set-TLSSettings`: 50 Zeilen Duplikatcode → `Set-SchannelProtocol` + `Set-NetFrameworkStrongCrypto` |
-| Kosmetik | `$Env:SystemRoot` ohne unnötige String-Interpolation |
+| API | `mkdir` to `New-Item -ItemType Directory` |
+| Bug | `Remove-NETFrameworkInstallBlock`: error message "set" to "remove" |
+| Bug | Removed stray `$Location` output in `Enable-WindowsDefenderExclusions` |
+| API | `$CS = Get-WmiObject Win32_ComputerSystem` + `.Put()` to CIM + `Set-CimInstance` |
+| API | `Get-WmiObject Win32_NetworkAdapter` + `MSPower_DeviceEnable` + `psbase.Put()` to CIM |
+| API | `Get-WmiObject Win32_ComputerSystem/Win32_NetworkAdapterConfiguration` to CIM |
+| API | `Get-WmiObject Win32_PowerPlan` to CIM |
+| Bug | `Get-WindowsFeature` check: `if (Get-WindowsFeature $x)` to `.Installed` |
+| Refactor | `Set-TLSSettings`: 50 lines duplicate code to `Set-SchannelProtocol` + `Set-NetFrameworkStrongCrypto` |
+| Cosmetic | `$Env:SystemRoot` without unnecessary string interpolation |
+
+### 2026-03-21 — Round 4: Security Hardening & Performance
+| # | Change |
+|---|---|
+| Security | `Disable-SMBv1`: disable legacy SMBv1 protocol |
+| Security | `Disable-WDigestCredentialCaching`: prevent cleartext creds in LSASS |
+| Security | `Disable-HTTP2`: disable HTTP/2 for Exchange MAPI/RPC compatibility |
+| Security | `Set-CRLCheckTimeout`: prevent startup delays with unreachable CRL endpoints |
+| Performance | `Disable-WindowsSearchService`: Exchange has own content indexing |
+| Performance | `Disable-TCPOffload`: disable TCP Chimney and Task Offload |
+| Performance | `Disable-UnnecessaryScheduledTasks`: disable defrag on Exchange servers |
+| Validation | `Test-DiskAllocationUnitSize`: warn if volumes not using 64KB allocation units |
 
 ---
 
-## Offene Punkte / Mögliche nächste Schritte
+## Open Items / Possible Next Steps
 
-- [ ] `Invoke-WebRequest -SkipCertificateCheck` PS 5.1-Fallback einbauen
-- [ ] `$Error[0]` Vorkommen vollständig auditieren (außerhalb von catch-Blöcken)
-- [ ] Pester-Tests für die wichtigsten Hilfsfunktionen
-- [ ] Parameter-Block-Redundanz reduzieren (viele Parameter mit 4× identischen `[parameter()]`-Attributen)
-- [ ] `Get-SetupTextVersion` effizienter gestalten (direkter Hashtable-Lookup)
+- [ ] `Invoke-WebRequest -SkipCertificateCheck` PS 5.1 fallback
+- [ ] Audit all `$Error[0]` occurrences (outside of catch blocks)
+- [ ] Pester tests for key helper functions
+- [ ] Reduce parameter block redundancy (many parameters with 4x identical `[parameter()]` attributes)
+- [ ] Make `Get-SetupTextVersion` more efficient (direct hashtable lookup)
+- [ ] Configure RSS queues to match physical core count
+- [ ] Set MaxConcurrentAPI for Kerberos authentication optimization
+- [ ] Enable LSA Protection (RunAsPPL) — test for Exchange compatibility first

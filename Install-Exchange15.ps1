@@ -8,7 +8,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 4.22, December 30, 2025
+    Version 4.30, March 21, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -327,6 +327,15 @@
     4.20    Clearing/setting SCP now background job during install to configure it asynchronous & ASAP
     4.21    Added disabling MSExchangeAutodiscoverAppPool during setup to prevent responding to requests during setup and postconfig
     4.22    Corrected download VC++2013 runtime URL due to shortcut being unavailabe
+    4.30    Added post-config security hardening and performance optimizations:
+            - Disable SMBv1 protocol (security best practice)
+            - Disable Windows Search service (Exchange has own content indexing)
+            - Disable WDigest credential caching (Mimikatz mitigation)
+            - Disable HTTP/2 protocol (Exchange MAPI/RPC compatibility)
+            - Disable TCP Chimney and Task Offload (performance)
+            - Verify 64KB disk allocation unit sizes (Exchange best practice)
+            - Disable unnecessary scheduled tasks (defrag)
+            - Configure CRL check timeout to prevent startup delays
 
     .PARAMETER Organization
     Specifies name of the Exchange organization to create. When omitted, the step
@@ -576,7 +585,7 @@ param(
 
 process {
 
-    $ScriptVersion = '4.22'
+    $ScriptVersion = '4.30'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -2066,6 +2075,119 @@ process {
         Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 900000
     }
 
+    function Disable-SMBv1 {
+        Write-MyOutput 'Disabling SMBv1 protocol (security best practice)'
+        try {
+            $feature = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -ErrorAction SilentlyContinue
+            if ($feature -and $feature.State -eq 'Enabled') {
+                Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart -ErrorAction Stop | Out-Null
+                Write-MyVerbose 'SMBv1 Windows feature disabled'
+            }
+            else {
+                Write-MyVerbose 'SMBv1 Windows feature already disabled or not present'
+            }
+        }
+        catch {
+            Write-MyWarning ('Problem disabling SMBv1 feature: {0}' -f $_.Exception.Message)
+        }
+        try {
+            Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -ErrorAction Stop
+            Write-MyVerbose 'SMBv1 server protocol disabled'
+        }
+        catch {
+            Write-MyWarning ('Problem disabling SMBv1 server config: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Disable-WindowsSearchService {
+        Write-MyOutput 'Disabling Windows Search service (Exchange uses own content indexing)'
+        $svc = Get-Service WSearch -ErrorAction SilentlyContinue
+        if ($svc) {
+            if ($svc.Status -eq 'Running') {
+                Stop-Service WSearch -Force -ErrorAction SilentlyContinue
+            }
+            Set-Service WSearch -StartupType Disabled -ErrorAction SilentlyContinue
+            Write-MyVerbose 'Windows Search service disabled'
+        }
+        else {
+            Write-MyVerbose 'Windows Search service not found'
+        }
+    }
+
+    function Disable-WDigestCredentialCaching {
+        # Prevents cleartext credential storage in LSASS memory (Mimikatz mitigation)
+        Write-MyOutput 'Disabling WDigest credential caching (security hardening)'
+        Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' -Name 'UseLogonCredential' -Value 0
+    }
+
+    function Disable-HTTP2 {
+        # HTTP/2 causes known issues with Exchange MAPI/RPC connections
+        Write-MyOutput 'Disabling HTTP/2 protocol (Exchange compatibility)'
+        Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\HTTP\Parameters' -Name 'EnableHttp2Tls' -Value 0
+        Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\HTTP\Parameters' -Name 'EnableHttp2Cleartext' -Value 0
+    }
+
+    function Disable-TCPOffload {
+        # Microsoft recommends disabling TCP offload features on Exchange servers
+        Write-MyOutput 'Disabling TCP Chimney and Task Offload settings'
+        try {
+            $null = Start-Process -FilePath 'netsh.exe' -ArgumentList 'int', 'tcp', 'set', 'global', 'chimney=disabled' -NoNewWindow -PassThru -Wait
+            $null = Start-Process -FilePath 'netsh.exe' -ArgumentList 'int', 'tcp', 'set', 'global', 'autotuninglevel=restricted' -NoNewWindow -PassThru -Wait
+            Set-NetOffloadGlobalSetting -TaskOffload Disabled -ErrorAction SilentlyContinue
+            Write-MyVerbose 'TCP offload settings configured'
+        }
+        catch {
+            Write-MyWarning ('Problem configuring TCP offload: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Test-DiskAllocationUnitSize {
+        # Exchange best practice: database and log volumes should use 64KB allocation units
+        Write-MyOutput 'Checking disk allocation unit sizes (64KB recommended for Exchange volumes)'
+        Get-Volume | Where-Object { $_.DriveLetter -and $_.FileSystem -eq 'NTFS' } | ForEach-Object {
+            $letter = $_.DriveLetter
+            $auSize = $_.AllocationUnitSize
+            if ($auSize -and $auSize -ne 65536) {
+                Write-MyWarning ('Drive {0}: uses {1} byte allocation units (64KB/65536 recommended for Exchange database/log volumes)' -f $letter, $auSize)
+            }
+            else {
+                Write-MyVerbose ('Drive {0}: allocation unit size OK ({1})' -f $letter, $auSize)
+            }
+        }
+    }
+
+    function Disable-UnnecessaryScheduledTasks {
+        Write-MyOutput 'Disabling unnecessary scheduled tasks (performance optimization)'
+        $tasksToDisable = @(
+            '\Microsoft\Windows\Defrag\ScheduledDefrag'
+        )
+        foreach ($taskName in $tasksToDisable) {
+            try {
+                $task = Get-ScheduledTask -TaskName (Split-Path $taskName -Leaf) -TaskPath ((Split-Path $taskName -Parent) + '\') -ErrorAction SilentlyContinue
+                if ($task -and $task.State -ne 'Disabled') {
+                    $task | Disable-ScheduledTask | Out-Null
+                    Write-MyVerbose ('Disabled scheduled task: {0}' -f $taskName)
+                }
+                else {
+                    Write-MyVerbose ('Scheduled task already disabled or not found: {0}' -f $taskName)
+                }
+            }
+            catch {
+                Write-MyWarning ('Problem disabling scheduled task {0}: {1}' -f $taskName, $_.Exception.Message)
+            }
+        }
+    }
+
+    function Set-CRLCheckTimeout {
+        # Prevents Exchange startup delays when CRL endpoints are unreachable
+        Write-MyOutput 'Configuring Certificate Revocation List check timeout (15 seconds)'
+        $regPath = 'HKLM:\SOFTWARE\Microsoft\Cryptography\OID\EncodingType 0\CertDllCreateCertificateChainEngine\Config'
+        if (-not (Test-Path $regPath -ErrorAction SilentlyContinue)) {
+            New-Item -Path $regPath -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-RegistryValue -Path $regPath -Name 'ChainUrlRetrievalTimeoutMilliseconds' -Value 15000
+    }
+
     function Disable-SSL3 {
         # SSL3 disabling/Poodle, https://support.microsoft.com/en-us/kb/187498
         Write-MyVerbose 'Disabling SSL3 protocol for services'
@@ -2742,6 +2864,14 @@ process {
                 Disable-NICPowerManagement
                 Set-Pagefile
                 Set-TCPSettings
+                Disable-SMBv1
+                Disable-WindowsSearchService
+                Disable-WDigestCredentialCaching
+                Disable-HTTP2
+                Disable-TCPOffload
+                Test-DiskAllocationUnitSize
+                Disable-UnnecessaryScheduledTasks
+                Set-CRLCheckTimeout
                 if ( $State["DisableSSL3"]) {
                     Disable-SSL3
                 }
