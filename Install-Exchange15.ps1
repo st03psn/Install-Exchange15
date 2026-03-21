@@ -1,4 +1,4 @@
-﻿<#
+<#
     .SYNOPSIS
     Install-Exchange15
 
@@ -628,6 +628,11 @@ process {
     # Exchange Install registry key
     $EXCHANGEINSTALLKEY = "HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Setup"
 
+    # Autodiscover SCP LDAP filter template ({0} = server name)
+    $AUTODISCOVER_SCP_FILTER = '(&(cn={0})(objectClass=serviceConnectionPoint)(serviceClassName=ms-Exchange-AutoDiscover-Service)(|(keywords=67661d7F-8FC4-4fa7-BFAC-E1D7794C1F68)(keywords=77378F46-2C66-4aa9-A6A6-3E7A48B19596)))'
+    # Max retries for Autodiscover SCP background jobs (30 x 10s = 5 min)
+    $AUTODISCOVER_SCP_MAX_RETRIES = 30
+
     # Supported Exchange versions (setup.exe)
     $EX2016SETUPEXE_CU23 = '15.01.2507.006'
     $EX2019SETUPEXE_CU10 = '15.02.0922.007'
@@ -642,7 +647,7 @@ process {
     $WS2016_MAJOR = '10.0'
     $WS2019_PREFULL = '10.0.17709'
     $WS2022_PREFULL = '10.0.20348'
-    $WS2025_PREFULL = '10.0.20348'
+    $WS2025_PREFULL = '10.0.26100'
 
     # .NET Framework Versions
     $NETVERSION_48 = 528040
@@ -706,36 +711,39 @@ process {
         return $res
     }
 
-    function Write-MyOutput( $Text) {
-        Write-Output $Text
+    function Write-ToTranscript( $Level, $Text) {
         $Location = Split-Path $State['TranscriptFile'] -Parent
         if ( Test-Path $Location) {
-            Write-Output "$(Get-Date -Format u): $Text" | Out-File $State['TranscriptFile'] -Append -ErrorAction SilentlyContinue
+            "$(Get-Date -Format u): [$Level] $Text" | Out-File $State['TranscriptFile'] -Append -ErrorAction SilentlyContinue
         }
+    }
+
+    function Write-MyOutput( $Text) {
+        Write-Output $Text
+        Write-ToTranscript 'INFO' $Text
     }
 
     function Write-MyWarning( $Text) {
         Write-Warning $Text
-        $Location = Split-Path $State['TranscriptFile'] -Parent
-        if ( Test-Path $Location) {
-            Write-Output "$(Get-Date -Format u): [WARNING] $Text" | Out-File $State['TranscriptFile'] -Append -ErrorAction SilentlyContinue
-        }
+        Write-ToTranscript 'WARNING' $Text
     }
 
     function Write-MyError( $Text) {
         Write-Error $Text
-        $Location = Split-Path $State['TranscriptFile'] -Parent
-        if ( Test-Path $Location) {
-            Write-Output "$(Get-Date -Format u): [ERROR] $Text" | Out-File $State['TranscriptFile'] -Append -ErrorAction SilentlyContinue
-        }
+        Write-ToTranscript 'ERROR' $Text
     }
 
     function Write-MyVerbose( $Text) {
         Write-Verbose $Text
-        $Location = Split-Path $State['TranscriptFile'] -Parent
-        if ( Test-Path $Location) {
-            Write-Output "$(Get-Date -Format u): [VERBOSE] $Text" | Out-File $State['TranscriptFile'] -Append -ErrorAction SilentlyContinue
+        Write-ToTranscript 'VERBOSE' $Text
+    }
+
+    function Set-RegistryValue {
+        param( [string]$Path, [string]$Name, $Value, [string]$PropertyType = 'DWord')
+        if ( -not (Test-Path $Path -ErrorAction SilentlyContinue)) {
+            New-Item -Path $Path -Force -ErrorAction SilentlyContinue | Out-Null
         }
+        New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $PropertyType -Force -ErrorAction SilentlyContinue | Out-Null
     }
 
     function Get-PSExecutionPolicy {
@@ -810,12 +818,16 @@ process {
         if ( Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending' -ErrorAction SilentlyContinue) {
             $Pending = $True
         }
+        if ( Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired' -ErrorAction SilentlyContinue) {
+            $Pending = $True
+        }
         return $Pending
     }
 
     function Enable-RunOnce {
         Write-MyOutput 'Set script to run once after reboot'
-        $RunOnce = "$PSHome\powershell.exe -NoProfile -ExecutionPolicy Unrestricted -Command `"& `'$ScriptFullName`' -InstallPath `'$InstallPath`'`""
+        $PSExe = (Get-Process -Id $PID).Path
+        $RunOnce = "$PSExe -NoProfile -ExecutionPolicy Unrestricted -Command `"& `'$ScriptFullName`' -InstallPath `'$InstallPath`'`""
         Write-MyVerbose "RunOnce: $RunOnce"
         New-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name "$ScriptName" -Value "$RunOnce" -ErrorAction SilentlyContinue | Out-Null
     }
@@ -856,7 +868,7 @@ process {
         }
     }
 
-    function get-FullDomainAccount {
+    function Get-FullDomainAccount {
         $PlainTextAccount = $State['AdminAccount']
         if ( $PlainTextAccount.indexOf('\') -gt 0) {
             $Parts = $PlainTextAccount.split('\')
@@ -896,7 +908,7 @@ process {
 
     function Test-Credentials {
         $PlainTextPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR( (ConvertTo-SecureString $State['AdminPassword']) ))
-        $FullPlainTextAccount = get-FullDomainAccount
+        $FullPlainTextAccount = Get-FullDomainAccount
         try {
             if ( $State['InstallEdge']) {
                 $Username = $FullPlainTextAccount.split("\")[-1]
@@ -921,6 +933,8 @@ process {
 
     function Enable-AutoLogon {
         Write-MyVerbose 'Enabling Automatic Logon'
+        # SECURITY NOTE: This writes the password in plaintext to the registry.
+        # Disable-AutoLogon is called after the next login to remove these values immediately.
         $PlainTextPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR( (ConvertTo-SecureString $State['AdminPassword']) ))
         $PlainTextAccount = $State['AdminAccount']
         New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name AutoAdminLogon -Value 1 -ErrorAction SilentlyContinue | Out-Null
@@ -955,13 +969,11 @@ process {
 
     function Invoke-Extract ( $FilePath, $FileName) {
         Write-MyVerbose "Extracting $FilePath\$FileName to $FilePath"
-        if ( Test-Path $(Join-Path $FilePath $Filename)) {
-            $TempNam = "$(Join-Path $FilePath $Filename).zip"
-            Copy-Item $(Join-Path $FilePath $Filename) "$TempNam" -Force
-            $shellApplication = New-Object -com shell.application
-            $zipPackage = $shellApplication.NameSpace( $TempNam)
-            $destFolder = $shellApplication.NameSpace( $FilePath)
-            $destFolder.CopyHere( $zipPackage.Items(), 0x10)
+        $FullPath = Join-Path $FilePath $FileName
+        if ( Test-Path $FullPath) {
+            $TempNam = "$FullPath.zip"
+            Copy-Item $FullPath $TempNam -Force
+            Expand-Archive -Path $TempNam -DestinationPath $FilePath -Force
             Remove-Item $TempNam
         }
         else {
@@ -1062,12 +1074,13 @@ process {
         $ConfigNC = Get-ForestConfigurationNC
         if ($Wait) {
             $ScriptBlock = {
-                param($ServerName, $ConfigNC)
+                param($ServerName, $ConfigNC, $FilterTemplate, $MaxRetries)
+                $retries = 0
                 do {
                     if ($null -ne $ConfigNC) {
                         $LDAPSearch = New-Object System.DirectoryServices.DirectorySearcher
                         $LDAPSearch.SearchRoot = 'LDAP://{0}' -f $ConfigNC
-                        $LDAPSearch.Filter = '(&(cn={0})(objectClass=serviceConnectionPoint)(serviceClassName=ms-Exchange-AutoDiscover-Service)(|(keywords=67661d7F-8FC4-4fa7-BFAC-E1D7794C1F68)(keywords=77378F46-2C66-4aa9-A6A6-3E7A48B19596)))' -f $ServerName
+                        $LDAPSearch.Filter = $FilterTemplate -f $ServerName
 
                         $Results = $LDAPSearch.FindAll()
                         if ($Results.Count -gt 0) {
@@ -1078,12 +1091,17 @@ process {
                                     Write-Host ('Successfully cleared AutodiscoverServiceConnectionPoint for {0}' -f $ServerName)
                                 }
                                 catch {
-                                    Write-Error ('Problem clearing AutodiscoverServiceConnectionPoint for {0}: {1}' -f $ServerName, $Error[0].ExceptionMessage)
+                                    Write-Error ('Problem clearing AutodiscoverServiceConnectionPoint for {0}: {1}' -f $ServerName, $_.Exception.Message)
                                 }
                             }
                             return $true
                         }
                         else {
+                            $retries++
+                            if ($retries -ge $MaxRetries) {
+                                Write-Error ('AutodiscoverServiceConnectionPoint for {0} not found after {1} retries, giving up.' -f $ServerName, $MaxRetries)
+                                return $false
+                            }
                             Write-Host ('AutodiscoverServiceConnectionPoint not found for {0}, waiting a bit ..' -f $ServerName)
                             Start-Sleep -Seconds 10
                         }
@@ -1094,7 +1112,7 @@ process {
             if (-not $Global:BackgroundJobs) {
                 $Global:BackgroundJobs = @()
             }
-            $Job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $Name, $ConfigNC -Name ('Clear-AutodiscoverSCP-{0}' -f $Name)
+            $Job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $Name, $ConfigNC, $AUTODISCOVER_SCP_FILTER, $AUTODISCOVER_SCP_MAX_RETRIES -Name ('Clear-AutodiscoverSCP-{0}' -f $Name)
             $Global:BackgroundJobs += $Job
             Write-MyOutput ('Started background job to clear AutodiscoverServiceConnectionPoint for {0} (Job ID: {1})' -f $Name, $Job.Id)
             return $Job
@@ -1102,7 +1120,7 @@ process {
         else {
             $LDAPSearch = New-Object System.DirectoryServices.DirectorySearcher
             $LDAPSearch.SearchRoot = 'LDAP://{0}' -f $ConfigNC
-            $LDAPSearch.Filter = '(&(cn={0})(objectClass=serviceConnectionPoint)(serviceClassName=ms-Exchange-AutoDiscover-Service)(|(keywords=67661d7F-8FC4-4fa7-BFAC-E1D7794C1F68)(keywords=77378F46-2C66-4aa9-A6A6-3E7A48B19596)))' -f $Name
+            $LDAPSearch.Filter = $AUTODISCOVER_SCP_FILTER -f $Name
             $LDAPSearch.FindAll() | ForEach-Object {
 
                 Write-MyVerbose ('Removing object {0}' -f $_.Path)
@@ -1110,7 +1128,7 @@ process {
                     ([ADSI]($_.Path)).DeleteTree()
                 }
                 catch {
-                    Write-MyError ('Problem clearing serviceBindingInformation property on {0}: {1}' -f $_.Path, $Error[0].ExceptionMessage)
+                    Write-MyError ('Problem clearing serviceBindingInformation property on {0}: {1}' -f $_.Path, $_.Exception.Message)
                 }
             }
         }
@@ -1120,12 +1138,13 @@ process {
         $ConfigNC = Get-ForestConfigurationNC
         if ($Wait) {
             $ScriptBlock = {
-                param($ServerName, $ConfigNC, $serviceBindingValue)
+                param($ServerName, $ConfigNC, $serviceBindingValue, $FilterTemplate, $MaxRetries)
+                $retries = 0
                 do {
                     if ($null -ne $ConfigNC) {
                         $LDAPSearch = New-Object System.DirectoryServices.DirectorySearcher
                         $LDAPSearch.SearchRoot = 'LDAP://{0}' -f $ConfigNC
-                        $LDAPSearch.Filter = '(&(cn={0})(objectClass=serviceConnectionPoint)(serviceClassName=ms-Exchange-AutoDiscover-Service)(|(keywords=67661d7F-8FC4-4fa7-BFAC-E1D7794C1F68)(keywords=77378F46-2C66-4aa9-A6A6-3E7A48B19596)))' -f $ServerName
+                        $LDAPSearch.Filter = $FilterTemplate -f $ServerName
 
                         $Results = $LDAPSearch.FindAll()
                         if ($Results.Count -gt 0) {
@@ -1138,12 +1157,17 @@ process {
                                     Write-Host ('Successfully set AutodiscoverServiceConnectionPoint for {0}' -f $ServerName)
                                 }
                                 catch {
-                                    Write-Error ('Problem setting AutodiscoverServiceConnectionPoint for {0}: {1}' -f $ServerName, $Error[0].ExceptionMessage)
+                                    Write-Error ('Problem setting AutodiscoverServiceConnectionPoint for {0}: {1}' -f $ServerName, $_.Exception.Message)
                                 }
                             }
                             return $true
                         }
                         else {
+                            $retries++
+                            if ($retries -ge $MaxRetries) {
+                                Write-Error ('AutodiscoverServiceConnectionPoint for {0} not found after {1} retries, giving up.' -f $ServerName, $MaxRetries)
+                                return $false
+                            }
                             Write-Verbose ('AutodiscoverServiceConnectionPoint not found for {0}, waiting a bit ..' -f $ServerName)
                             Start-Sleep -Seconds 10
                         }
@@ -1154,7 +1178,7 @@ process {
             if (-not $Global:BackgroundJobs) {
                 $Global:BackgroundJobs = @()
             }
-            $Job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $Name, $ConfigNC, $ServiceBinding -Name ('Set-AutodiscoverSCP-{0}' -f $Name)
+            $Job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $Name, $ConfigNC, $ServiceBinding, $AUTODISCOVER_SCP_FILTER, $AUTODISCOVER_SCP_MAX_RETRIES -Name ('Set-AutodiscoverSCP-{0}' -f $Name)
             $Global:BackgroundJobs += $Job
             Write-MyVerbose ('Started background job to clear AutodiscoverServiceConnectionPoint for {0} (Job ID: {1})' -f $Name, $Job.Id)
             return $Job
@@ -1162,7 +1186,7 @@ process {
         else {
             $LDAPSearch = New-Object System.DirectoryServices.DirectorySearcher
             $LDAPSearch.SearchRoot = 'LDAP://{0}' -f $ConfigNC
-            $LDAPSearch.Filter = '(&(cn={0})(objectClass=serviceConnectionPoint)(serviceClassName=ms-Exchange-AutoDiscover-Service)(|(keywords=67661d7F-8FC4-4fa7-BFAC-E1D7794C1F68)(keywords=77378F46-2C66-4aa9-A6A6-3E7A48B19596)))' -f $Name
+            $LDAPSearch.Filter = $AUTODISCOVER_SCP_FILTER -f $Name
             $LDAPSearch.FindAll() | ForEach-Object {
                 Write-MyVerbose ('Setting serviceBindingInformation on {0} to {1}' -f $_.Path, $ServiceBinding)
                 try {
@@ -1171,7 +1195,7 @@ process {
                     $SCPObj.SetInfo()
                 }
                 catch {
-                    Write-MyError ('Problem setting serviceBindingInformation property on {0}: {1}' -f $_.Path, $Error[0].ExceptionMessage)
+                    Write-MyError ('Problem setting serviceBindingInformation property on {0}: {1}' -f $_.Path, $_.Exception.Message)
                 }
             }
         }
@@ -1262,7 +1286,7 @@ process {
         $PresenceKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{CD981244-E9B8-405A-9026-6AEB9DCEF1F1}'
 
         if ( $State['Recover']) {
-            Write-MyOutput 'Wil run Setup in recover mode'
+            Write-MyOutput 'Will run Setup in recover mode'
             $Params = '/mode:RecoverServer', $State['IAcceptSwitch'], '/DoNotStartTransport', '/InstallWindowsComponents'
             if ( $State['TargetPath']) {
                 $Params += "/TargetDir:`"$($State['TargetPath'])`""
@@ -1393,14 +1417,14 @@ process {
         Install-WindowsFeature $Feats | Out-Null
 
         foreach ( $Feat in $Feats) {
-            if ( !( Get-WindowsFeature ($Feat))) {
+            if ( !( (Get-WindowsFeature -Name $Feat).Installed)) {
                 Write-MyError "Feature $Feat appears not to be installed"
                 exit $ERR_PROBLEMADDINGFEATURE
             }
         }
 
         'NET-WCF-MSMQ-Activation45', 'MSMQ' | ForEach-Object {
-            if ( Get-WindowsFeature -Name $_) {
+            if ( (Get-WindowsFeature -Name $_).Installed) {
                 Write-MyOutput ('Removing obsolete feature {0}' -f $_)
                 Remove-WindowsFeature -Name $_
             }
@@ -1413,7 +1437,7 @@ process {
         $PresenceKey = $null
         foreach ( $ID in $PackageSet) {
             Write-MyVerbose "Checking if package $ID is installed .."
-            $PresenceKey = (Get-WmiObject win32_quickfixengineering | Where-Object { $_.HotfixID -eq $ID }).HotfixID
+            $PresenceKey = (Get-CimInstance Win32_QuickFixEngineering | Where-Object { $_.HotfixID -eq $ID }).HotfixID
             if ( !( $PresenceKey)) {
                 $PresenceKey = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$ID" -Name 'DisplayName' -ErrorAction SilentlyContinue).DisplayName
                 if (!( $PresenceKey)) {
@@ -1616,7 +1640,7 @@ process {
             Remove-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue | Out-Null
         }
         if ( Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue) {
-            Write-MyError "Unable to set registry entry $RegKey\$RegName"
+            Write-MyError "Unable to remove registry entry $RegKey\$RegName"
         }
     }
 
@@ -1629,7 +1653,7 @@ process {
         }
 
         Write-MyOutput 'Checking temporary installation folder'
-        mkdir $State['InstallPath'] -ErrorAction SilentlyContinue | Out-Null
+        New-Item -Path $State['InstallPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
         if ( !( Test-Path $State['InstallPath'])) {
             Write-MyError "Can't create temporary folder $($State['InstallPath'])"
             exit $ERR_CANTCREATETEMPFOLDER
@@ -1837,13 +1861,13 @@ process {
             }
 
             Write-MyOutput 'Checking domain membership status ..'
-            if (! ( Get-WmiObject Win32_ComputerSystem).PartOfDomain) {
+            if (! ( Get-CimInstance Win32_ComputerSystem).PartOfDomain) {
                 Write-MyError 'System is not domain-joined'
                 exit $ERR_NOTDOMAINJOINED
             }
         }
         Write-MyOutput 'Checking NIC configuration ..'
-        if (! (Get-WmiObject Win32_NetworkAdapterConfiguration -Filter { IPEnabled=True and DHCPEnabled=False })) {
+        if (! (Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True and DHCPEnabled=False')) {
             $AzureHosted = Get-Service | Where-Object { $_.Name -ieq 'Windows Azure Guest Agent' -or $_.Name -ieq 'Windows Azure Network Agent' -or $_.Name -ieq 'Windows Azure Telemetry Service' }
             if ( $AzureHosted) {
                 Write-MyError "System doesn't have a static IP addresses configured"
@@ -1974,7 +1998,7 @@ process {
     function Enable-HighPerformancePowerPlan {
         Write-MyVerbose 'Configuring Power Plan'
         $null = Start-Process -FilePath 'powercfg.exe' -ArgumentList ('/setactive', '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c') -NoNewWindow -PassThru -Wait
-        $CurrentPlan = Get-WmiObject -Namespace root\cimv2\power -Class win32_PowerPlan | Where-Object { $_.IsActive }
+        $CurrentPlan = Get-CimInstance -Namespace root/cimv2/power -ClassName Win32_PowerPlan | Where-Object { $_.IsActive }
         Write-MyOutput "Power Plan active: $($CurrentPlan.ElementName)"
     }
 
@@ -1982,13 +2006,13 @@ process {
         # http://support.microsoft.com/kb/2740020
         Write-MyVerbose 'Disabling Power Management on Network Adapters'
         # Find physical adapters that are OK and are not disabled
-        $NICs = Get-WmiObject -ClassName Win32_NetworkAdapter | Where-Object { $_.AdapterTypeId -eq 0 -and $_.PhysicalAdapter -and $_.ConfigManagerErrorCode -eq 0 -and $_.ConfigManagerErrorCode -ne 22 }
+        $NICs = Get-CimInstance -ClassName Win32_NetworkAdapter | Where-Object { $_.AdapterTypeId -eq 0 -and $_.PhysicalAdapter -and $_.ConfigManagerErrorCode -eq 0 -and $_.ConfigManagerErrorCode -ne 22 }
         foreach ( $NIC in $NICs) {
             $PNPDeviceID = ($NIC.PNPDeviceID).ToUpper()
-            $NICPowerMgt = Get-WmiObject MSPower_DeviceEnable -Namespace root\wmi | Where-Object { $_.instancename -match [regex]::escape( $PNPDeviceID) }
+            $NICPowerMgt = Get-CimInstance -ClassName MSPower_DeviceEnable -Namespace root/wmi | Where-Object { $_.instancename -match [regex]::escape( $PNPDeviceID) }
             if ($NICPowerMgt.Enable) {
-                $NICPowerMgt.Enable = $false
-                $NICPowerMgt.psbase.Put() | Out-Null
+                Set-CimInstance -InputObject $NICPowerMgt -Property @{ Enable = $false }
+                $NICPowerMgt = Get-CimInstance -ClassName MSPower_DeviceEnable -Namespace root/wmi | Where-Object { $_.instancename -match [regex]::escape( $PNPDeviceID) }
                 if ($NICPowerMgt.Enable) {
                     Write-MyError "Problem disabling power management on $($NIC.Name) ($PNPDeviceID)"
                 }
@@ -2004,11 +2028,10 @@ process {
 
     function Set-Pagefile {
         Write-MyVerbose 'Checking Pagefile Configuration'
-        $CS = Get-WmiObject -Class Win32_ComputerSystem -EnableAllPrivileges
+        $CS = Get-CimInstance -ClassName Win32_ComputerSystem
         if ($CS.AutomaticManagedPagefile) {
             Write-MyVerbose 'System configured to use Automatic Managed Pagefile, reconfiguring'
             try {
-                $CS.AutomaticManagedPagefile = $false
                 $InstalledMem = $CS.TotalPhysicalMemory
                 if ( $State["MajorSetupVersion"] -ge $EX2019_MAJOR) {
                     # 25% of RAM
@@ -2020,16 +2043,14 @@ process {
                     $DesiredSize = (($InstalledMem + 10MB), (32GB + 10MB) | Measure-Object -Minimum).Minimum / 1MB
                     Write-MyVerbose ('Configuring PageFile Total Memory+10MB with maximum of 32GB+10MB: {0}MB' -f $DesiredSize)
                 }
-                $null = $CS.Put()
-                $CPF = Get-WmiObject -Class Win32_PageFileSetting
-                $CPF.InitialSize = $DesiredSize
-                $CPF.MaximumSize = $DesiredSize
-                $null = $CPF.Put()
+                Set-CimInstance -InputObject $CS -Property @{ AutomaticManagedPagefile = $false }
+                $CPF = Get-CimInstance -ClassName Win32_PageFileSetting
+                Set-CimInstance -InputObject $CPF -Property @{ InitialSize = [int]$DesiredSize; MaximumSize = [int]$DesiredSize }
             }
             catch {
-                Write-MyError "Problem reconfiguring pagefile: $($ERROR[0])"
+                Write-MyError "Problem reconfiguring pagefile: $($_.Exception.Message)"
             }
-            $CPF = Get-WmiObject -Class Win32_PageFileSetting
+            $CPF = Get-CimInstance -ClassName Win32_PageFileSetting
             Write-MyOutput "Pagefile set to manual, initial/maximum size: $($CPF.InitialSize)MB / $($CPF.MaximumSize)MB"
         }
         else {
@@ -2038,41 +2059,17 @@ process {
     }
 
     function Set-TCPSettings {
-        Write-MyVerbose 'Configuring RPC Timeout setting'
-        $RegKey = "HKLM:\Software\Policies\Microsoft\Windows NT\RPC"
-        $RegName = "MinimumConnectionTimeout"
-        if ( -not( Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue)) {
-            if ( -not (Test-Path $RegKey -ErrorAction SilentlyContinue)) {
-                New-Item -Path (Split-Path $RegKey -Parent) -Name (Split-Path $RegKey -Leaf) -ErrorAction SilentlyContinue | Out-Null
-            }
-        }
         Write-MyOutput 'Setting RPC Timeout to 120 seconds'
-        New-ItemProperty -Path $RegKey -Name $RegName -Value 120 -ErrorAction SilentlyContinue | Out-Null
+        Set-RegistryValue -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\RPC' -Name 'MinimumConnectionTimeout' -Value 120
 
-        Write-MyVerbose 'Configuring Keep-Alive Timeout setting'
-        $RegKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
-        $RegName = "KeepAliveTime"
-        if ( -not( Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue)) {
-            if ( -not (Test-Path $RegKey -ErrorAction SilentlyContinue)) {
-                New-Item -Path (Split-Path $RegKey -Parent) -Name (Split-Path $RegKey -Leaf) -ErrorAction SilentlyContinue | Out-Null
-            }
-        }
         Write-MyOutput 'Setting Keep-Alive Timeout to 15 minutes'
-        New-ItemProperty -Path $RegKey -Name $RegName -Value 900000 -ErrorAction SilentlyContinue | Out-Null
+        Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 900000
     }
 
     function Disable-SSL3 {
         # SSL3 disabling/Poodle, https://support.microsoft.com/en-us/kb/187498
         Write-MyVerbose 'Disabling SSL3 protocol for services'
-        $RegKey = "HKLM:\System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 3.0\Server"
-        $RegName = "Enabled"
-        if ( -not( Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue)) {
-            if ( -not (Test-Path $RegKey -ErrorAction SilentlyContinue)) {
-                New-Item -Path (Split-Path $RegKey -Parent) -Name (Split-Path $RegKey -Leaf) -Force -ErrorAction SilentlyContinue | Out-Null
-            }
-        }
-        Write-MyVerbose "Setting registry $RegKey\$RegName to 0"
-        New-ItemProperty -Path $RegKey -Name $RegName -Value 0 -ErrorAction SilentlyContinue -Force | Out-Null
+        Set-RegistryValue -Path 'HKLM:\System\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\SSL 3.0\Server' -Name 'Enabled' -Value 0
     }
 
     function Disable-RC4 {
@@ -2147,6 +2144,27 @@ process {
         Restart-Service -Name W3SVC, WAS -Force
     }
 
+    function Set-SchannelProtocol {
+        param( [string]$Protocol, [bool]$Enable )
+        $base = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols"
+        $enabled       = if ($Enable) { 1 } else { 0 }
+        $disabledByDef = if ($Enable) { 0 } else { 1 }
+        New-Item -Path $base -Name $Protocol -ErrorAction SilentlyContinue | Out-Null
+        foreach ( $role in 'Client', 'Server') {
+            New-Item -Path "$base\$Protocol" -Name $role -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "$base\$Protocol\$role" -Name 'DisabledByDefault' -Value $disabledByDef -Type DWord
+            Set-ItemProperty -Path "$base\$Protocol\$role" -Name 'Enabled'           -Value $enabled       -Type DWord
+        }
+    }
+
+    function Set-NetFrameworkStrongCrypto {
+        foreach ( $path in 'HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319',
+                            'HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319') {
+            Set-ItemProperty -Path $path -Name 'SystemDefaultTlsVersions' -Value 1 -Type DWord
+            Set-ItemProperty -Path $path -Name 'SchUseStrongCrypto'        -Value 1 -Type DWord
+        }
+    }
+
     function Set-TLSSettings {
 
         param(
@@ -2155,65 +2173,27 @@ process {
         )
 
         if ( $TLS12) {
-
-            # configure the .NET Framework 4.x Schannel inheritance
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319" -Name "SystemDefaultTlsVersions" -Value 1 -Type DWord
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319" -Name "SchUseStrongCrypto" -Value 1 -Type DWord
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319" -Name "SystemDefaultTlsVersions" -Value 1 -Type DWord
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319" -Name "SchUseStrongCrypto" -Value 1 -Type DWord
-
-            # Enable TLS 1.2 for client and server connections
-            New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols" -Name "TLS 1.2" -ErrorAction SilentlyContinue
-            New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2" -Name "Client" -ErrorAction SilentlyContinue
-            New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2" -Name "Server" -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client" -Name "DisabledByDefault" -Value 0 -Type DWord
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client" -Name "Enabled" -Value 1 -Type DWord
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server" -Name "DisabledByDefault" -Value 0 -Type DWord
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server" -Name "Enabled" -Value 1 -Type DWord
+            Write-MyVerbose 'Enabling TLS 1.2 and configuring .NET Framework strong crypto'
+            Set-NetFrameworkStrongCrypto
+            Set-SchannelProtocol -Protocol 'TLS 1.2' -Enable $true
         }
         else {
-
-            New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols" -Name "TLS 1.2" -ErrorAction SilentlyContinue
-            New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2" -Name "Client" -ErrorAction SilentlyContinue
-            New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2" -Name "Server" -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client" -Name "DisabledByDefault" -Value 1 -Type DWord
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client" -Name "Enabled" -Value 0 -Type DWord
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server" -Name "DisabledByDefault" -Value 1 -Type DWord
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server" -Name "Enabled" -Value 0 -Type DWord
+            Write-MyVerbose 'Disabling TLS 1.2'
+            Set-SchannelProtocol -Protocol 'TLS 1.2' -Enable $false
         }
 
         if ( [System.Version]$FullOSVersion -ge [System.Version]$WS2022_PREFULL -and [System.Version]$SetupVersion -ge [System.Version]$EX2019SETUPEXE_CU15) {
             if ( $TLS13) {
-
-                # configure the .NET Framework 4.x Schannel inheritance
-                Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319" -Name "SystemDefaultTlsVersions" -Value 1 -Type DWord
-                Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319" -Name "SchUseStrongCrypto" -Value 1 -Type DWord
-                Set-ItemProperty -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319" -Name "SystemDefaultTlsVersions" -Value 1 -Type DWord
-                Set-ItemProperty -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319" -Name "SchUseStrongCrypto" -Value 1 -Type DWord
-
-                # Enable TLS 1.3 for client and server connections
-                New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols" -Name "TLS 1.3" -ErrorAction SilentlyContinue
-                New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3" -Name "Client" -ErrorAction SilentlyContinue
-                New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3" -Name "Server" -ErrorAction SilentlyContinue
-                Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client" -Name "DisabledByDefault" -Value 0 -Type DWord
-                Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client" -Name "Enabled" -Value 1 -Type DWord
-                Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server" -Name "DisabledByDefault" -Value 0 -Type DWord
-                Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server" -Name "Enabled" -Value 1 -Type DWord
-
+                Write-MyVerbose 'Enabling TLS 1.3 and configuring .NET Framework strong crypto'
+                Set-NetFrameworkStrongCrypto
+                Set-SchannelProtocol -Protocol 'TLS 1.3' -Enable $true
                 # Configure the TLS 1.3 cipher suites
                 Enable-TlsCipherSuite -Name TLS_AES_256_GCM_SHA384 -Position 0
                 Enable-TlsCipherSuite -Name TLS_AES_128_GCM_SHA256 -Position 1
             }
             else {
-
-                New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols" -Name "TLS 1.3" -ErrorAction SilentlyContinue
-                New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3" -Name "Client" -ErrorAction SilentlyContinue
-                New-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3" -Name "Server" -ErrorAction SilentlyContinue
-                Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client" -Name "DisabledByDefault" -Value 1 -Type DWord
-                Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client" -Name "Enabled" -Value 0 -Type DWord
-                Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server" -Name "DisabledByDefault" -Value 1 -Type DWord
-                Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server" -Name "Enabled" -Value 0 -Type DWord
-
+                Write-MyVerbose 'Disabling TLS 1.3'
+                Set-SchannelProtocol -Protocol 'TLS 1.3' -Enable $false
                 Disable-TlsCipherSuite -Name TLS_AES_256_GCM_SHA384 -ErrorAction SilentlyContinue
                 Disable-TlsCipherSuite -Name TLS_AES_128_GCM_SHA256 -ErrorAction SilentlyContinue
             }
@@ -2227,8 +2207,8 @@ process {
     function Enable-WindowsDefenderExclusions {
 
         if ( Get-Command -Name Add-MpPreference -ErrorAction SilentlyContinue) {
-            $SystemRoot = "$Env:SystemRoot"
-            $SystemDrive = "$Env:SystemDrive"
+            $SystemRoot = $Env:SystemRoot
+            $SystemDrive = $Env:SystemDrive
 
             Write-MyOutput 'Configuring Windows Defender folder exclusions'
             if ( $State['TargetPath']) {
@@ -2251,7 +2231,6 @@ process {
             )
 
             foreach ( $Location in $Locations) {
-                $Location
                 $Parts = $Location -split '\|'
                 $Items = $Parts[1] -split ','
                 foreach ( $Item in $Items) {
@@ -2458,9 +2437,10 @@ process {
     $ScriptFullName = $MyInvocation.MyCommand.Path
     $ScriptName = $ScriptFullName.Split("\")[-1]
     $ParameterString = $PSBoundParameters.getEnumerator() -join " "
-    $MajorOSVersion = [string](Get-WmiObject Win32_OperatingSystem | Select-Object @{n = "Major"; e = { ($_.Version.Split(".")[0] + "." + $_.Version.Split(".")[1]) } }).Major
-    $MinorOSVersion = [string](Get-WmiObject Win32_OperatingSystem | Select-Object @{n = "Minor"; e = { ($_.Version.Split(".")[2]) } }).Minor
-    $FullOSVersion = ('{0}.{1}' -f $MajorOSVersion, $MinorOSVersion)
+    $OSVersionParts = (Get-CimInstance -ClassName Win32_OperatingSystem).Version.Split('.')
+    $MajorOSVersion = '{0}.{1}' -f $OSVersionParts[0], $OSVersionParts[1]
+    $MinorOSVersion = $OSVersionParts[2]
+    $FullOSVersion  = '{0}.{1}' -f $MajorOSVersion, $MinorOSVersion
 
     $State = @{}
     $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
@@ -2794,7 +2774,7 @@ process {
                 if ( $State["IncludeFixes"]) {
                     Write-MyOutput "Installing additional recommended hotfixes and security updates for Exchange"
 
-                    $ImagePathVersion = Get-DetectedFileVersion ( (Get-WmiObject -Query 'select * from win32_service where name="MSExchangeServiceHost"').PathName.Trim('"') )
+                    $ImagePathVersion = Get-DetectedFileVersion ( (Get-CimInstance -Query 'SELECT * FROM win32_service WHERE name="MSExchangeServiceHost"').PathName.Trim('"') )
                     Write-MyVerbose ('Installed Exchange MSExchangeIS version {0}' -f $ImagePathVersion)
 
                     switch ( $State['ExSetupVersion']) {
@@ -2835,20 +2815,16 @@ process {
                 if ( !($State['InstallEdge'])) {
                     Write-MyVerbose 'Performing Health Monitor checks..'
                     # Warmup IIS
-                    $web = New-Object Net.WebClient
-                    # To ignore self-signed cert warnings
-                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
                     'OWA', 'ECP', 'EWS', 'Autodiscover', 'Microsoft-Server-ActiveSync', 'OAB', 'mapi', 'rpc' | ForEach-Object {
                         $url = 'https://localhost/{0}/healthcheck.htm' -f $_
                         try {
-                            $output = $web.DownloadString($url)
-                            Write-MyOutput ('Healthcheck {0}: {1}' -f $url, ($output -split '<')[0])
+                            $response = Invoke-WebRequest -Uri $url -SkipCertificateCheck -UseBasicParsing -ErrorAction Stop
+                            Write-MyOutput ('Healthcheck {0}: {1}' -f $url, ($response.Content -split '<')[0])
                         }
                         catch {
                             Write-MyWarning ('Healthcheck {0}: {1}' -f $url, 'ERR')
                         }
                     }
-                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
                 }
                 else {
                     Write-MyVerbose 'InstallEdge Mode, skipping IIS health monitor checks'
