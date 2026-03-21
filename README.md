@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 4.30 (March 2026)
+**Version:** 4.31 (March 2026)
 **License:** As-Is, without warranty
 
 ---
@@ -106,6 +106,9 @@ The following best-practice configurations are automatically applied after Excha
 - **AMSI body scanning** (optional) — for OWA, ECP, EWS, PowerShell
 - **WDigest credential caching disabled** — prevents cleartext password storage in LSASS memory
 - **HTTP/2 disabled** — prevents known Exchange MAPI/RPC issues
+- **Credential Guard disabled** — causes performance issues on Exchange (default on WS2025)
+- **LAN Manager level 5** — NTLMv2 only, refuse LM and NTLM
+- **Serialized Data Signing** — mitigates PowerShell serialization attacks
 
 ### Performance Tuning
 - **High Performance power plan** — activated automatically
@@ -117,10 +120,28 @@ The following best-practice configurations are automatically applied after Excha
 - **Scheduled defragmentation disabled** — not needed on Exchange servers
 - **Disk allocation unit size verification** — warns if volumes are not 64KB formatted
 - **CRL check timeout configured** — prevents Exchange startup delays
+- **RSS enabled on all NICs** — ensures network traffic uses all CPU cores
+- **CtsProcessorAffinityPercentage = 0** — Exchange Search best practice
+- **NodeRunner memory limit = 0** — removes Search performance limiter
+- **MAPI Front End Server GC** — enabled on systems with 20+ GB RAM
+- **.NET strong crypto on all paths** — v4.0 and v2.0, 64-bit and 32-bit
 
 ---
 
 ## Changes from Original (v4.30)
+
+### v4.31 — CSS-Exchange HealthChecker Recommendations (March 2026)
+
+**New post-configuration features (based on HealthChecker analysis):**
+- Disable Credential Guard (performance, default on WS2025)
+- Set LAN Manager compatibility level to 5 (NTLMv2 only)
+- Enable Receive Side Scaling (RSS) on all NICs
+- Set CtsProcessorAffinityPercentage to 0 (Exchange Search)
+- Enable Serialized Data Signing (security hardening)
+- Set NodeRunner memory limit to 0 (Exchange Search)
+- Enable Server GC for MAPI Front End App Pool (20+ GB RAM)
+- Extended .NET strong crypto to v2.0 paths
+- Fixed `$Error[0]` in catch blocks outside background jobs
 
 ### v4.30 — Security Hardening & Performance (March 2026)
 

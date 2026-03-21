@@ -8,7 +8,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 4.30, March 21, 2026
+    Version 4.31, March 21, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -336,6 +336,16 @@
             - Verify 64KB disk allocation unit sizes (Exchange best practice)
             - Disable unnecessary scheduled tasks (defrag)
             - Configure CRL check timeout to prevent startup delays
+    4.31    Added CSS-Exchange HealthChecker recommendations:
+            - Disable Credential Guard (performance issues, default on WS2025)
+            - Set LAN Manager compatibility level to 5 (NTLMv2 only)
+            - Enable Receive Side Scaling (RSS) on all NICs
+            - Set CtsProcessorAffinityPercentage to 0 (Search performance)
+            - Enable Serialized Data Signing (security hardening)
+            - Set NodeRunner memory limit to 0 (Search performance)
+            - Enable Server GC for MAPI Front End App Pool (20+ GB RAM)
+            - Extended .NET strong crypto to v2.0 paths (HealthChecker requirement)
+            - Fixed $Error[0] in Enable-MSExchangeAutodiscoverAppPool catch blocks
 
     .PARAMETER Organization
     Specifies name of the Exchange organization to create. When omitted, the step
@@ -585,7 +595,7 @@ param(
 
 process {
 
-    $ScriptVersion = '4.30'
+    $ScriptVersion = '4.31'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -2188,6 +2198,118 @@ process {
         Set-RegistryValue -Path $regPath -Name 'ChainUrlRetrievalTimeoutMilliseconds' -Value 15000
     }
 
+    function Disable-CredentialGuard {
+        # HealthChecker flags Credential Guard as causing performance issues on Exchange servers.
+        # On Windows Server 2025 it is enabled by default and must be explicitly disabled.
+        Write-MyOutput 'Disabling Credential Guard (Exchange performance best practice)'
+        Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\LSA' -Name 'LsaCfgFlags' -Value 0
+        Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' -Name 'EnableVirtualizationBasedSecurity' -Value 0
+    }
+
+    function Set-LmCompatibilityLevel {
+        # HealthChecker recommends level 5: send NTLMv2 only, refuse LM and NTLM
+        Write-MyOutput 'Setting LAN Manager compatibility level to 5 (NTLMv2 only)'
+        Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LmCompatibilityLevel' -Value 5
+    }
+
+    function Enable-RSSOnAllNICs {
+        # HealthChecker warns if RSS is supported by the NIC but disabled
+        Write-MyOutput 'Enabling Receive Side Scaling (RSS) on all supported NICs'
+        try {
+            Get-NetAdapterRss -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $false } | ForEach-Object {
+                Write-MyVerbose ('Enabling RSS on adapter: {0}' -f $_.Name)
+                Enable-NetAdapterRss -Name $_.Name -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            Write-MyWarning ('Problem enabling RSS: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Set-CtsProcessorAffinityPercentage {
+        # HealthChecker flags any non-zero value as harmful to Exchange Search performance
+        Write-MyOutput 'Setting CtsProcessorAffinityPercentage to 0 (Exchange Search best practice)'
+        $regPath = 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Search\SystemParameters'
+        if (-not (Test-Path $regPath -ErrorAction SilentlyContinue)) {
+            New-Item -Path $regPath -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-RegistryValue -Path $regPath -Name 'CtsProcessorAffinityPercentage' -Value 0
+    }
+
+    function Enable-SerializedDataSigning {
+        # HealthChecker validates this security feature (mitigates PowerShell serialization attacks)
+        Write-MyOutput 'Enabling Serialized Data Signing (security hardening)'
+        $regPath = 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Diagnostics'
+        if (-not (Test-Path $regPath -ErrorAction SilentlyContinue)) {
+            New-Item -Path $regPath -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-RegistryValue -Path $regPath -Name 'EnableSerializationDataSigning' -Value 1
+    }
+
+    function Set-NodeRunnerMemoryLimit {
+        # HealthChecker flags any non-zero memoryLimitMegabytes as a Search performance limiter
+        Write-MyOutput 'Setting NodeRunner memory limit to 0 (unlimited, Exchange Search best practice)'
+        $exchangeInstallPath = (Get-ItemProperty -Path $EXCHANGEINSTALLKEY -Name MsiInstallPath -ErrorAction SilentlyContinue).MsiInstallPath
+        if ($exchangeInstallPath) {
+            $configFile = Join-Path $exchangeInstallPath 'Bin\Search\Ceres\Runtime\1.0\noderunner.exe.config'
+            if (Test-Path $configFile) {
+                try {
+                    $xml = [XML](Get-Content $configFile)
+                    $node = $xml.SelectSingleNode('//nodeRunnerSettings')
+                    if ($node -and $node.memoryLimitMegabytes -ne '0') {
+                        $node.memoryLimitMegabytes = '0'
+                        $xml.Save($configFile)
+                        Write-MyVerbose 'NodeRunner memoryLimitMegabytes set to 0'
+                    }
+                    else {
+                        Write-MyVerbose 'NodeRunner memoryLimitMegabytes already 0 or node not found'
+                    }
+                }
+                catch {
+                    Write-MyWarning ('Problem configuring NodeRunner: {0}' -f $_.Exception.Message)
+                }
+            }
+            else {
+                Write-MyVerbose 'NodeRunner config file not found (may not be installed yet)'
+            }
+        }
+    }
+
+    function Enable-MAPIFrontEndServerGC {
+        # HealthChecker recommends Server GC for MAPI Front End App Pool on systems with 20+ GB RAM
+        Write-MyOutput 'Checking MAPI Front End App Pool GC mode'
+        $installedMem = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
+        if ($installedMem -ge 20GB) {
+            $exchangeInstallPath = (Get-ItemProperty -Path $EXCHANGEINSTALLKEY -Name MsiInstallPath -ErrorAction SilentlyContinue).MsiInstallPath
+            if ($exchangeInstallPath) {
+                $configFile = Join-Path $exchangeInstallPath 'bin\MSExchangeMapiFrontEndAppPool_CLRConfig.config'
+                if (Test-Path $configFile) {
+                    try {
+                        $xml = [XML](Get-Content $configFile)
+                        $gcNode = $xml.SelectSingleNode('//gcServer')
+                        if ($gcNode -and $gcNode.enabled -ne 'true') {
+                            $gcNode.enabled = 'true'
+                            $xml.Save($configFile)
+                            Write-MyOutput 'Enabled Server GC for MAPI Front End App Pool (20+ GB RAM detected)'
+                        }
+                        else {
+                            Write-MyVerbose 'Server GC already enabled or node not found'
+                        }
+                    }
+                    catch {
+                        Write-MyWarning ('Problem configuring MAPI FE GC: {0}' -f $_.Exception.Message)
+                    }
+                }
+                else {
+                    Write-MyVerbose 'MAPI FE config file not found (may not be installed yet)'
+                }
+            }
+        }
+        else {
+            Write-MyVerbose 'Less than 20 GB RAM, skipping Server GC configuration'
+        }
+    }
+
     function Disable-SSL3 {
         # SSL3 disabling/Poodle, https://support.microsoft.com/en-us/kb/187498
         Write-MyVerbose 'Disabling SSL3 protocol for services'
@@ -2280,10 +2402,15 @@ process {
     }
 
     function Set-NetFrameworkStrongCrypto {
+        # HealthChecker requires all 4 paths (v4.0 + v2.0, 64-bit + 32-bit)
         foreach ( $path in 'HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319',
-                            'HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319') {
-            Set-ItemProperty -Path $path -Name 'SystemDefaultTlsVersions' -Value 1 -Type DWord
-            Set-ItemProperty -Path $path -Name 'SchUseStrongCrypto'        -Value 1 -Type DWord
+                            'HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v4.0.30319',
+                            'HKLM:\SOFTWARE\Microsoft\.NETFramework\v2.0.50727',
+                            'HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NETFramework\v2.0.50727') {
+            if (Test-Path $path) {
+                Set-ItemProperty -Path $path -Name 'SystemDefaultTlsVersions' -Value 1 -Type DWord
+                Set-ItemProperty -Path $path -Name 'SchUseStrongCrypto'        -Value 1 -Type DWord
+            }
         }
     }
 
@@ -2517,14 +2644,14 @@ process {
                 Start-WebAppPool -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction Stop
             }
             catch {
-                Write-MyError ('Failed to start app pool: {0}' -f $Error[0].ExceptionMessage)
+                Write-MyError ('Failed to start app pool: {0}' -f $_.Exception.Message)
             }
             try {
                 Set-ItemProperty "IIS:\AppPools\MSExchangeAutodiscoverAppPool" -Name "autoStart" -Value $true -ErrorAction Stop
                 Set-ItemProperty "IIS:\AppPools\MSExchangeAutodiscoverAppPool" -Name "startMode" -Value "OnDemand" -ErrorAction Stop
             }
             catch {
-                Write-MyError ('Failed to update app pool properties: {0}' -f $Error[0].ExceptionMessage)
+                Write-MyError ('Failed to update app pool properties: {0}' -f $_.Exception.Message)
             }
             return $true
         }
@@ -2869,6 +2996,9 @@ process {
                 Disable-WDigestCredentialCaching
                 Disable-HTTP2
                 Disable-TCPOffload
+                Disable-CredentialGuard
+                Set-LmCompatibilityLevel
+                Enable-RSSOnAllNICs
                 Test-DiskAllocationUnitSize
                 Disable-UnnecessaryScheduledTasks
                 Set-CRLCheckTimeout
@@ -2882,6 +3012,11 @@ process {
                 Set-TLSSettings -TLS12 $State["EnableTLS12"] -TLS13 $State["EnableTLS13"]
 
                 Import-ExchangeModule
+
+                Set-CtsProcessorAffinityPercentage
+                Enable-SerializedDataSigning
+                Set-NodeRunnerMemoryLimit
+                Enable-MAPIFrontEndServerGC
 
                 if ( $State["EnableECC"]) {
                     Enable-ECC

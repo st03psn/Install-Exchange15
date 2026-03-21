@@ -9,7 +9,7 @@ of Microsoft Exchange Server 2016, 2019, and Exchange SE (Subscription Edition),
 including all prerequisites, Active Directory preparation, and post-configuration.
 
 **Author:** Michel de Rooij (michel@eightwone.com)
-**Current Version:** 4.30 (March 2026)
+**Current Version:** 4.31 (March 2026)
 **PowerShell Requirement:** `#Requires -Version 5.1`
 **Execution:** Must be run as Administrator
 
@@ -160,6 +160,13 @@ Disable-TCPOffload                 # Performance: disable chimney/offload
 Test-DiskAllocationUnitSize        # Verify 64KB allocation units
 Disable-UnnecessaryScheduledTasks  # Disable defrag etc.
 Set-CRLCheckTimeout                # Prevent startup delays
+Disable-CredentialGuard            # Performance: disable on Exchange servers
+Set-LmCompatibilityLevel           # Security: NTLMv2 only (level 5)
+Enable-RSSOnAllNICs                # Performance: enable Receive Side Scaling
+Set-CtsProcessorAffinityPercentage # Search: set to 0 for best performance
+Enable-SerializedDataSigning       # Security: mitigate serialization attacks
+Set-NodeRunnerMemoryLimit          # Search: remove memory limit (set to 0)
+Enable-MAPIFrontEndServerGC        # Performance: Server GC for 20+ GB RAM
 ```
 
 ---
@@ -253,6 +260,19 @@ Always use `$_.Exception.Message`, not `$Error[0].ExceptionMessage`
 | Performance | `Disable-TCPOffload`: disable TCP Chimney and Task Offload |
 | Performance | `Disable-UnnecessaryScheduledTasks`: disable defrag on Exchange servers |
 | Validation | `Test-DiskAllocationUnitSize`: warn if volumes not using 64KB allocation units |
+
+### 2026-03-21 — Round 5: CSS-Exchange HealthChecker Recommendations
+| # | Change |
+|---|---|
+| Security | `Disable-CredentialGuard`: disable on Exchange servers (performance, default on WS2025) |
+| Security | `Set-LmCompatibilityLevel`: NTLMv2 only (level 5) |
+| Security | `Enable-SerializedDataSigning`: mitigate PowerShell serialization attacks |
+| Performance | `Enable-RSSOnAllNICs`: enable Receive Side Scaling on all adapters |
+| Performance | `Set-CtsProcessorAffinityPercentage`: set to 0 for Exchange Search |
+| Performance | `Set-NodeRunnerMemoryLimit`: remove memory limit for Exchange Search |
+| Performance | `Enable-MAPIFrontEndServerGC`: enable Server GC for MAPI FE (20+ GB RAM) |
+| TLS | `Set-NetFrameworkStrongCrypto`: extended to v2.0 paths (HealthChecker requirement) |
+| Bug | `Enable-MSExchangeAutodiscoverAppPool`: fixed `$Error[0]` to `$_.Exception.Message` |
 
 ---
 
