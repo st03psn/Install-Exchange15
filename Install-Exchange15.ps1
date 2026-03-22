@@ -8,7 +8,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 4.31, March 21, 2026
+    Version 5.0, March 22, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -346,6 +346,14 @@
             - Enable Server GC for MAPI Front End App Pool (20+ GB RAM)
             - Extended .NET strong crypto to v2.0 paths (HealthChecker requirement)
             - Fixed $Error[0] in Enable-MSExchangeAutodiscoverAppPool catch blocks
+    5.0     Major feature release:
+            - Pre-flight validation HTML report (-PreflightOnly)
+            - Idempotency guards: Set-RegistryValue skips if value already set
+            - Post-install CSS-Exchange HealthChecker auto-run (-SkipHealthCheck to skip)
+            - Configuration export/import from source server (-CopyServerConfig <ServerName>)
+            - PFX certificate import with IIS+SMTP binding (-CertificatePath)
+            - DAG join automation (-DAGName)
+            - System Restore checkpoints before each phase (-NoCheckpoint to skip)
 
     .PARAMETER Organization
     Specifies name of the Exchange organization to create. When omitted, the step
@@ -590,12 +598,36 @@ param(
     [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'AutoPilot')]
     [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
     [ValidateRange(0, 6)]
-    [int]$Phase
+    [int]$Phase,
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [Switch]$PreflightOnly,
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [string]$CopyServerConfig,
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [ValidateScript({ if (Test-Path $_ -PathType Leaf) { $true } else { throw ('PFX file not found: {0}' -f $_) } })]
+    [string]$CertificatePath,
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [string]$DAGName,
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [Switch]$SkipHealthCheck,
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [Switch]$NoCheckpoint
 )
 
 process {
 
-    $ScriptVersion = '4.31'
+    $ScriptVersion = '5.0'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -628,6 +660,12 @@ process {
     $ERR_PROBLEMEXCHANGESERVEREXISTS = 1203
     $ERR_EX19EX2013COEXIST = 1204
     $ERR_UNSUPPORTEDEX = 1205
+    $ERR_PREFLIGHTFAILED = 1030
+    $ERR_CONFIGEXPORTFAILED = 1031
+    $ERR_CONFIGIMPORTFAILED = 1032
+    $ERR_CERTIMPORTFAILED = 1033
+    $ERR_DAGJOIN = 1034
+    $ERR_SOURCESERVERCONNECT = 1036
 
     $COUNTDOWN_TIMER = 10
     $DOMAIN_MIXEDMODE = 0
@@ -689,8 +727,21 @@ process {
     function Restore-State() {
         $State = @{}
         if (Test-Path $StateFile) {
-            $State = Import-Clixml -Path $StateFile -ErrorAction SilentlyContinue
-            Write-Verbose "State information loaded from $StateFile"
+            try {
+                $State = Import-Clixml -Path $StateFile -ErrorAction Stop
+                # Validate essential state properties
+                if ($State -isnot [hashtable]) {
+                    Write-MyWarning 'State file is corrupt (not a hashtable), starting fresh'
+                    $State = @{}
+                }
+                else {
+                    Write-Verbose "State information loaded from $StateFile"
+                }
+            }
+            catch {
+                Write-MyWarning ('Failed to load state file, starting fresh: {0}' -f $_.Exception.Message)
+                $State = @{}
+            }
         }
         else {
             Write-Verbose "No state file found at $StateFile"
@@ -762,6 +813,13 @@ process {
         if ( -not (Test-Path $Path -ErrorAction SilentlyContinue)) {
             New-Item -Path $Path -Force -ErrorAction SilentlyContinue | Out-Null
         }
+        else {
+            $existing = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+            if ($null -ne $existing -and $existing.$Name -eq $Value) {
+                Write-MyVerbose ('Registry value already set: {0}\{1} = {2}' -f $Path, $Name, $Value)
+                return
+            }
+        }
         New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $PropertyType -Force -ErrorAction SilentlyContinue | Out-Null
     }
 
@@ -782,14 +840,34 @@ process {
         if ( !( Test-Path $(Join-Path $InstallPath $Filename))) {
             if ( $URL) {
                 Write-MyOutput "Package $Package not found, downloading to $FileName"
-                try {
-                    Write-MyVerbose "Source: $URL"
-                    Start-BitsTransfer -Source $URL -Destination $(Join-Path $InstallPath $Filename)
+                Write-MyVerbose "Source: $URL"
+                $destPath = Join-Path $InstallPath $Filename
+                $downloaded = $false
+                for ($attempt = 1; $attempt -le 3; $attempt++) {
+                    try {
+                        Start-BitsTransfer -Source $URL -Destination $destPath -ErrorAction Stop
+                        $downloaded = $true
+                        break
+                    }
+                    catch {
+                        if ($attempt -lt 3) {
+                            Write-MyWarning ('Download attempt {0}/3 failed, retrying in {1} seconds: {2}' -f $attempt, ($attempt * 5), $_.Exception.Message)
+                            Start-Sleep -Seconds ($attempt * 5)
+                        }
+                        else {
+                            # Final attempt: try Invoke-WebRequest as fallback
+                            try {
+                                Write-MyVerbose 'BITS failed, trying Invoke-WebRequest as fallback'
+                                Invoke-WebRequest -Uri $URL -OutFile $destPath -UseBasicParsing -ErrorAction Stop
+                                $downloaded = $true
+                            }
+                            catch {
+                                Write-MyError ('Problem downloading package from URL after 3 attempts: {0}' -f $_.Exception.Message)
+                            }
+                        }
+                    }
                 }
-                catch {
-                    Write-MyError 'Problem downloading package from URL'
-                    $res = $false
-                }
+                if (-not $downloaded) { $res = $false }
             }
             else {
                 Write-MyWarning "$FileName not present, skipping"
@@ -991,9 +1069,16 @@ process {
         $FullPath = Join-Path $FilePath $FileName
         if ( Test-Path $FullPath) {
             $TempNam = "$FullPath.zip"
-            Copy-Item $FullPath $TempNam -Force
-            Expand-Archive -Path $TempNam -DestinationPath $FilePath -Force
-            Remove-Item $TempNam
+            try {
+                Copy-Item $FullPath $TempNam -Force -ErrorAction Stop
+                Expand-Archive -Path $TempNam -DestinationPath $FilePath -Force -ErrorAction Stop
+            }
+            catch {
+                Write-MyError ('Failed to extract {0}: {1}' -f $FullPath, $_.Exception.Message)
+            }
+            finally {
+                Remove-Item $TempNam -ErrorAction SilentlyContinue
+            }
         }
         else {
             Write-MyWarning "$FilePath\$FileName not found"
@@ -1035,14 +1120,32 @@ process {
         return $rval
     }
     function Get-ForestRootNC {
-        return ([ADSI]'LDAP://RootDSE').rootDomainNamingContext.toString()
+        try {
+            return ([ADSI]'LDAP://RootDSE').rootDomainNamingContext.toString()
+        }
+        catch {
+            Write-MyError ('Cannot read Forest Root Naming Context (LDAP://RootDSE): {0}' -f $_.Exception.Message)
+            return $null
+        }
     }
     function Get-RootNC {
-        return ([ADSI]'').distinguishedName.toString()
+        try {
+            return ([ADSI]'').distinguishedName.toString()
+        }
+        catch {
+            Write-MyError ('Cannot read Root Naming Context: {0}' -f $_.Exception.Message)
+            return $null
+        }
     }
 
     function Get-ForestConfigurationNC {
-        return ([ADSI]'LDAP://RootDSE').configurationNamingContext.toString()
+        try {
+            return ([ADSI]'LDAP://RootDSE').configurationNamingContext.toString()
+        }
+        catch {
+            Write-MyError ('Cannot read Forest Configuration Naming Context: {0}' -f $_.Exception.Message)
+            return $null
+        }
     }
 
     function Get-ForestFunctionalLevel {
@@ -1273,7 +1376,11 @@ process {
         Write-MyVerbose 'Loading Exchange PowerShell module'
         if ( -not ( Get-Command Connect-ExchangeServer -ErrorAction SilentlyContinue)) {
             $SetupPath = (Get-ItemProperty -Path $EXCHANGEINSTALLKEY -Name MsiInstallPath -ErrorAction SilentlyContinue).MsiInstallPath
-            if ( ($State['InstallEdge'] -eq $true -and $SetupPath -and (Test-Path $(Join-Path $SetupPath "\bin\Exchange.ps1"))) -or ($State['InstallEdge'] -eq $false -and $SetupPath -and (Test-Path $(Join-Path $SetupPath "\bin\RemoteExchange.ps1")))) {
+            if (-not $SetupPath) {
+                Write-MyWarning "Exchange installation path not found in registry ($EXCHANGEINSTALLKEY)"
+                return
+            }
+            if ( ($State['InstallEdge'] -eq $true -and (Test-Path $(Join-Path $SetupPath "\bin\Exchange.ps1"))) -or ($State['InstallEdge'] -eq $false -and (Test-Path $(Join-Path $SetupPath "\bin\RemoteExchange.ps1")))) {
                 if ( $State['InstallEdge']) {
                     Add-PSSnapin Microsoft.Exchange.Management.PowerShell.E2010
                     . "$SetupPath\bin\Exchange.ps1" | Out-Null
@@ -1287,8 +1394,13 @@ process {
                         Write-MyError 'Problem loading Exchange module'
                     }
                 }
-
-
+                # Verify essential cmdlets are available
+                $requiredCmdlets = @('Get-ExchangeServer', 'Get-MailboxDatabase')
+                foreach ($cmdlet in $requiredCmdlets) {
+                    if (-not (Get-Command $cmdlet -ErrorAction SilentlyContinue)) {
+                        Write-MyWarning ('Exchange module loaded but cmdlet {0} not available' -f $cmdlet)
+                    }
+                }
             }
             else {
                 Write-MyWarning "Can't determine installation path to load Exchange module"
@@ -1998,6 +2110,422 @@ process {
         }
     }
 
+    function New-PreflightReport {
+        Write-MyOutput 'Generating Pre-Flight Validation Report'
+        $results = @()
+
+        # OS Version
+        $results += [PSCustomObject]@{ Check = 'Operating System'; Result = $FullOSVersion; Status = if ([System.Version]$MajorOSVersion -ge [System.Version]$WS2016_MAJOR) { 'OK' } else { 'FAIL' } }
+
+        # Admin check
+        $results += [PSCustomObject]@{ Check = 'Running as Administrator'; Result = (Test-Admin); Status = if (Test-Admin) { 'OK' } else { 'FAIL' } }
+
+        # Domain membership
+        $isDomainJoined = (Get-CimInstance Win32_ComputerSystem).PartOfDomain
+        $results += [PSCustomObject]@{ Check = 'Domain Membership'; Result = $isDomainJoined; Status = if ($isDomainJoined -or $State['InstallEdge']) { 'OK' } else { 'FAIL' } }
+
+        # Computer name
+        $computerName = try { Get-LocalFQDNHostname } catch { $env:COMPUTERNAME }
+        $results += [PSCustomObject]@{ Check = 'Computer Name (FQDN)'; Result = $computerName; Status = 'INFO' }
+
+        # Static IP
+        $staticIP = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True and DHCPEnabled=False'
+        $results += [PSCustomObject]@{ Check = 'Static IP Address'; Result = if ($staticIP) { ($staticIP.IPAddress -join ', ') } else { 'DHCP only' }; Status = if ($staticIP) { 'OK' } else { 'WARN' } }
+
+        # .NET Framework
+        $netVer = Get-NETVersion
+        $results += [PSCustomObject]@{ Check = '.NET Framework'; Result = ('{0} ({1})' -f $netVer, (Get-NetVersionText $netVer)); Status = if ($netVer -ge $NETVERSION_48) { 'OK' } else { 'WARN' } }
+
+        # Reboot pending
+        $rebootPending = Test-RebootPending
+        $results += [PSCustomObject]@{ Check = 'Reboot Pending'; Result = $rebootPending; Status = if ($rebootPending) { 'WARN' } else { 'OK' } }
+
+        # Exchange setup
+        if ($State['SourcePath'] -and (Test-Path (Join-Path $State['SourcePath'] 'setup.exe'))) {
+            $exVer = Get-DetectedFileVersion (Join-Path $State['SourcePath'] 'Setup\ServerRoles\Common\ExSetup.exe')
+            $results += [PSCustomObject]@{ Check = 'Exchange Setup Version'; Result = $exVer; Status = 'OK' }
+        }
+        else {
+            $results += [PSCustomObject]@{ Check = 'Exchange Setup'; Result = $State['SourcePath']; Status = 'FAIL' }
+        }
+
+        # AD checks (non-Edge only)
+        if (-not $State['InstallEdge']) {
+            $adSite = try { Get-ADSite } catch { $null }
+            $results += [PSCustomObject]@{ Check = 'AD Site'; Result = if ($adSite) { $adSite.ToString() } else { 'Not detected' }; Status = if ($adSite) { 'OK' } else { 'FAIL' } }
+
+            if (-not $State['SkipRolesCheck']) {
+                $isSchemaAdmin = try { Test-SchemaAdmin } catch { $false }
+                $isEnterpriseAdmin = try { Test-EnterpriseAdmin } catch { $false }
+                $results += [PSCustomObject]@{ Check = 'Schema Admin'; Result = [bool]$isSchemaAdmin; Status = if ($isSchemaAdmin) { 'OK' } else { 'FAIL' } }
+                $results += [PSCustomObject]@{ Check = 'Enterprise Admin'; Result = [bool]$isEnterpriseAdmin; Status = if ($isEnterpriseAdmin) { 'OK' } else { 'FAIL' } }
+            }
+
+            $ffl = try { Get-ForestFunctionalLevel } catch { 0 }
+            $results += [PSCustomObject]@{ Check = 'Forest Functional Level'; Result = ('{0} ({1})' -f $ffl, (Get-FFLText $ffl)); Status = if ($ffl -ge $FOREST_LEVEL2012R2) { 'OK' } else { 'WARN' } }
+
+            $exOrg = try { Get-ExchangeOrganization } catch { $null }
+            $results += [PSCustomObject]@{ Check = 'Exchange Organization'; Result = if ($exOrg) { $exOrg } else { $State['OrganizationName'] }; Status = 'INFO' }
+        }
+
+        # Disk allocation unit sizes
+        Get-Volume | Where-Object { $_.DriveLetter -and $_.FileSystem -eq 'NTFS' } | ForEach-Object {
+            $auOk = ($_.AllocationUnitSize -eq 65536 -or -not $_.AllocationUnitSize)
+            $results += [PSCustomObject]@{ Check = ('Drive {0}: Allocation Unit' -f $_.DriveLetter); Result = ('{0} bytes' -f $_.AllocationUnitSize); Status = if ($auOk) { 'OK' } else { 'WARN' } }
+        }
+
+        # Server Core
+        $isCore = Test-ServerCore
+        $results += [PSCustomObject]@{ Check = 'Server Core'; Result = $isCore; Status = 'INFO' }
+
+        # Source server connectivity (if CopyServerConfig specified)
+        if ($State['CopyServerConfig']) {
+            $sourceReachable = Test-Connection -ComputerName $State['CopyServerConfig'] -Count 1 -Quiet -ErrorAction SilentlyContinue
+            $results += [PSCustomObject]@{ Check = ('Source Server {0} Reachable' -f $State['CopyServerConfig']); Result = $sourceReachable; Status = if ($sourceReachable) { 'OK' } else { 'FAIL' } }
+        }
+
+        # Generate HTML report
+        $reportPath = Join-Path $State['InstallPath'] ('PreflightReport_{0}.html' -f $env:COMPUTERNAME)
+        $failCount = ($results | Where-Object { $_.Status -eq 'FAIL' }).Count
+        $warnCount = ($results | Where-Object { $_.Status -eq 'WARN' }).Count
+        $statusColor = if ($failCount -gt 0) { '#dc3545' } elseif ($warnCount -gt 0) { '#ffc107' } else { '#28a745' }
+
+        $htmlRows = $results | ForEach-Object {
+            $color = switch ($_.Status) { 'OK' { '#d4edda' } 'FAIL' { '#f8d7da' } 'WARN' { '#fff3cd' } default { '#d1ecf1' } }
+            '<tr style="background-color:{0}"><td>{1}</td><td>{2}</td><td><strong>{3}</strong></td></tr>' -f $color, $_.Check, $_.Result, $_.Status
+        }
+
+        $html = @"
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Exchange Pre-Flight Report</title>
+<style>body{font-family:Segoe UI,sans-serif;margin:20px}table{border-collapse:collapse;width:100%}
+th,td{padding:8px 12px;border:1px solid #ddd;text-align:left}th{background:#343a40;color:#fff}
+h1{color:#333}.summary{padding:10px;color:#fff;border-radius:4px;margin-bottom:20px}</style></head>
+<body><h1>Exchange Server Pre-Flight Validation Report</h1>
+<div class="summary" style="background-color:$statusColor">
+<strong>Computer:</strong> $env:COMPUTERNAME | <strong>Date:</strong> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') |
+<strong>Failures:</strong> $failCount | <strong>Warnings:</strong> $warnCount</div>
+<table><tr><th>Check</th><th>Result</th><th>Status</th></tr>
+$($htmlRows -join "`n")
+</table></body></html>
+"@
+        $html | Out-File $reportPath -Encoding utf8
+        Write-MyOutput ('Pre-Flight Report saved to {0}' -f $reportPath)
+        return $failCount
+    }
+
+    function Export-SourceServerConfig {
+        param([string]$SourceServer)
+        Write-MyOutput ('Exporting configuration from source server {0}' -f $SourceServer)
+        $configPath = Join-Path $State['InstallPath'] ('ServerConfig_{0}.xml' -f $SourceServer)
+
+        try {
+            $session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri ('http://{0}/PowerShell/' -f $SourceServer) -Authentication Kerberos -ErrorAction Stop
+            Write-MyVerbose ('Connected to {0} via Remote PowerShell' -f $SourceServer)
+        }
+        catch {
+            Write-MyError ('Failed to connect to source server {0}: {1}' -f $SourceServer, $_.Exception.Message)
+            exit $ERR_SOURCESERVERCONNECT
+        }
+
+        $config = @{}
+        try {
+            Write-MyVerbose 'Exporting Receive Connectors'
+            $config['ReceiveConnectors'] = Invoke-Command -Session $session -ScriptBlock {
+                Get-ReceiveConnector -Server $using:SourceServer | Select-Object Name, Bindings, RemoteIPRanges, PermissionGroups, AuthMechanism, Enabled, TransportRole, Fqdn, Banner, MaxMessageSize, MaxRecipientsPerMessage
+            }
+
+            Write-MyVerbose 'Exporting Send Connectors'
+            $config['SendConnectors'] = Invoke-Command -Session $session -ScriptBlock {
+                Get-SendConnector | Select-Object Name, AddressSpaces, SmartHosts, SourceTransportServers, Enabled, DNSRoutingEnabled, MaxMessageSize, Fqdn
+            }
+
+            Write-MyVerbose 'Exporting Transport Service configuration'
+            $config['TransportService'] = Invoke-Command -Session $session -ScriptBlock {
+                Get-TransportService -Identity $using:SourceServer | Select-Object MaxConcurrentMailboxDeliveries, MaxConcurrentMailboxSubmissions, MaxConnectionRatePerMinute, MaxOutboundConnections, MaxPerDomainOutboundConnections, ReceiveProtocolLogPath, SendProtocolLogPath, ConnectivityLogPath, MessageTrackingLogPath
+            }
+
+            Write-MyVerbose 'Exporting Virtual Directory URLs'
+            $config['OwaVDir'] = Invoke-Command -Session $session -ScriptBlock { Get-OwaVirtualDirectory -Server $using:SourceServer | Select-Object InternalUrl, ExternalUrl }
+            $config['EcpVDir'] = Invoke-Command -Session $session -ScriptBlock { Get-EcpVirtualDirectory -Server $using:SourceServer | Select-Object InternalUrl, ExternalUrl }
+            $config['EwsVDir'] = Invoke-Command -Session $session -ScriptBlock { Get-WebServicesVirtualDirectory -Server $using:SourceServer | Select-Object InternalUrl, ExternalUrl }
+            $config['EasVDir'] = Invoke-Command -Session $session -ScriptBlock { Get-ActiveSyncVirtualDirectory -Server $using:SourceServer | Select-Object InternalUrl, ExternalUrl }
+            $config['OabVDir'] = Invoke-Command -Session $session -ScriptBlock { Get-OabVirtualDirectory -Server $using:SourceServer | Select-Object InternalUrl, ExternalUrl }
+            $config['MapiVDir'] = Invoke-Command -Session $session -ScriptBlock { Get-MapiVirtualDirectory -Server $using:SourceServer | Select-Object InternalUrl, ExternalUrl }
+            $config['AutodiscoverVDir'] = Invoke-Command -Session $session -ScriptBlock { Get-ClientAccessServer -Identity $using:SourceServer -ErrorAction SilentlyContinue | Select-Object AutoDiscoverServiceInternalUri }
+            $config['OutlookAnywhere'] = Invoke-Command -Session $session -ScriptBlock { Get-OutlookAnywhere -Server $using:SourceServer | Select-Object InternalHostname, ExternalHostname, InternalClientsRequireSsl, ExternalClientsRequireSsl, InternalClientAuthenticationMethod, ExternalClientAuthenticationMethod }
+
+            Write-MyVerbose 'Exporting Mailbox Database info (informational)'
+            $config['MailboxDatabases'] = Invoke-Command -Session $session -ScriptBlock {
+                Get-MailboxDatabase -Server $using:SourceServer -Status | Select-Object Name, EdbFilePath, LogFolderPath, ProhibitSendQuota, ProhibitSendReceiveQuota, IssueWarningQuota, CircularLoggingEnabled, DeletedItemRetention, MailboxRetention
+            }
+
+            Write-MyVerbose 'Exporting Certificate info (informational)'
+            $config['Certificates'] = Invoke-Command -Session $session -ScriptBlock {
+                Get-ExchangeCertificate -Server $using:SourceServer | Select-Object Thumbprint, Subject, Services, NotAfter, Status
+            }
+
+            Write-MyVerbose 'Exporting Throttling Policies (informational)'
+            $config['ThrottlingPolicies'] = Invoke-Command -Session $session -ScriptBlock {
+                Get-ThrottlingPolicy | Where-Object { $_.IsDefault -eq $false } | Select-Object Name, EwsMaxConcurrency, EwsMaxSubscriptions, RcaMaxConcurrency, OwaMaxConcurrency
+            }
+        }
+        catch {
+            Write-MyError ('Error during config export: {0}' -f $_.Exception.Message)
+            Remove-PSSession $session -ErrorAction SilentlyContinue
+            exit $ERR_CONFIGEXPORTFAILED
+        }
+        finally {
+            Remove-PSSession $session -ErrorAction SilentlyContinue
+        }
+
+        try {
+            Export-Clixml -InputObject $config -Path $configPath -ErrorAction Stop
+        }
+        catch {
+            Write-MyError ('Failed to save config export file: {0}' -f $_.Exception.Message)
+            exit $ERR_CONFIGEXPORTFAILED
+        }
+        $State['ServerConfigExportPath'] = $configPath
+        Write-MyOutput ('Server configuration exported to {0}' -f $configPath)
+    }
+
+    function Import-ServerConfig {
+        $configPath = $State['ServerConfigExportPath']
+        if (-not $configPath -or -not (Test-Path $configPath)) {
+            Write-MyWarning 'No server configuration export found, skipping import'
+            return
+        }
+
+        Write-MyOutput ('Importing server configuration from {0}' -f $configPath)
+        $config = Import-Clixml -Path $configPath
+
+        $localServer = $env:COMPUTERNAME
+
+        # Import Virtual Directory URLs
+        $vdirMappings = @(
+            @{ Name = 'OWA'; Key = 'OwaVDir'; Cmd = 'Set-OwaVirtualDirectory' }
+            @{ Name = 'ECP'; Key = 'EcpVDir'; Cmd = 'Set-EcpVirtualDirectory' }
+            @{ Name = 'EWS'; Key = 'EwsVDir'; Cmd = 'Set-WebServicesVirtualDirectory' }
+            @{ Name = 'ActiveSync'; Key = 'EasVDir'; Cmd = 'Set-ActiveSyncVirtualDirectory' }
+            @{ Name = 'OAB'; Key = 'OabVDir'; Cmd = 'Set-OabVirtualDirectory' }
+            @{ Name = 'MAPI'; Key = 'MapiVDir'; Cmd = 'Set-MapiVirtualDirectory' }
+        )
+
+        foreach ($vdir in $vdirMappings) {
+            if ($config[$vdir.Key]) {
+                try {
+                    $srcVDir = $config[$vdir.Key]
+                    $identity = '{0}\{1} (Default Web Site)' -f $localServer, $vdir.Name.ToLower()
+                    # Verify the virtual directory exists before attempting to set it
+                    $getCmd = $vdir.Cmd -replace '^Set-', 'Get-'
+                    $existing = & $getCmd -Identity $identity -ErrorAction SilentlyContinue
+                    if ($null -eq $existing) {
+                        Write-MyWarning ('{0} virtual directory not found at {1}, skipping' -f $vdir.Name, $identity)
+                        continue
+                    }
+                    $params = @{ Identity = $identity }
+                    if ($srcVDir.InternalUrl) { $params['InternalUrl'] = $srcVDir.InternalUrl.ToString() }
+                    if ($srcVDir.ExternalUrl) { $params['ExternalUrl'] = $srcVDir.ExternalUrl.ToString() }
+                    & $vdir.Cmd @params -ErrorAction Stop
+                    Write-MyVerbose ('Configured {0} virtual directory URLs' -f $vdir.Name)
+                }
+                catch {
+                    Write-MyWarning ('Failed to configure {0} virtual directory: {1}' -f $vdir.Name, $_.Exception.Message)
+                }
+            }
+        }
+
+        # Import Outlook Anywhere settings
+        if ($config['OutlookAnywhere']) {
+            try {
+                $oa = $config['OutlookAnywhere']
+                $params = @{ Identity = ('{0}\Rpc (Default Web Site)' -f $localServer) }
+                if ($oa.InternalHostname) { $params['InternalHostname'] = $oa.InternalHostname.ToString() }
+                if ($oa.ExternalHostname) { $params['ExternalHostname'] = $oa.ExternalHostname.ToString() }
+                if ($oa.InternalClientsRequireSsl -ne $null) { $params['InternalClientsRequireSsl'] = $oa.InternalClientsRequireSsl }
+                if ($oa.ExternalClientsRequireSsl -ne $null) { $params['ExternalClientsRequireSsl'] = $oa.ExternalClientsRequireSsl }
+                Set-OutlookAnywhere @params -ErrorAction Stop
+                Write-MyVerbose 'Configured Outlook Anywhere settings'
+            }
+            catch {
+                Write-MyWarning ('Failed to configure Outlook Anywhere: {0}' -f $_.Exception.Message)
+            }
+        }
+
+        # Import Autodiscover SCP
+        if ($config['AutodiscoverVDir'] -and $config['AutodiscoverVDir'].AutoDiscoverServiceInternalUri) {
+            try {
+                Set-ClientAccessServer -Identity $localServer -AutoDiscoverServiceInternalUri $config['AutodiscoverVDir'].AutoDiscoverServiceInternalUri.ToString() -ErrorAction Stop
+                Write-MyVerbose 'Configured Autodiscover Service Internal URI'
+            }
+            catch {
+                Write-MyWarning ('Failed to configure Autodiscover URI: {0}' -f $_.Exception.Message)
+            }
+        }
+
+        # Import Transport Service settings
+        if ($config['TransportService']) {
+            try {
+                $ts = $config['TransportService']
+                Set-TransportService -Identity $localServer -MaxConcurrentMailboxDeliveries $ts.MaxConcurrentMailboxDeliveries -MaxConcurrentMailboxSubmissions $ts.MaxConcurrentMailboxSubmissions -MaxOutboundConnections $ts.MaxOutboundConnections -MaxPerDomainOutboundConnections $ts.MaxPerDomainOutboundConnections -ErrorAction Stop
+                Write-MyVerbose 'Configured Transport Service settings'
+            }
+            catch {
+                Write-MyWarning ('Failed to configure Transport Service: {0}' -f $_.Exception.Message)
+            }
+        }
+
+        # Import Receive Connectors
+        if ($config['ReceiveConnectors']) {
+            foreach ($rc in $config['ReceiveConnectors']) {
+                try {
+                    # Skip default connectors (they are created by setup)
+                    $existing = Get-ReceiveConnector -Server $localServer -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $rc.Name }
+                    if ($existing) {
+                        Write-MyVerbose ('Receive Connector {0} already exists, updating' -f $rc.Name)
+                        Set-ReceiveConnector -Identity $existing.Identity -MaxMessageSize $rc.MaxMessageSize -ErrorAction Stop
+                    }
+                    else {
+                        Write-MyVerbose ('Creating Receive Connector {0}' -f $rc.Name)
+                        New-ReceiveConnector -Name $rc.Name -Server $localServer -Bindings $rc.Bindings -RemoteIPRanges $rc.RemoteIPRanges -PermissionGroups $rc.PermissionGroups -AuthMechanism $rc.AuthMechanism -TransportRole $rc.TransportRole -ErrorAction Stop
+                    }
+                }
+                catch {
+                    Write-MyWarning ('Failed to configure Receive Connector {0}: {1}' -f $rc.Name, $_.Exception.Message)
+                }
+            }
+        }
+
+        # Log informational items
+        if ($config['MailboxDatabases']) {
+            Write-MyOutput 'Source server Mailbox Database configuration (for reference):'
+            $config['MailboxDatabases'] | ForEach-Object {
+                Write-MyOutput ('  DB: {0} | Path: {1} | ProhibitSend: {2} | CircularLog: {3}' -f $_.Name, $_.EdbFilePath, $_.ProhibitSendQuota, $_.CircularLoggingEnabled)
+            }
+        }
+
+        if ($config['Certificates']) {
+            Write-MyOutput 'Source server certificates (for reference):'
+            $config['Certificates'] | ForEach-Object {
+                Write-MyOutput ('  Cert: {0} | Services: {1} | Expires: {2}' -f $_.Subject, $_.Services, $_.NotAfter)
+            }
+        }
+
+        Write-MyOutput 'Server configuration import completed'
+    }
+
+    function Import-ExchangeCertificateFromPFX {
+        if (-not $State['CertificatePath'] -or -not $State['CertificatePassword']) {
+            Write-MyVerbose 'No certificate import requested'
+            return
+        }
+
+        $pfxPath = $State['CertificatePath']
+        if (-not (Test-Path $pfxPath)) {
+            Write-MyError ('PFX file not found: {0}' -f $pfxPath)
+            return
+        }
+
+        Write-MyOutput ('Importing certificate from {0}' -f $pfxPath)
+        try {
+            $secPwd = ConvertTo-SecureString $State['CertificatePassword']
+            $cert = Import-ExchangeCertificate -FileData ([System.IO.File]::ReadAllBytes($pfxPath)) -Password $secPwd -PrivateKeyExportable $true -ErrorAction Stop
+            Write-MyOutput ('Certificate imported: {0} (Thumbprint: {1})' -f $cert.Subject, $cert.Thumbprint)
+
+            Enable-ExchangeCertificate -Thumbprint $cert.Thumbprint -Services IIS, SMTP -Force -ErrorAction Stop
+            Write-MyOutput ('Certificate enabled for IIS and SMTP services')
+        }
+        catch {
+            Write-MyError ('Failed to import/enable certificate: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Join-DAG {
+        if (-not $State['DAGName']) {
+            return
+        }
+
+        Write-MyOutput ('Joining Database Availability Group: {0}' -f $State['DAGName'])
+
+        # Ensure Exchange module is loaded
+        Import-ExchangeModule
+
+        try {
+            $dag = Get-DatabaseAvailabilityGroup -Identity $State['DAGName'] -ErrorAction Stop
+            if ($null -eq $dag) {
+                Write-MyError ('DAG {0} not found' -f $State['DAGName'])
+                exit $ERR_DAGJOIN
+            }
+            if ($dag.Servers -contains $env:COMPUTERNAME) {
+                Write-MyOutput ('Server {0} is already a member of DAG {1}' -f $env:COMPUTERNAME, $State['DAGName'])
+                return
+            }
+
+            Add-DatabaseAvailabilityGroupServer -Identity $State['DAGName'] -MailboxServer $env:COMPUTERNAME -ErrorAction Stop
+            Write-MyOutput ('Successfully joined DAG {0}' -f $State['DAGName'])
+        }
+        catch {
+            Write-MyError ('Failed to join DAG {0}: {1}' -f $State['DAGName'], $_.Exception.Message)
+            exit $ERR_DAGJOIN
+        }
+    }
+
+    function Invoke-HealthChecker {
+        if ($State['SkipHealthCheck']) {
+            Write-MyVerbose 'SkipHealthCheck specified, skipping HealthChecker'
+            return
+        }
+
+        Write-MyOutput 'Running CSS-Exchange HealthChecker'
+        $hcPath = Join-Path $State['InstallPath'] 'HealthChecker.ps1'
+        $hcUrl = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/HealthChecker.ps1'
+
+        # Download if not present
+        if (-not (Test-Path $hcPath)) {
+            $downloaded = $false
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                try {
+                    Write-MyVerbose ('Downloading HealthChecker from {0} (attempt {1}/3)' -f $hcUrl, $attempt)
+                    Start-BitsTransfer -Source $hcUrl -Destination $hcPath -ErrorAction Stop
+                    $downloaded = $true
+                    break
+                }
+                catch {
+                    if ($attempt -eq 3) {
+                        try {
+                            Invoke-WebRequest -Uri $hcUrl -OutFile $hcPath -UseBasicParsing -ErrorAction Stop
+                            $downloaded = $true
+                        }
+                        catch {
+                            Write-MyWarning ('Could not download HealthChecker after 3 attempts: {0}' -f $_.Exception.Message)
+                        }
+                    }
+                    else {
+                        Start-Sleep -Seconds ($attempt * 5)
+                    }
+                }
+            }
+            if ($downloaded -and (Test-Path $hcPath)) {
+                $hash = (Get-FileHash -Path $hcPath -Algorithm SHA256).Hash
+                Write-MyVerbose ('HealthChecker downloaded, SHA256: {0}' -f $hash)
+            }
+            elseif (-not $downloaded) {
+                return
+            }
+        }
+
+        if (Test-Path $hcPath) {
+            try {
+                & $hcPath -OutputFilePath $State['InstallPath'] -SkipVersionCheck
+                Write-MyOutput ('HealthChecker output saved to {0}' -f $State['InstallPath'])
+            }
+            catch {
+                Write-MyWarning ('HealthChecker execution failed: {0}' -f $_.Exception.Message)
+            }
+        }
+    }
+
     function Cleanup {
         Write-MyOutput "Cleaning up .."
 
@@ -2016,9 +2544,15 @@ process {
 
     function Enable-HighPerformancePowerPlan {
         Write-MyVerbose 'Configuring Power Plan'
-        $null = Start-Process -FilePath 'powercfg.exe' -ArgumentList ('/setactive', '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c') -NoNewWindow -PassThru -Wait
         $CurrentPlan = Get-CimInstance -Namespace root/cimv2/power -ClassName Win32_PowerPlan | Where-Object { $_.IsActive }
-        Write-MyOutput "Power Plan active: $($CurrentPlan.ElementName)"
+        if ($CurrentPlan.InstanceID -match '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c') {
+            Write-MyVerbose 'High Performance power plan already active'
+        }
+        else {
+            $null = Start-Process -FilePath 'powercfg.exe' -ArgumentList ('/setactive', '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c') -NoNewWindow -PassThru -Wait
+            $CurrentPlan = Get-CimInstance -Namespace root/cimv2/power -ClassName Win32_PowerPlan | Where-Object { $_.IsActive }
+            Write-MyOutput "Power Plan active: $($CurrentPlan.ElementName)"
+        }
     }
 
     function Disable-NICPowerManagement {
@@ -2078,11 +2612,22 @@ process {
     }
 
     function Set-TCPSettings {
-        Write-MyOutput 'Setting RPC Timeout to 120 seconds'
-        Set-RegistryValue -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\RPC' -Name 'MinimumConnectionTimeout' -Value 120
-
-        Write-MyOutput 'Setting Keep-Alive Timeout to 15 minutes'
-        Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 900000
+        $currentRPC = (Get-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\RPC' -Name 'MinimumConnectionTimeout' -ErrorAction SilentlyContinue).MinimumConnectionTimeout
+        if ($currentRPC -eq 120) {
+            Write-MyVerbose 'RPC Timeout already set to 120 seconds'
+        }
+        else {
+            Write-MyOutput 'Setting RPC Timeout to 120 seconds'
+            Set-RegistryValue -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\RPC' -Name 'MinimumConnectionTimeout' -Value 120
+        }
+        $currentKA = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -ErrorAction SilentlyContinue).KeepAliveTime
+        if ($currentKA -eq 900000) {
+            Write-MyVerbose 'Keep-Alive Timeout already set to 15 minutes'
+        }
+        else {
+            Write-MyOutput 'Setting Keep-Alive Timeout to 15 minutes'
+            Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 900000
+        }
     }
 
     function Disable-SMBv1 {
@@ -2436,9 +2981,14 @@ process {
                 Write-MyVerbose 'Enabling TLS 1.3 and configuring .NET Framework strong crypto'
                 Set-NetFrameworkStrongCrypto
                 Set-SchannelProtocol -Protocol 'TLS 1.3' -Enable $true
-                # Configure the TLS 1.3 cipher suites
-                Enable-TlsCipherSuite -Name TLS_AES_256_GCM_SHA384 -Position 0
-                Enable-TlsCipherSuite -Name TLS_AES_128_GCM_SHA256 -Position 1
+                # Configure the TLS 1.3 cipher suites (cmdlet requires WS2022+)
+                if (Get-Command Enable-TlsCipherSuite -ErrorAction SilentlyContinue) {
+                    Enable-TlsCipherSuite -Name TLS_AES_256_GCM_SHA384 -Position 0
+                    Enable-TlsCipherSuite -Name TLS_AES_128_GCM_SHA256 -Position 1
+                }
+                else {
+                    Write-MyWarning 'Enable-TlsCipherSuite cmdlet not available on this OS, skipping TLS 1.3 cipher suite configuration'
+                }
             }
             else {
                 Write-MyVerbose 'Disabling TLS 1.3'
@@ -2666,7 +3216,12 @@ process {
             Write-MyVerbose "Cleaning up $($Global:BackgroundJobs.Count) background job(s)..."
             foreach ($Job in $Global:BackgroundJobs) {
                 if ($Job.State -eq 'Running') {
-                    Stop-Job -Job $Job -ErrorAction SilentlyContinue
+                    # Wait up to 30 seconds for job to finish gracefully
+                    $null = $Job | Wait-Job -Timeout 30 -ErrorAction SilentlyContinue
+                    if ($Job.State -eq 'Running') {
+                        Write-MyWarning ('Background job {0} (ID {1}) did not finish within 30 seconds, forcing stop' -f $Job.Name, $Job.Id)
+                        Stop-Job -Job $Job -ErrorAction SilentlyContinue
+                    }
                 }
                 $JobOutput = Receive-Job -Job $Job
                 Write-MyVerbose ('Cleanup background job: {0} (ID {1}), Output {2}' -f $Job.Name, $Job.Id, $JobOutput)
@@ -2764,6 +3319,21 @@ process {
         $State["EdgeDNSSuffix"] = $EdgeDNSSuffix
         $State["InstallPath"] = $InstallPath
         $State["TranscriptFile"] = "$($State["InstallPath"])\$($env:computerName)_$($ScriptName)_$(Get-Date -Format "yyyyMMddHHmmss").log"
+        $State["PreflightOnly"] = $PreflightOnly
+        $State["CopyServerConfig"] = $CopyServerConfig
+        $State["CertificatePath"] = $CertificatePath
+        $State["CertificatePassword"] = $null
+        $State["DAGName"] = $DAGName
+        $State["SkipHealthCheck"] = $SkipHealthCheck
+        $State["NoCheckpoint"] = $NoCheckpoint
+        $State["ServerConfigExportPath"] = $null
+
+        # Prompt for PFX password at startup if certificate path specified
+        if ($CertificatePath) {
+            Write-MyOutput 'Certificate import requested, prompting for PFX password'
+            $pfxPwd = Read-Host -Prompt 'Enter PFX password' -AsSecureString
+            $State["CertificatePassword"] = ($pfxPwd | ConvertFrom-SecureString)
+        }
 
         # Store Server Manager state
         $State['DoNotOpenServerManagerAtLogon'] = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\ServerManager' -Name DoNotOpenServerManagerAtLogon -ErrorAction SilentlyContinue).DoNotOpenServerManagerAtLogon
@@ -2814,6 +3384,17 @@ process {
         Start-Sleep -Seconds $COUNTDOWN_TIMER
     }
 
+    # Generate Pre-Flight Report
+    New-Item -Path $State['InstallPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+    $preflightFailures = New-PreflightReport
+    if ($State['PreflightOnly']) {
+        Write-MyOutput 'PreflightOnly mode - exiting after report generation'
+        if ($preflightFailures -gt 0) {
+            Write-MyWarning ('{0} preflight check(s) failed - review the report' -f $preflightFailures)
+        }
+        exit $ERR_OK
+    }
+
     Test-Preflight
 
     Write-MyVerbose "Logging to $($State["TranscriptFile"])"
@@ -2840,6 +3421,17 @@ process {
 
         Write-MyVerbose 'Disabling Server Manager at logon'
         New-ItemProperty -Path 'HKCU:\Software\Microsoft\ServerManager' -Name DoNotOpenServerManagerAtLogon -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+
+        # Create System Restore checkpoint before each phase
+        if (-not $State['NoCheckpoint']) {
+            try {
+                Checkpoint-Computer -Description ('Exchange Install Phase {0}' -f $State['InstallPhase']) -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+                Write-MyOutput ('System Restore checkpoint created for Phase {0}' -f $State['InstallPhase'])
+            }
+            catch {
+                Write-MyWarning ('Could not create System Restore checkpoint: {0}' -f $_.Exception.Message)
+            }
+        }
 
         switch ($State["InstallPhase"]) {
             1 {
@@ -2877,6 +3469,10 @@ process {
                 }
                 Write-MyOutput "Installing Operating System prerequisites"
                 Install-WindowsFeatures $MajorOSVersion
+
+                if ($State['CopyServerConfig']) {
+                    Export-SourceServerConfig $State['CopyServerConfig']
+                }
             }
 
             2 {
@@ -3058,6 +3654,16 @@ process {
                     }
 
                 }
+
+                # Import server configuration from source server
+                if ($State['CopyServerConfig'] -and $State['ServerConfigExportPath']) {
+                    Import-ServerConfig
+                }
+
+                # Import PFX certificate
+                if ($State['CertificatePath']) {
+                    Import-ExchangeCertificateFromPFX
+                }
             }
 
             6 {
@@ -3072,6 +3678,12 @@ process {
 
                 Enable-MSExchangeAutodiscoverAppPool
 
+                # Join Database Availability Group
+                if ($State['DAGName']) {
+                    Import-ExchangeModule
+                    Join-DAG
+                }
+
                 Write-MyVerbose 'Restoring Server Manager startup configuration'
                 if ( $State['DoNotOpenServerManagerAtLogon']) {
                     New-ItemProperty -Path 'HKCU:\Software\Microsoft\ServerManager' -Name DoNotOpenServerManagerAtLogon -Value $State['DoNotOpenServerManagerAtLogon'] -Force -ErrorAction SilentlyContinue | Out-Null
@@ -3080,19 +3692,32 @@ process {
                 if ( !($State['InstallEdge'])) {
                     Write-MyVerbose 'Performing Health Monitor checks..'
                     # Warmup IIS
+                    $hcPassed = 0
+                    $hcFailed = 0
                     'OWA', 'ECP', 'EWS', 'Autodiscover', 'Microsoft-Server-ActiveSync', 'OAB', 'mapi', 'rpc' | ForEach-Object {
                         $url = 'https://localhost/{0}/healthcheck.htm' -f $_
                         try {
                             $response = Invoke-WebRequest -Uri $url -SkipCertificateCheck -UseBasicParsing -ErrorAction Stop
                             Write-MyOutput ('Healthcheck {0}: {1}' -f $url, ($response.Content -split '<')[0])
+                            $script:hcPassed++
                         }
                         catch {
                             Write-MyWarning ('Healthcheck {0}: {1}' -f $url, 'ERR')
+                            $script:hcFailed++
                         }
+                    }
+                    Write-MyOutput ('Health Monitor summary: {0} passed, {1} failed out of 8 endpoints' -f $hcPassed, $hcFailed)
+                    if ($hcFailed -gt 0) {
+                        Write-MyWarning ('{0} health endpoint(s) failed - review above warnings' -f $hcFailed)
                     }
                 }
                 else {
                     Write-MyVerbose 'InstallEdge Mode, skipping IIS health monitor checks'
+                }
+
+                # Run CSS-Exchange HealthChecker
+                if (-not $State['SkipHealthCheck']) {
+                    Invoke-HealthChecker
                 }
 
                 Enable-UAC

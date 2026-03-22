@@ -9,7 +9,7 @@ of Microsoft Exchange Server 2016, 2019, and Exchange SE (Subscription Edition),
 including all prerequisites, Active Directory preparation, and post-configuration.
 
 **Author:** Michel de Rooij (michel@eightwone.com)
-**Current Version:** 4.31 (March 2026)
+**Current Version:** 5.0 (March 2026)
 **PowerShell Requirement:** `#Requires -Version 5.1`
 **Execution:** Must be run as Administrator
 
@@ -35,13 +35,13 @@ each reboot the script automatically resumes at the correct phase.
 
 | Phase | Description |
 |---|---|
-| 0 | Initialization, preflight checks, AD preparation |
-| 1 | Install Windows features, .NET Framework |
+| 0 | Initialization, preflight checks, AD preparation, pre-flight HTML report |
+| 1 | Install Windows features, .NET Framework, export source server config |
 | 2 | Wait for reboots, install prerequisites (VC++, URL Rewrite, etc.) |
 | 3 | Additional prerequisites and hotfixes |
 | 4 | Run Exchange Setup, set transport services to Manual |
-| 5 | Post-configuration (Defender exclusions, TLS, security hardening, performance tuning) |
-| 6 | Restore services, IIS health check, cleanup |
+| 5 | Post-configuration (Defender exclusions, TLS, security hardening, performance tuning), import server config, import PFX certificate |
+| 6 | Restore services, IIS health check, DAG join, HealthChecker, cleanup |
 
 ### State Management
 
@@ -169,6 +169,19 @@ Set-NodeRunnerMemoryLimit          # Search: remove memory limit (set to 0)
 Enable-MAPIFrontEndServerGC        # Performance: Server GC for 20+ GB RAM
 ```
 
+### v5.0 Features
+
+```powershell
+New-PreflightReport                              # HTML report with all preflight checks (-PreflightOnly to exit after)
+Export-SourceServerConfig $ServerName             # Export config from source Exchange server via Remote PS
+Import-ServerConfig                              # Import Virtual Dirs, Transport, Receive Connectors from export
+Import-ExchangeCertificateFromPFX                # Import PFX cert, enable for IIS+SMTP (-CertificatePath)
+Join-DAG                                         # Join server to Database Availability Group (-DAGName)
+Invoke-HealthChecker                             # Download and run CSS-Exchange HealthChecker (-SkipHealthCheck to skip)
+# System Restore checkpoints created before each phase (-NoCheckpoint to skip)
+# Set-RegistryValue now idempotent (skips if value already set)
+```
+
 ---
 
 ## Known Pitfalls & Design Decisions
@@ -273,6 +286,17 @@ Always use `$_.Exception.Message`, not `$Error[0].ExceptionMessage`
 | Performance | `Enable-MAPIFrontEndServerGC`: enable Server GC for MAPI FE (20+ GB RAM) |
 | TLS | `Set-NetFrameworkStrongCrypto`: extended to v2.0 paths (HealthChecker requirement) |
 | Bug | `Enable-MSExchangeAutodiscoverAppPool`: fixed `$Error[0]` to `$_.Exception.Message` |
+
+### 2026-03-22 — Round 6: v5.0 Major Feature Release
+| # | Change |
+|---|---|
+| Feature | `New-PreflightReport`: HTML pre-flight validation report (`-PreflightOnly`) |
+| Feature | `Export-SourceServerConfig` / `Import-ServerConfig`: copy config from source server (`-CopyServerConfig`) |
+| Feature | `Import-ExchangeCertificateFromPFX`: PFX certificate import with IIS+SMTP binding (`-CertificatePath`) |
+| Feature | `Join-DAG`: automated DAG membership (`-DAGName`) |
+| Feature | `Invoke-HealthChecker`: auto-download and run CSS-Exchange HealthChecker (`-SkipHealthCheck`) |
+| Feature | System Restore checkpoints before each phase (`-NoCheckpoint` to skip) |
+| Quality | `Set-RegistryValue`: idempotency guard (skip if value already set) |
 
 ---
 

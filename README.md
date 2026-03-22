@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 4.31 (March 2026)
+**Version:** 5.0 (March 2026)
 **License:** As-Is, without warranty
 
 ---
@@ -46,6 +46,13 @@ PowerShell script for fully unattended installation of Microsoft Exchange Server
 
 # Recover a server
 .\Install-Exchange15.ps1 -Recover -SourcePath D:\Exchange
+
+# Pre-flight report only (no installation)
+.\Install-Exchange15.ps1 -InstallMailbox -SourcePath D:\Exchange -PreflightOnly
+
+# Swing migration: copy config from source server, import PFX, join DAG
+.\Install-Exchange15.ps1 -InstallMailbox -SourcePath D:\Exchange -AutoPilot `
+    -CopyServerConfig EX01 -CertificatePath D:\certs\mail.pfx -DAGName DAG01
 ```
 
 ### Key Parameters
@@ -71,6 +78,12 @@ PowerShell script for fully unattended installation of Microsoft Exchange Server
 | `-EnableAMSI` | Enable AMSI body scanning |
 | `-NoSetup` | Install prerequisites only, skip Exchange setup |
 | `-Phase` | Start directly at a specific phase (0–6) |
+| `-PreflightOnly` | Generate HTML pre-flight report and exit |
+| `-CopyServerConfig` | Export config from source server and import after setup |
+| `-CertificatePath` | Path to PFX file for certificate import (IIS+SMTP) |
+| `-DAGName` | Join a Database Availability Group after setup |
+| `-SkipHealthCheck` | Skip CSS-Exchange HealthChecker run |
+| `-NoCheckpoint` | Skip System Restore checkpoints |
 
 ---
 
@@ -129,6 +142,17 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## Changes from Original (v4.30)
+
+### v5.0 — Major Feature Release (March 2026)
+
+**New capabilities for production deployments:**
+- **Pre-flight HTML report** (`-PreflightOnly`): generates a comprehensive validation report before starting
+- **Source server config export/import** (`-CopyServerConfig <ServerName>`): copies Virtual Directory URLs, Transport settings, Receive Connectors, Outlook Anywhere, and Autodiscover SCP from an existing Exchange server
+- **PFX certificate import** (`-CertificatePath`): imports a PFX certificate and enables it for IIS and SMTP services
+- **DAG join automation** (`-DAGName`): automatically adds the server to a Database Availability Group
+- **CSS-Exchange HealthChecker** auto-run: downloads and runs HealthChecker at the end of setup (`-SkipHealthCheck` to skip)
+- **System Restore checkpoints** before each phase (`-NoCheckpoint` to skip)
+- **Idempotency guards**: `Set-RegistryValue` now skips writes when the value is already set
 
 ### v4.31 — CSS-Exchange HealthChecker Recommendations (March 2026)
 
