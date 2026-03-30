@@ -1,4 +1,4 @@
-<#
+﻿<#
     .SYNOPSIS
     Install-Exchange15
 
@@ -30,9 +30,9 @@
     Requirements:
     - Supported Operating Systems
       - Windows Server 2016 (Exchange 2016 CU23)
-      - Windows Server 2019 (Desktop or Core, Exchange 2019 only)
-      - Windows Server 2022 (Exchange 2019 only)
-      - Windows Server 2025 (Exchange 2019 CU15+ only)
+      - Windows Server 2019 (Desktop or Core, Exchange 2019/SE)
+      - Windows Server 2022 (Exchange 2019 CU12+/SE)
+      - Windows Server 2025 (Exchange 2019 CU15+/SE)
     - Domain-joined system, except for Edge Server Role
     - "AutoPilot" mode requires account with elevated administrator privileges
     - When you let the script prepare AD, the account needs proper permissions
@@ -354,13 +354,18 @@
             - PFX certificate import with IIS+SMTP binding (-CertificatePath)
             - DAG join automation (-DAGName)
             - System Restore checkpoints before each phase (-NoCheckpoint to skip)
+            - Added Exchange Server SE RTM support (build 15.02.2562.017)
+            - Exchange SE OS compatibility check (requires WS2019+)
+            - Exchange SE coexistence warning (EX2016 must be decommissioned before SE CU2)
+            - Exchange SE RTM Feb26SU (KB5074992) in IncludeFixes
+            - Exchange SE IU registry path detection
 
     .PARAMETER Organization
     Specifies name of the Exchange organization to create. When omitted, the step
     to prepare Active Directory (PrepareAD) will be skipped.
 
     .PARAMETER InstallEdge
-    Specifies you want to install the Edge server role  (Exchange 2013/2016/2019).
+    Specifies you want to install the Edge server role  (Exchange 2016/2019/SE).
 
     .PARAMETER EdgeDNSSuffix
     Specifies the DNS suffix you want to use on your EDGE
@@ -1584,7 +1589,12 @@ process {
                                     $IUPath = 'Exchange 2016'
                                 }
                                 default {
-                                    $IUPath = 'Exchange 2019'
+                                    if ([System.Version]$State['SetupVersion'] -ge [System.Version]$EXSESETUPEXE_RTM) {
+                                        $IUPath = 'Exchange SE'
+                                    }
+                                    else {
+                                        $IUPath = 'Exchange 2019'
+                                    }
                                 }
                             }
                             $PresenceKey = (Get-ItemProperty -Path ('HKLM:\Software\Microsoft\Updates\{0}\{1}' -f $IUPath, $ID) -Name 'PackageName' -ErrorAction SilentlyContinue).PackageName
@@ -1916,7 +1926,7 @@ process {
             exit $ERR_UNSUPPORTEDEX
         }
 
-        if ( [System.Version]$SetupVersion -ge $EX2019SETUPEXE_CU15) {
+        if ( [System.Version]$SetupVersion -ge [System.Version]$EX2019SETUPEXE_CU15) {
             $Ex2013Exists = Get-ExchangeServerObjects | Where-Object { $_.serialNumber[0] -like 'Version 15.0*' }
             if ( $Ex2013Exists) {
                 Write-MyError ('Exchange 2013 detected: {0}. Exchange 2019 CU15 or later cannot co-exist with Exchange 2013' -f ($Ex2013Exists | Select-Object Name) -join ',')
@@ -1924,18 +1934,31 @@ process {
             }
         }
 
+        # Exchange SE coexistence: SE RTM/CU1 supports EX2016 CU23 and EX2019 CU14+, but SE CU2+ does not
+        if ( [System.Version]$SetupVersion -ge [System.Version]$EXSESETUPEXE_RTM) {
+            $Ex2016Exists = Get-ExchangeServerObjects | Where-Object { $_.serialNumber[0] -like 'Version 15.1*' }
+            if ( $Ex2016Exists) {
+                Write-MyWarning ('Exchange 2016 server(s) detected: {0}. Exchange SE RTM/CU1 supports coexistence with Exchange 2016 CU23, but SE CU2+ will not. Plan decommissioning.' -f (($Ex2016Exists | Select-Object -ExpandProperty Name) -join ', '))
+            }
+        }
+
         if ( [System.Version]$FullOSVersion -ge $WS2025_PREFULL -and [System.Version]$SetupVersion -lt $EX2019SETUPEXE_CU15) {
-            Write-MyError 'Windows Server 2025 is only supported for Exchange 2019 CU15 or later.'
+            Write-MyError 'Windows Server 2025 is only supported for Exchange 2019 CU15 or later, or Exchange Server SE'
             exit $ERR_UNEXPECTEDOS
         }
 
-        if ( [System.Version]$FullOSVersion -lt $WS2019_PREFULL -and [System.Version]$MajorSetupVersion -lt [System.Version]$EX2019_MAJOR) {
-            Write-MyError 'Exchange 2019/SE is only supported on Windows Server 2019, Windows Server 2022 or Windows Server 2025 (CU15+)'
+        if ( [System.Version]$SetupVersion -ge [System.Version]$EXSESETUPEXE_RTM -and [System.Version]$FullOSVersion -lt $WS2019_PREFULL) {
+            Write-MyError 'Exchange Server SE requires Windows Server 2019, Windows Server 2022 or Windows Server 2025'
+            exit $ERR_UNEXPECTEDOS
+        }
+
+        if ( [System.Version]$FullOSVersion -lt [System.Version]$WS2016_MAJOR -and $MajorSetupVersion -eq $EX2016_MAJOR) {
+            Write-MyError 'Exchange 2016 requires Windows Server 2016 or later'
             exit $ERR_UNEXPECTEDOS
         }
 
         if ( [System.Version]$FullOSVersion -ge $WS2022_PREFULL -and [System.Version]$FullOSVersion -lt $WS2025_PREFULL -and [System.Version]$SetupVersion -lt $EX2019SETUPEXE_CU12) {
-            Write-MyError 'Windows Server 2022 is only supported for Exchange Server 2019 CU12 or later'
+            Write-MyError 'Windows Server 2022 is only supported for Exchange Server 2019 CU12 or later, or Exchange Server SE'
             exit $ERR_UNEXPECTEDOS
         }
 
@@ -2086,7 +2109,7 @@ process {
             $FFL = Get-ForestFunctionalLevel
             if ( $MajorVersion -eq $EX2019_MAJOR) {
                 if ( $FFL -lt $FOREST_LEVEL2012R2) {
-                    Write-MyError ('Exchange Server 2019 or later requires Forest Functionality Level 2012R2 ({0}).' -f $FFL)
+                    Write-MyError ('Exchange Server 2019/SE requires Forest Functionality Level 2012R2 ({0}).' -f $FFL)
                     exit $ERR_ADFORESTLEVEL
                 }
                 else {
@@ -3639,6 +3662,9 @@ $($htmlRows -join "`n")
                     Write-MyVerbose ('Installed Exchange MSExchangeIS version {0}' -f $ImagePathVersion)
 
                     switch ( $State['ExSetupVersion']) {
+                        $EXSESETUPEXE_RTM {
+                            Install-MyPackage 'KB5074992' 'Security Update For Exchange Server SE RTM Feb26SU' 'ExchangeSE-KB5074992-x64-en.exe' 'https://download.microsoft.com/download/f/0/3/f03a5dab-40cd-44c4-97d4-2cee29064561/ExchangeSE-KB5074992-x64-en.exe' ('/passive')
+                        }
                         $EX2019SETUPEXE_CU14 {
                             Install-MyPackage 'KB5049233' 'Security Update For Exchange Server 2019 CU14 SU3 V2' 'Exchange2019-KB5049233-x64-en.exe' 'https://download.microsoft.com/download/8/0/b/80b356e4-f7b1-4e11-9586-d3132a7a2fc3/Exchange2019-KB5049233-x64-en.exe' ('/passive')
                         }
@@ -3757,3 +3783,4 @@ $($htmlRows -join "`n")
     exit $ERR_OK
 
 } #Process
+
