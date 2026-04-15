@@ -8,8 +8,8 @@
 of Microsoft Exchange Server 2016, 2019, and Exchange SE (Subscription Edition),
 including all prerequisites, Active Directory preparation, and post-configuration.
 
-**Author:** Michel de Rooij (michel@eightwone.com)
-**Current Version:** 5.0 (March 2026)
+**Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com)
+**Current Version:** 5.1 (April 2026)
 **PowerShell Requirement:** `#Requires -Version 5.1`
 **Execution:** Must be run as Administrator
 
@@ -72,14 +72,19 @@ $PSExe = (Get-Process -Id $PID).Path   # powershell.exe or pwsh.exe
 ```powershell
 # OS versions (build prefix)
 $WS2016_MAJOR   = '10.0'
-$WS2019_PREFULL = '10.0.17709'
+$WS2019_PREFULL = '10.0.17709'   # WS2019 pre-RTM threshold (RTM = 10.0.17763)
 $WS2022_PREFULL = '10.0.20348'
 $WS2025_PREFULL = '10.0.26100'   # IMPORTANT: was incorrectly '10.0.20348' (= WS2022)
 
 # Exchange Setup versions (ExSetup.exe)
-$EX2016SETUPEXE_CU23    = '15.01.2507.006'
-$EX2019SETUPEXE_CU10-15 = '15.02.xxxx.xxx'
-$EXSESETUPEXE_RTM       = '15.02.2562.017'
+$EX2016SETUPEXE_CU23 = '15.01.2507.006'
+$EX2019SETUPEXE_CU10 = '15.02.0922.007'
+$EX2019SETUPEXE_CU11 = '15.02.0986.005'
+$EX2019SETUPEXE_CU12 = '15.02.1118.007'
+$EX2019SETUPEXE_CU13 = '15.02.1258.012'
+$EX2019SETUPEXE_CU14 = '15.02.1544.004'
+$EX2019SETUPEXE_CU15 = '15.02.1748.008'
+$EXSESETUPEXE_RTM    = '15.02.2562.017'
 
 # .NET Framework
 $NETVERSION_48  = 528040
@@ -112,7 +117,8 @@ AD Forest/Domain level, static IP, roles, organization name, setup path.
 ### Package Installation
 
 ```powershell
-Get-MyPackage   $Package $URL $FileName $InstallPath   # Download via BITS
+Invoke-WebDownload -Uri $URL -OutFile $Path             # PS 5.1-compatible download (cert bypass)
+Get-MyPackage   $Package $URL $FileName $InstallPath   # Download via BITS (Invoke-WebDownload fallback)
 Install-MyPackage $PackageID $Package $FileName $URL $Arguments
 Test-MyPackage  $PackageID                              # Registry + CIM check
 Invoke-Process  $FilePath $FileName $ArgumentList       # MSU/MSI/MSP/EXE
@@ -162,11 +168,13 @@ Disable-UnnecessaryScheduledTasks  # Disable defrag etc.
 Set-CRLCheckTimeout                # Prevent startup delays
 Disable-CredentialGuard            # Performance: disable on Exchange servers
 Set-LmCompatibilityLevel           # Security: NTLMv2 only (level 5)
-Enable-RSSOnAllNICs                # Performance: enable Receive Side Scaling
+Enable-RSSOnAllNICs                # Performance: enable RSS + set queues to physical core count
+Set-MaxConcurrentAPI               # Performance/Security: Netlogon MaxConcurrentApi = logical core count (min 10)
 Set-CtsProcessorAffinityPercentage # Search: set to 0 for best performance
 Enable-SerializedDataSigning       # Security: mitigate serialization attacks
 Set-NodeRunnerMemoryLimit          # Search: remove memory limit (set to 0)
 Enable-MAPIFrontEndServerGC        # Performance: Server GC for 20+ GB RAM
+Enable-LSAProtection               # Security: RunAsPPL=1 (Exchange 2019 CU12+/SE; reboot required)
 ```
 
 ### v5.0 Features
@@ -182,45 +190,19 @@ Invoke-HealthChecker                             # Download and run CSS-Exchange
 # Set-RegistryValue now idempotent (skips if value already set)
 ```
 
----
+### v5.1 Features
 
-## Known Pitfalls & Design Decisions
-
-### 1. CIM instead of WMI (fully migrated)
-All `Get-WmiObject` calls have been replaced with `Get-CimInstance`.
-For write operations: `Set-CimInstance -InputObject $obj -Property @{...}`
-instead of `$obj.Property = ...; $obj.psbase.Put()`.
-
-### 2. Get-WindowsFeature always checks `.Installed`
 ```powershell
-# WRONG - always returns an object, even if not installed
-if (Get-WindowsFeature 'Web-Server') { ... }
-
-# CORRECT
-if ((Get-WindowsFeature -Name 'Web-Server').Installed) { ... }
+Show-InstallationMenu                            # Interactive console menu (modes 1-5, letter toggles A-R; RawUI.ReadKey for instant toggle, falls back to Read-Host)
+Get-ValidatedCredentials                         # Credential retry loop (max 3 attempts, R=Retry/Q=Quit)
+Install-PendingWindowsUpdates                    # Windows security/critical updates via PSWindowsUpdate + WUA COM fallback
+Get-LatestExchangeSecurityUpdate                 # Detect latest Exchange SU from built-in $ExchangeSUMap
+Install-ExchangeSecurityUpdate                   # Download via BITS + install Exchange SU (Phase 5)
+Disable-ServerManagerAtLogon                     # Machine-wide Server Manager disable (policy + default hive + scheduled task)
+Get-OSVersionText $OSVersion                     # Friendly name for OS build (e.g. "Windows Server 2025 (build 10.0.26100)")
+# -ConfigFile: load all parameters from .psd1 (Import-PowerShellDataFile), skips interactive menu
+# Build.ps1: PS2Exe wrapper to compile script to .exe with version metadata
 ```
-
-### 3. Autodiscover SCP Background Jobs
-`Clear-` and `Set-AutodiscoverServiceConnectionPoint` start jobs with `do..while($true)`.
-The `$AUTODISCOVER_SCP_MAX_RETRIES` counter prevents infinite loops.
-The filter template is passed as a parameter because script scope is not available in jobs.
-
-### 4. AutoLogon writes plaintext password
-`Enable-AutoLogon` writes the password to `HKLM:\...\Winlogon\DefaultPassword`.
-`Disable-AutoLogon` removes it on the next login. This is intentional by design.
-
-### 5. `Invoke-WebRequest -SkipCertificateCheck`
-Only available in PowerShell 6+. For PS 5.1, a fallback may be needed.
-
-### 6. `$AUTODISCOVER_SCP_FILTER` as template
-The filter contains `{0}` as a placeholder for the server name:
-```powershell
-$LDAPSearch.Filter = $AUTODISCOVER_SCP_FILTER -f $Name
-```
-
-### 7. Error handling in catch blocks
-Always use `$_.Exception.Message`, not `$Error[0].ExceptionMessage`
-(can be overwritten by concurrent errors).
 
 ---
 
@@ -298,15 +280,75 @@ Always use `$_.Exception.Message`, not `$Error[0].ExceptionMessage`
 | Feature | System Restore checkpoints before each phase (`-NoCheckpoint` to skip) |
 | Quality | `Set-RegistryValue`: idempotency guard (skip if value already set) |
 
+### 2026-04-08 — Round 7: v5.01 Bugfixes & Robustness
+| # | Change |
+|---|---|
+| Feature | Auto-elevation: script re-launches elevated via `Start-Process -Verb RunAs` |
+| Feature | Auto-unblock: detect `Zone.Identifier` on source files, `Unblock-File` in preflight |
+| Bug | `Initialize-Exchange`: `$MinFFL`/`$MinDFL` now set in new-org path (was `$null`) |
+| Bug | `Initialize-Exchange`: `Invoke-Process` exit code now checked (was silently ignored) |
+| Bug | `Test-Preflight` FFL/DFL check: distinguish `$null` (AD not prepared) from version too low |
+| Quality | Pre-flight report: only generated on first phase (was every phase) |
+| Quality | System Restore checkpoint: skip gracefully on Windows Server (no `Checkpoint-Computer`) |
+
+### 2026-04-10 — Round 8: v5.1 Major Feature Release (Maintainer: st03ps)
+| # | Change |
+|---|---|
+| Header | Author updated to `st03ps` with credit to Michel de Rooij; all docs/comments in English |
+| Header | `$ScriptVersion = '5.1'`; revision history corrected to ascending order |
+| Header | `.PARAMETER` block synchronized: added PreflightOnly, CopyServerConfig, CertificatePath, DAGName, SkipHealthCheck, NoCheckpoint, InstallRecipientManagement, InstallManagementTools, RecipientMgmtCleanup, ConfigFile, InstallWindowsUpdates, SkipWindowsUpdates |
+| Feature | New ParameterSet `'R'` (`-InstallRecipientManagement`): 3-phase install of Exchange Management Tools on Server or Client OS, with RSAT-ADDS prereqs, Add-PermissionForEMT.ps1, and desktop shortcut |
+| Feature | New ParameterSet `'T'` (`-InstallManagementTools`): 3-phase install of `setup.exe /roles:ManagementTools` on Server OS |
+| Feature | `Show-InstallationMenu`: interactive console menu (mode 1-5, letter toggles A-R, greying of unavailable options, Read-Host based for RDP/Hyper-V/Terminal compatibility) |
+| Feature | `Get-ValidatedCredentials`: interactive credential retry loop (max 3 attempts with R=Retry/Q=Quit); only for interactive sessions; single-validation kept for `-Credentials` CLI param |
+| Feature | `Install-PendingWindowsUpdates`: Windows security/critical update install via PSWindowsUpdate module (auto-installs if missing) with WUA COM API fallback; integrated into Phase 1 |
+| Feature | `Get-LatestExchangeSecurityUpdate` / `Install-ExchangeSecurityUpdate`: Exchange SU detection via built-in `$ExchangeSUMap` hashtable, download via BITS, install in Phase 5 |
+| Feature | `Build.ps1`: compiles `Install-Exchange15.ps1` to `.exe` via PS2Exe (`-requireAdmin`, no `-noConsole`, embeds version/copyright metadata) |
+| Quality | `$ScriptFullName` fallback to `[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName` when `$MyInvocation.MyCommand.Path` is empty (PS2Exe compiled run) |
+| Quality | `Enable-RunOnce`: detects `.exe` vs `.ps1` launch, sets RunOnce entry accordingly for AutoPilot compatibility in PS2Exe builds |
+| Quality | MAX_PHASE = 3 for R/T modes (was always 3 for NoSetup, 6 otherwise) |
+| New params | `-InstallWindowsUpdates`, `-SkipWindowsUpdates`, `-InstallRecipientManagement`, `-RecipientMgmtCleanup`, `-InstallManagementTools`, `-ConfigFile` |
+
+### 2026-04-15 — Round 9: Pitfall Fixes & PS 5.1 Compatibility
+| # | Change |
+|---|---|
+| Bug | `$Error[0].ExceptionMessage` → `$_.Exception.Message` in `Start-DisableMSExchangeAutodiscoverAppPoolJob` ScriptBlock |
+| Bug | `Write-Host` → `Write-MyOutput` in `Enable-MSExchangeAutodiscoverAppPool` (was outside job scope, should use logging helper) |
+| Bug | Missing `$InstallWindowsUpdates` mapping in menu result block — toggle R was read but never written to `$InstallWindowsUpdates` |
+| Feature | `Invoke-WebDownload`: new PS 5.1-compatible download helper (replaces bare `Invoke-WebRequest` fallback calls) |
+| Fix | IIS health check endpoint loop: same PS 5.1 / PS 6+ version split using `WebClient.DownloadString()` |
+
+### 2026-04-15 — Round 10: Quality & Performance Improvements
+| # | Change |
+|---|---|
+| Quality | `Get-SetupTextVersion`: direct hashtable lookup first (O(1) for exact CU builds), fallback sort only for SU builds |
+| Performance | `Enable-RSSOnAllNICs`: additionally sets `NumberOfReceiveQueues` to physical core count (HealthChecker requirement) |
+| Performance | `Set-MaxConcurrentAPI`: new function — Netlogon `MaxConcurrentApi` set to logical processor count (min 10) to prevent 0xC000005E errors under Exchange auth load |
+| Security | `Clear-DesktopBackground`: new function — removes desktop wallpaper at each phase start via Registry + RUNDLL32 |
+| Bug | `Cleanup`: `Get-WindowsFeature Bits` → `(Get-WindowsFeature -Name 'Bits').Installed` |
+
+### 2026-04-15 — Round 11: Performance & Security Improvements
+| # | Change |
+|---|---|
+| Performance | `Clear-DesktopBackground`: `Add-Type`/C#-Compiler removed — now uses Registry + `RUNDLL32 UpdatePerUserSystemParameters` (3–10s faster per phase start) |
+| Performance | `Get-DetectedFileVersion`: `Get-Command` → `[System.Diagnostics.FileVersionInfo]::GetVersionInfo()` (avoids PATH/module discovery overhead on ISO paths) |
+| Quality | Parameter block: `ValueFromPipelineByPropertyName = $false` removed from all `[parameter()]` attributes (it is the default; ~60 lines saved) |
+| Security | `Enable-LSAProtection`: new function — sets `HKLM:\...\Lsa\RunAsPPL = 1`; called in Phase 5; effective after reboot; Exchange 2019 CU12+/SE compatible |
+| UX | `Write-PhaseProgress`: new helper — Id 0 = overall phase progress (1-6), Id 1 = Phase 5 step counter (~25 steps) |
+| UX | `Show-InstallationMenu`: RawUI.ReadKey with `KeyAvailable` probe; instant toggle without Enter; falls back to Read-Host if console unavailable |
+
 ---
 
 ## Open Items / Possible Next Steps
 
-- [ ] `Invoke-WebRequest -SkipCertificateCheck` PS 5.1 fallback
-- [ ] Audit all `$Error[0]` occurrences (outside of catch blocks)
-- [ ] Pester tests for key helper functions
-- [ ] Reduce parameter block redundancy (many parameters with 4x identical `[parameter()]` attributes)
-- [ ] Make `Get-SetupTextVersion` more efficient (direct hashtable lookup)
-- [ ] Configure RSS queues to match physical core count
-- [ ] Set MaxConcurrentAPI for Kerberos authentication optimization
-- [ ] Enable LSA Protection (RunAsPPL) — test for Exchange compatibility first
+### v5.1 Remaining Work
+- [x] **Config-Templates:** `-ConfigFile` loads all parameters from a .psd1 — see `deploy-example.psd1`
+- [x] **Write-Progress** indicators per phase — `Write-PhaseProgress` helper (Id 0 = overall, Id 1 = Phase 5 steps)
+- [x] **`Show-InstallationMenu`:** RawUI.ReadKey with `$host.UI.RawUI.KeyAvailable` probe; falls back to Read-Host if console unavailable (PS2Exe, redirected stdin)
+- [x] **`$ExchangeSUMap`:** Fully rewritten — direct download.microsoft.com URLs, `.exe` filenames, all supported CU versions (SE RTM, 2019 CU13-15, 2016 CU23); `Install-ExchangeSecurityUpdate` bug `.msp`→`.exe` fixed
+- [x] **Recipient Management / Management Tools:** Implementation complete (prereqs, setup.exe, EMT-Script, desktop shortcut, AD cleanup note)
+
+### General Quality / Future
+- [x] Reduce parameter block redundancy — `ValueFromPipelineByPropertyName = $false` (default) removed from all `[parameter()]` attributes
+- [x] Enable LSA Protection (RunAsPPL) — `Enable-LSAProtection` added, Phase 5; Exchange 2019 CU12+/SE compatible, takes effect after reboot
+- [x] Pester tests — `Install-Exchange15.Tests.ps1`: covers `Get-SetupTextVersion`, `Get-OSVersionText`, `Get-FullDomainAccount`, `ExchangeSUMap` structure validation. Run: `Invoke-Pester .\Install-Exchange15.Tests.ps1 -Output Detailed`

@@ -2,13 +2,16 @@
     .SYNOPSIS
     Install-Exchange15
 
-    Michel de Rooij
-    michel@eightwone.com
+    Maintainer: st03ps
+
+    Original author: Michel de Rooij (michel@eightwone.com)
+    Many thanks to Michel de Rooij for the extensive prior work this fork
+    is built upon. All original copyright and license notices are preserved.
 
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 5.0, March 22, 2026
+    Version 5.1, April 15, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -21,6 +24,10 @@
     To keep track of provided parameters and state, it uses an XML file; if this file is
     present, this information will be used to resume the process. Note that you can use a central
     location for Install (UNC path with proper permissions) to re-use additional downloads.
+
+    Starting with v5.1, the script can also install Recipient Management Tools (-InstallRecipientManagement)
+    and Exchange Management Tools only (-InstallManagementTools) on dedicated admin workstations. When
+    started interactively without parameters, an installation menu is shown to configure all options.
 
     .LINK
     http://eightwone.com
@@ -359,6 +366,51 @@
             - Exchange SE coexistence warning (EX2016 must be decommissioned before SE CU2)
             - Exchange SE RTM Feb26SU (KB5074992) in IncludeFixes
             - Exchange SE IU registry path detection
+    5.01    Bugfixes and robustness improvements:
+            - Auto-elevation: script re-launches elevated when not running as Administrator
+            - Auto-unblock: detect and remove Zone.Identifier on Exchange setup source files
+              (prevents .NET assembly sandboxing errors from downloaded/extracted media)
+            - Fixed Initialize-Exchange: $MinFFL/$MinDFL now set for new-org path
+              (was unset, causing post-PrepareAD validation to compare against $null)
+            - Fixed Initialize-Exchange: setup.exe /PrepareAD exit code is now checked
+              (exit code 1 was silently ignored, causing script to advance to next phase)
+            - Fixed FFL/DFL null check in Test-Preflight: $null -lt 17000 evaluated to $true
+              in PowerShell, causing false abort when AD was not yet prepared
+            - Pre-flight report now only generated on first phase (was repeated every phase)
+            - System Restore checkpoint: detect if Checkpoint-Computer is available
+              (not present on Windows Server, was producing warning every phase)
+    5.1     Major feature release (maintainer: st03ps):
+            - Interactive installation menu when started without parameters
+              (numbered mode selection + letter toggles for switches, with greying of
+              options not applicable to the selected mode; RawUI.ReadKey for instant
+              toggle, falls back to Read-Host for RDP/PS2Exe/redirected-stdin compat)
+            - Credential prompt with validation retry loop (max 3 attempts, interactive only)
+              via new Get-ValidatedCredentials function
+            - New mode: Recipient Management Tools (-InstallRecipientManagement)
+              3-phase install flow for dedicated Exchange Recipient Admin workstations
+              (Server/Client aware prerequisites, optional AD permission setup, desktop shortcut)
+            - New mode: Exchange Management Tools only (-InstallManagementTools)
+              3-phase install flow installing setup.exe /roles:ManagementTools
+            - New Build.ps1 helper to compile the script into a single .exe via PS2Exe
+            - Script self-detection when running as .exe (PS2Exe): RunOnce command is
+              adjusted accordingly so AutoPilot mode keeps working
+            - Automatic Windows Update + Exchange Security Update handling (-InstallWindowsUpdates)
+              via PSWindowsUpdate module with WUA COM fallback; known Exchange SU download list
+              ($ExchangeSUMap: SE RTM/2019 CU13-15/2016 CU23, direct download.microsoft.com URLs)
+            - Configuration file support (-ConfigFile) to load all parameters from a .psd1
+            - Write-Progress indicators (Id 0 = overall phase, Id 1 = Phase 5 step counter)
+            - Header/help documentation synchronized with all parameters
+            - Enable-LSAProtection: LSA RunAsPPL=1 (Exchange 2019 CU12+/SE; reboot required)
+            - Set-MaxConcurrentAPI: Netlogon MaxConcurrentApi = logical core count (min 10)
+            - Enable-RSSOnAllNICs: additionally sets NumberOfReceiveQueues to physical cores
+            - Clear-DesktopBackground: RUNDLL32-based (no Add-Type/C# compilation delay)
+            - Get-DetectedFileVersion: FileVersionInfo API (no Get-Command PATH overhead)
+            - Invoke-WebDownload: PS 5.1-compatible download helper (WebClient fallback)
+            - IIS health check: PS 5.1/6+ split (WebClient.DownloadString vs Invoke-WebRequest)
+            - Fixed $InstallWindowsUpdates not mapped from menu result (toggle R had no effect)
+            - Fixed $Error[0] in autodiscover background job catch blocks
+            - Fixed Get-WindowsFeature Bits check in Cleanup (missing .Installed)
+            - Parameter block: removed ValueFromPipelineByPropertyName=$false (PS default)
 
     .PARAMETER Organization
     Specifies name of the Exchange organization to create. When omitted, the step
@@ -460,6 +512,57 @@
     .PARAMETER Phase
     Internal Use Only :)
 
+    .PARAMETER PreflightOnly (optional)
+    Runs only the preflight validation checks and generates the HTML report, then exits
+    without performing any installation actions.
+
+    .PARAMETER CopyServerConfig (optional)
+    Specifies the name of a source Exchange server from which to export configuration
+    (Virtual Directories, Transport, Receive Connectors) via Remote PowerShell. The
+    exported configuration is applied post-setup.
+
+    .PARAMETER CertificatePath (optional)
+    Path to a PFX certificate file that should be imported and enabled for IIS + SMTP
+    post-setup. You will be prompted for the PFX password.
+
+    .PARAMETER DAGName (optional)
+    Name of an existing Database Availability Group this server should join post-setup.
+
+    .PARAMETER SkipHealthCheck (optional)
+    Skips the automatic download and execution of the CSS-Exchange HealthChecker
+    at the end of the installation.
+
+    .PARAMETER NoCheckpoint (optional)
+    Skips creation of System Restore checkpoints before each phase. Has no effect on
+    Windows Server, where Checkpoint-Computer is not available.
+
+    .PARAMETER InstallRecipientManagement (optional, v5.1)
+    Activates the Recipient Management Tools installation mode (3-phase flow). Installs
+    Exchange setup.exe /roles:ManagementTools on a dedicated admin workstation (Server
+    or Client), runs Add-PermissionForEMT.ps1 and creates a desktop shortcut loading
+    the *RecipientManagement PSSnapin.
+
+    .PARAMETER InstallManagementTools (optional, v5.1)
+    Activates the Exchange Management Tools installation mode (3-phase flow). Installs
+    prerequisites and setup.exe /roles:ManagementTools only.
+
+    .PARAMETER RecipientMgmtCleanup (optional, v5.1)
+    In Recipient Management mode, performs optional Active Directory cleanup of legacy
+    permissions after a successful upgrade install.
+
+    .PARAMETER ConfigFile (optional, v5.1)
+    Path to a PowerShell data file (.psd1) containing a hashtable with all parameters
+    to use. Makes long command lines manageable for repeat deployments.
+
+    .PARAMETER InstallWindowsUpdates (optional, v5.1)
+    Checks for pending Windows Updates and applicable Exchange Security Updates (SUs)
+    during phase 1 / post-setup, downloads and installs them. Reboots are integrated
+    into the existing AutoPilot phase flow.
+
+    .PARAMETER SkipWindowsUpdates (optional, v5.1)
+    Explicitly skips the Windows Update / Exchange SU check even when the menu or
+    ConfigFile would otherwise enable it.
+
     .EXAMPLE
     $Cred=Get-Credential
     .\Install-Exchange15.ps1 -Organization Fabrikam -InstallMailbox -MDBDBPath C:\MailboxData\MDB1\DB -MDBLogPath C:\MailboxData\MDB1\Log -MDBName MDB1 -InstallPath C:\Install -AutoPilot -Credentials $Cred -SourcePath '\\server\share\Exchange 2019\ExchangeServer2019-x64-cu14' -SCP https://autodiscover.fabrikam.com/autodiscover/autodiscover.xml -Verbose
@@ -477,162 +580,212 @@
     .EXAMPLE
     .\Install-Exchange15.ps1 -NoSetup -Autopilot -InstallPath \\server1\exfiles\\server1\sources\ex2019cu14
 
+    .EXAMPLE
+    .\Install-Exchange15.ps1 -InstallRecipientManagement -SourcePath \\server1\sources\exse -AutoPilot
+
+    .EXAMPLE
+    .\Install-Exchange15.ps1 -InstallManagementTools -SourcePath D:\Install\ExchangeServerSE.ISO
+
+    .EXAMPLE
+    .\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1
+
+    .EXAMPLE
+    # Start interactively without parameters to use the installation menu:
+    .\Install-Exchange15.ps1
+
 #>
 [cmdletbinding(DefaultParameterSetName = 'AutoPilot')]
 param(
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
     [ValidatePattern(('(?# Organization Name can only consist of upper or lowercase A-Z, 0-9, spaces - not at beginning or end, hyphen or dash characters, up to 64 characters in length, and cannot be empty)^[a-zA-Z0-9\-\–\—][a-zA-Z0-9\-\–\—\ ]{1,62}[a-zA-Z0-9\-\–\—]$'))]
     [string]$Organization,
-    [parameter( Mandatory = $true, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $true, ParameterSetName = 'E')]
     [switch]$InstallEdge,
-    [parameter( Mandatory = $true, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $true, ParameterSetName = 'E')]
     [string]$EdgeDNSSuffix,
-    [parameter( Mandatory = $true, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $true, ParameterSetName = 'Recover')]
     [switch]$Recover,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [string]$MDBName,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [string]$MDBDBPath,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [string]$MDBLogPath,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'AutoPilot')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'AutoPilot')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'R')]
+    [parameter( Mandatory = $false, ParameterSetName = 'T')]
     [string]$InstallPath = 'C:\Install',
-    [parameter( Mandatory = $true, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $true, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $true, ParameterSetName = 'E')]
+    [parameter( Mandatory = $true, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $true, ParameterSetName = 'R')]
+    [parameter( Mandatory = $true, ParameterSetName = 'T')]
     [ValidateScript({ if ((Test-Path -Path $_ -PathType Container) -or (Get-DiskImage -ImagePath $_)) { $true } else { throw ('Specified source path or image {0} not found or inaccessible' -f $_) } })]
     [string]$SourcePath,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
     [string]$TargetPath,
-    [parameter( Mandatory = $true, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $true, ParameterSetName = 'NoSetup')]
     [switch]$NoSetup = $false,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'R')]
+    [parameter( Mandatory = $false, ParameterSetName = 'T')]
     [switch]$AutoPilot,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'R')]
+    [parameter( Mandatory = $false, ParameterSetName = 'T')]
     [System.Management.Automation.PsCredential]$Credentials,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$IncludeFixes,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$NoNet481,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$DoNotEnableEP,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$DoNotEnableEP_FEEWS,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$DisableSSL3,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$DisableRC4,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$EnableECC,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$NoCBC,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$EnableAMSI,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$EnableTLS12,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$EnableTLS13,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [ValidateScript({ ($_ -eq '') -or ($_ -eq '-') -or (([System.URI]$_).AbsoluteUri -ne $null) })]
     [String]$SCP = '',
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$DiagnosticData,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$Lock,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$SkipRolesCheck,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'AutoPilot')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'AutoPilot')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [ValidateRange(0, 6)]
     [int]$Phase,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$PreflightOnly,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [string]$CopyServerConfig,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
-    [ValidateScript({ if (Test-Path $_ -PathType Leaf) { $true } else { throw ('PFX file not found: {0}' -f $_) } })]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [ValidateScript({ if (-not $_ -or (Test-Path $_ -PathType Leaf)) { $true } else { throw ('PFX file not found: {0}' -f $_) } })]
     [string]$CertificatePath,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [string]$DAGName,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [Switch]$SkipHealthCheck,
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'M')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'E')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ValueFromPipelineByPropertyName = $false, ParameterSetName = 'Recover')]
-    [Switch]$NoCheckpoint
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [Switch]$NoCheckpoint,
+    [parameter( Mandatory = $true, ParameterSetName = 'R')]
+    [switch]$InstallRecipientManagement,
+    [parameter( Mandatory = $false, ParameterSetName = 'R')]
+    [switch]$RecipientMgmtCleanup,
+    [parameter( Mandatory = $true, ParameterSetName = 'T')]
+    [switch]$InstallManagementTools,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'R')]
+    [parameter( Mandatory = $false, ParameterSetName = 'T')]
+    [parameter( Mandatory = $false, ParameterSetName = 'AutoPilot')]
+    [ValidateScript({ if (-not $_ -or (Test-Path $_ -PathType Leaf)) { $true } else { throw ('ConfigFile not found: {0}' -f $_) } })]
+    [string]$ConfigFile,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'R')]
+    [parameter( Mandatory = $false, ParameterSetName = 'T')]
+    [Switch]$InstallWindowsUpdates,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [parameter( Mandatory = $false, ParameterSetName = 'R')]
+    [parameter( Mandatory = $false, ParameterSetName = 'T')]
+    [Switch]$SkipWindowsUpdates
 )
 
 process {
 
-    $ScriptVersion = '5.0'
+    $ScriptVersion = '5.1'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -755,6 +908,26 @@ process {
     }
 
 
+    function Get-OSVersionText( $OSVersion) {
+        # Maps Windows build numbers to human-readable product names
+        $builds = @{
+            '10.0.14393' = 'Windows Server 2016'
+            '10.0.17763' = 'Windows Server 2019'
+            '10.0.20348' = 'Windows Server 2022'
+            '10.0.26100' = 'Windows Server 2025'
+        }
+        $text = $builds[$OSVersion]
+        if (-not $text) {
+            # Unknown build — fall back to closest known version
+            $text = ($builds.GetEnumerator() |
+                Where-Object { [System.Version]$_.Key -le [System.Version]$OSVersion } |
+                Sort-Object { [System.Version]$_.Key } |
+                Select-Object -Last 1).Value
+            if (-not $text) { $text = 'Windows Server (unknown)' }
+        }
+        return '{0} (build {1})' -f $text, $OSVersion
+    }
+
     function Get-SetupTextVersion( $FileVersion) {
         $Versions = @{
             $EX2016SETUPEXE_CU23 = 'Exchange Server 2016 Cumulative Update 23'
@@ -766,9 +939,14 @@ process {
             $EX2019SETUPEXE_CU15 = 'Exchange Server 2019 CU15'
             $EXSESETUPEXE_RTM    = 'Exchange Server SE RTM'
         }
+        # Direct lookup first (exact CU build match)
+        if ($Versions.ContainsKey($FileVersion)) {
+            return '{0} (build {1})' -f $Versions[$FileVersion], $FileVersion
+        }
+        # Fallback: highest known CU version <= FileVersion (covers SU builds)
         $res = "Unsupported version (build $FileVersion)"
-        $Versions.GetEnumerator() | Sort-Object -Property { [System.Version]$_.Name } | ForEach-Object {
-            if ( [System.Version]$FileVersion -ge [System.Version]$_.Name) {
+        $Versions.GetEnumerator() | Sort-Object -Property { [System.Version]$_.Key } | ForEach-Object {
+            if ( [System.Version]$FileVersion -ge [System.Version]$_.Key) {
                 $res = '{0} (build {1})' -f $_.Value, $FileVersion
             }
         }
@@ -776,17 +954,16 @@ process {
     }
 
     function Get-DetectedFileVersion( $File) {
-        $res = 0
+        # Use FileVersionInfo directly — Get-Command triggers PowerShell command discovery
+        # (PATH lookup, module analysis) which adds unnecessary overhead on ISO-mounted paths.
         if ( Test-Path $File) {
-            $res = (Get-Command $File).FileVersionInfo.ProductVersion
+            return [System.Diagnostics.FileVersionInfo]::GetVersionInfo($File).ProductVersion
         }
-        else {
-            $res = 0
-        }
-        return $res
+        return 0
     }
 
     function Write-ToTranscript( $Level, $Text) {
+        if (-not $State['TranscriptFile']) { return }
         $Location = Split-Path $State['TranscriptFile'] -Parent
         if ( Test-Path $Location) {
             "$(Get-Date -Format u): [$Level] $Text" | Out-File $State['TranscriptFile'] -Append -ErrorAction SilentlyContinue
@@ -839,6 +1016,27 @@ process {
         return $PSPolicyKey
     }
 
+    function Invoke-WebDownload {
+        # PS 5.1-compatible web download. Uses -SkipCertificateCheck on PS 6+,
+        # falls back to WebClient with TLS 1.2 and cert bypass on PS 5.1.
+        param([string]$Uri, [string]$OutFile)
+        if ($PSVersionTable.PSVersion.Major -ge 6) {
+            Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -SkipCertificateCheck -ErrorAction Stop
+        }
+        else {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $prevCallback = [Net.ServicePointManager]::ServerCertificateValidationCallback
+            [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+            try {
+                $wc = New-Object System.Net.WebClient
+                $wc.DownloadFile($Uri, $OutFile)
+            }
+            finally {
+                [Net.ServicePointManager]::ServerCertificateValidationCallback = $prevCallback
+            }
+        }
+    }
+
     function Get-MyPackage () {
         param ( [String]$Package, [String]$URL, [String]$FileName, [String]$InstallPath)
         $res = $true
@@ -860,10 +1058,10 @@ process {
                             Start-Sleep -Seconds ($attempt * 5)
                         }
                         else {
-                            # Final attempt: try Invoke-WebRequest as fallback
+                            # Final attempt: try web download as fallback
                             try {
-                                Write-MyVerbose 'BITS failed, trying Invoke-WebRequest as fallback'
-                                Invoke-WebRequest -Uri $URL -OutFile $destPath -UseBasicParsing -ErrorAction Stop
+                                Write-MyVerbose 'BITS failed, trying web download as fallback'
+                                Invoke-WebDownload -Uri $URL -OutFile $destPath
                                 $downloaded = $true
                             }
                             catch {
@@ -928,8 +1126,16 @@ process {
 
     function Enable-RunOnce {
         Write-MyOutput 'Set script to run once after reboot'
-        $PSExe = (Get-Process -Id $PID).Path
-        $RunOnce = "$PSExe -NoProfile -ExecutionPolicy Unrestricted -Command `"& `'$ScriptFullName`' -InstallPath `'$InstallPath`'`""
+        # When compiled with PS2Exe the script runs as a standalone .exe — invoke it directly.
+        # Otherwise use the current PowerShell interpreter (powershell.exe or pwsh.exe).
+        $isExe = $ScriptFullName -imatch '\.exe$'
+        if ($isExe) {
+            $RunOnce = "`"$ScriptFullName`" -InstallPath `"$InstallPath`""
+        }
+        else {
+            $PSExe = (Get-Process -Id $PID).Path
+            $RunOnce = "`"$PSExe`" -NoProfile -ExecutionPolicy Unrestricted -Command `"& `'$ScriptFullName`' -InstallPath `'$InstallPath`'`""
+        }
         Write-MyVerbose "RunOnce: $RunOnce"
         New-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name "$ScriptName" -Value "$RunOnce" -ErrorAction SilentlyContinue | Out-Null
     }
@@ -1030,6 +1236,46 @@ process {
         catch {
             return $false
         }
+        return $false
+    }
+
+    function Get-ValidatedCredentials {
+        # Interactive credential prompt with validation retry loop (max 3 attempts).
+        # Returns $true when valid credentials are stored in State, $false if all attempts fail.
+        # Only call this when [Environment]::UserInteractive is $true.
+        $maxAttempts = 3
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+                $defaultUser = if ($State['AdminAccount']) { $State['AdminAccount'] } else { [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
+                $Script:Credentials = Get-Credential -UserName $defaultUser -Message ('Enter credentials for AutoPilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                if (-not $Script:Credentials) {
+                    Write-MyWarning 'No credentials entered'
+                }
+                else {
+                    $State['AdminAccount'] = $Script:Credentials.UserName
+                    $State['AdminPassword'] = ($Script:Credentials.Password | ConvertFrom-SecureString)
+                    Write-MyOutput ('Checking credentials (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                    if (Test-Credentials) {
+                        Write-MyOutput 'Credentials valid'
+                        return $true
+                    }
+                    else {
+                        Write-MyWarning ("Credentials for '{0}' are invalid" -f $State['AdminAccount'])
+                    }
+                }
+            }
+            catch {
+                Write-MyWarning ('Credential prompt cancelled or failed: {0}' -f $_.Exception.Message)
+            }
+            if ($attempt -lt $maxAttempts) {
+                $choice = $Host.UI.PromptForChoice('Invalid credentials', 'Retry or quit?', @('&Retry', '&Quit'), 0)
+                if ($choice -ne 0) {
+                    Write-MyError 'Credential entry aborted by user'
+                    return $false
+                }
+            }
+        }
+        Write-MyError ('Credential validation failed after {0} attempts' -f $maxAttempts)
         return $false
     }
 
@@ -1479,6 +1725,15 @@ process {
     function Initialize-Exchange {
         if (!$State['InstallEdge']) {
             $params = @()
+            # Set minimum levels based on Exchange version (applies to both new and existing org paths)
+            if ($State['MajorSetupVersion'] -ge $EX2019_MAJOR) {
+                $MinFFL = $EX2019_MINFORESTLEVEL
+                $MinDFL = $EX2019_MINDOMAINLEVEL
+            }
+            else {
+                $MinFFL = $EX2016_MINFORESTLEVEL
+                $MinDFL = $EX2016_MINDOMAINLEVEL
+            }
             Write-MyOutput 'Checking Exchange organization existence'
             if ( $null -ne ( Test-ExchangeOrganization $State['OrganizationName'])) {
                 $params += '/PrepareAD', "/OrganizationName:`"$($State['OrganizationName'])`""
@@ -1488,8 +1743,6 @@ process {
                 $forestlvl = Get-ExchangeForestLevel
                 $domainlvl = Get-ExchangeDomainLevel
                 Write-MyOutput "Exchange Forest Schema version: $forestlvl, Domain: $domainlvl)"
-                $MinFFL = $EX2016_MINFORESTLEVEL
-                $MinDFL = $EX2016_MINDOMAINLEVEL
                 if (( $forestlvl -lt $MinFFL) -or ( $domainlvl -lt $MinDFL)) {
                     Write-MyOutput "Exchange Forest Schema or Domain needs updating (Required: $MinFFL/$MinDFL)"
                     $params += '/PrepareAD'
@@ -1505,7 +1758,11 @@ process {
                 Write-MyOutput "Preparing AD, Exchange organization will be $($State['OrganizationName'])"
             }
             $params += $State['IAcceptSwitch']
-            Invoke-Process $State['SourcePath'] 'setup.exe' $params
+            $exitCode = Invoke-Process $State['SourcePath'] 'setup.exe' $params
+            if ($exitCode -ne 0) {
+                Write-MyError "Exchange setup /PrepareAD failed with exit code $exitCode. Please consult the Exchange setup log, i.e. C:\ExchangeSetupLogs\ExchangeSetup.log"
+                exit $ERR_PROBLEMADPREPARE
+            }
             if ( ( $null -eq ( Test-ExchangeOrganization $State['OrganizationName'])) -or
                 ( (Get-ExchangeForestLevel) -lt $MinFFL) -or
                 ( (Get-ExchangeDomainLevel) -lt $MinDFL)) {
@@ -1814,32 +2071,67 @@ process {
         Write-MyOutput ".NET Framework is $NetVersion ($NetVersionText)"
 
         if (! ( Test-Admin)) {
-            Write-MyError 'Script requires running in elevated mode'
-            exit $ERR_RUNNINGNONADMINMODE
+            Write-MyWarning 'Script not running in elevated mode, attempting auto-elevation ..'
+            try {
+                $scriptPath = $MyInvocation.ScriptName
+                if (-not $scriptPath) { $scriptPath = $PSCommandPath }
+                $argList = "-NoProfile -ExecutionPolicy Unrestricted -File `"$scriptPath`""
+                # Re-pass bound parameters
+                foreach ($param in $PSBoundParameters.GetEnumerator()) {
+                    if ($param.Value -is [switch]) {
+                        if ($param.Value) { $argList += " -$($param.Key)" }
+                    }
+                    elseif ($param.Value -is [System.Management.Automation.PSCredential]) {
+                        # Credentials cannot be passed via command line, skip
+                        Write-MyWarning 'Credentials parameter cannot be passed during auto-elevation, you will be prompted'
+                    }
+                    else {
+                        $argList += " -$($param.Key) `"$($param.Value)`""
+                    }
+                }
+                Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $argList -Verb RunAs
+                exit $ERR_OK
+            }
+            catch {
+                Write-MyError ('Auto-elevation failed: {0}' -f $_.Exception.Message)
+                exit $ERR_RUNNINGNONADMINMODE
+            }
         }
         else {
             Write-MyOutput 'Script running in elevated mode'
         }
 
         if ( $State['AutoPilot']) {
+            $credentialsFromCommandLine = $PSBoundParameters.ContainsKey('Credentials')
             if ( -not( $State['AdminAccount'] -and $State['AdminPassword'])) {
-                try {
-                    $Script:Credentials = Get-Credential -UserName ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -Message 'Enter credentials to use'
-                    $State['AdminAccount'] = $Credentials.UserName
-                    $State['AdminPassword'] = ($Credentials.Password | ConvertFrom-SecureString)
+                # No credentials in state yet — prompt interactively if possible, else fail
+                if ([Environment]::UserInteractive -and -not $credentialsFromCommandLine) {
+                    if (-not (Get-ValidatedCredentials)) {
+                        exit $ERR_NOACCOUNTSPECIFIED
+                    }
                 }
-                catch {
-                    Write-MyError 'AutoPilot specified but no or improper credentials provided'
+                else {
+                    Write-MyError 'AutoPilot specified but no credentials provided'
                     exit $ERR_NOACCOUNTSPECIFIED
                 }
             }
-            Write-MyOutput 'Checking provided credentials'
-            if ( Test-Credentials) {
-                Write-MyOutput 'Credentials seem valid'
-            }
             else {
-                Write-MyError "Provided credentials don't seem to be valid"
-                exit $ERR_INVALIDCREDENTIALS
+                # Credentials already in state (command line, config file, or AutoPilot resume)
+                Write-MyOutput 'Checking provided credentials'
+                if (Test-Credentials) {
+                    Write-MyOutput 'Credentials valid'
+                }
+                elseif ([Environment]::UserInteractive -and -not $credentialsFromCommandLine) {
+                    # Stored credentials invalid (e.g. password changed since last phase) — retry interactively
+                    Write-MyWarning 'Stored credentials are no longer valid, prompting for new credentials'
+                    if (-not (Get-ValidatedCredentials)) {
+                        exit $ERR_INVALIDCREDENTIALS
+                    }
+                }
+                else {
+                    Write-MyError "Provided credentials don't seem to be valid"
+                    exit $ERR_INVALIDCREDENTIALS
+                }
             }
         }
 
@@ -1901,6 +2193,14 @@ process {
         }
         else {
             Write-MyOutput "Exchange setup located at $(Join-Path $($State['SourcePath']) "setup.exe")"
+        }
+
+        # Unblock files to prevent .NET assembly sandboxing errors (Zone.Identifier from downloaded files)
+        $blockedFiles = Get-ChildItem -Path $State['SourcePath'] -Recurse -File | Where-Object { $null -ne (Get-Item -Path $_.FullName -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue) }
+        if ($blockedFiles) {
+            Write-MyWarning ('{0} blocked file(s) detected in source path, unblocking ..' -f $blockedFiles.Count)
+            $blockedFiles | Unblock-File
+            Write-MyOutput 'Source files unblocked successfully'
         }
 
         $State['ExSetupVersion'] = Get-DetectedFileVersion "$($State['SourcePath'])\Setup\ServerRoles\Common\ExSetup.exe"
@@ -2075,11 +2375,17 @@ process {
             else {
                 Write-MyOutput 'Active Directory is not prepared'
             }
-            if ( $EFL -lt $minFFL) {
-                if ( $State['InstallPhase'] -eq 4) {
-                    # Only check before starting setup
-                    Write-MyError "Minimum required FFL version is $minFFL, aborting"
-                    exit $ERR_BADFORESTLEVEL
+            if ( $State['InstallPhase'] -ge 4) {
+                if ( $null -eq $EFL -or $EFL -lt $minFFL) {
+                    if ( $null -eq $EFL) {
+                        Write-MyWarning 'Active Directory is not prepared. PrepareAD may have failed in a previous phase.'
+                    }
+                    else {
+                        Write-MyWarning "Exchange Forest Schema version is $EFL (required: $minFFL)"
+                    }
+                    Write-MyWarning 'Rolling back to phase 3 to retry AD preparation ..'
+                    $State['InstallPhase'] = 3
+                    $State['LastSuccessfulPhase'] = 2
                 }
             }
 
@@ -2088,10 +2394,22 @@ process {
             if ( $EDV) {
                 Write-MyOutput "Exchange Domain Version is $EDV"
             }
-            if ( $EDV -lt $minDFL) {
-                if ( $State['InstallPhase'] -eq 4) {
-                    # Only check before starting setup
-                    Write-MyError "Minimum required DFL version is $minDFL, aborting"
+            if ( $State['InstallPhase'] -ge 4) {
+                if ( $null -eq $EDV -or $EDV -lt $minDFL) {
+                    if ( $null -eq $EDV) {
+                        Write-MyWarning 'Exchange Domain is not prepared. PrepareAD may have failed in a previous phase.'
+                    }
+                    else {
+                        Write-MyWarning "Exchange Domain version is $EDV (required: $minDFL)"
+                    }
+                    if ( $State['InstallPhase'] -ne 3) {
+                        Write-MyWarning 'Rolling back to phase 3 to retry AD preparation ..'
+                        $State['InstallPhase'] = 3
+                        $State['LastSuccessfulPhase'] = 2
+                    }
+                }
+                if ( $EDV -lt $minDFL) {
+                    Write-MyError "Minimum required Exchange Domain version is $minDFL (current: $EDV), aborting"
                     exit $ERR_BADDOMAINLEVEL
                 }
             }
@@ -2517,7 +2835,7 @@ $($htmlRows -join "`n")
                 catch {
                     if ($attempt -eq 3) {
                         try {
-                            Invoke-WebRequest -Uri $hcUrl -OutFile $hcPath -UseBasicParsing -ErrorAction Stop
+                            Invoke-WebDownload -Uri $hcUrl -OutFile $hcPath
                             $downloaded = $true
                         }
                         catch {
@@ -2549,10 +2867,349 @@ $($htmlRows -join "`n")
         }
     }
 
+    function Install-PendingWindowsUpdates {
+        # Installs pending Windows security and critical updates.
+        # Uses PSWindowsUpdate module when available; falls back to Windows Update Agent COM API.
+        # Sets $State['RebootRequired'] = $true when a reboot is needed after updates.
+
+        if (-not $State['InstallWindowsUpdates']) {
+            Write-MyVerbose 'InstallWindowsUpdates not set, skipping Windows Update check'
+            return
+        }
+
+        Write-MyOutput 'Checking for pending Windows Updates (Security + Critical)'
+
+        $useModule = $false
+        if (Get-Module -ListAvailable -Name PSWindowsUpdate -ErrorAction SilentlyContinue) {
+            $useModule = $true
+        }
+        else {
+            Write-MyVerbose 'PSWindowsUpdate module not found, attempting to install from PSGallery'
+            try {
+                Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+                $useModule = $true
+                Write-MyOutput 'PSWindowsUpdate module installed'
+            }
+            catch {
+                Write-MyWarning ('Could not install PSWindowsUpdate: {0}. Falling back to WUA COM API' -f $_.Exception.Message)
+            }
+        }
+
+        $rebootNeeded = $false
+
+        if ($useModule) {
+            try {
+                Import-Module PSWindowsUpdate -ErrorAction Stop
+                $updates = Get-WindowsUpdate -Category 'Security Updates','Critical Updates' -NotTitle 'Preview' -ErrorAction Stop
+                if ($updates.Count -eq 0) {
+                    Write-MyOutput 'No pending Windows security/critical updates found'
+                    return
+                }
+                Write-MyOutput ('{0} update(s) found, installing' -f $updates.Count)
+                $result = Install-WindowsUpdate -Category 'Security Updates','Critical Updates' -NotTitle 'Preview' -AcceptAll -IgnoreReboot -ErrorAction Stop
+                $rebootNeeded = ($result | Where-Object { $_.RebootRequired }) -as [bool]
+                Write-MyOutput ('{0} update(s) installed' -f ($result | Where-Object { $_.Result -eq 'Installed' }).Count)
+            }
+            catch {
+                Write-MyWarning ('PSWindowsUpdate error: {0}' -f $_.Exception.Message)
+            }
+        }
+        else {
+            # Fallback: WUA COM API
+            try {
+                $session   = New-Object -ComObject Microsoft.Update.Session
+                $searcher  = $session.CreateUpdateSearcher()
+                $result    = $searcher.Search("IsInstalled=0 and IsHidden=0 and BrowseOnly=0")
+                $toInstall = New-Object -ComObject Microsoft.Update.UpdateColl
+                foreach ($u in $result.Updates) {
+                    if ($u.MsrcSeverity -in @('Critical','Important') -or $u.AutoSelectOnWebSites) {
+                        $toInstall.Add($u) | Out-Null
+                    }
+                }
+                if ($toInstall.Count -eq 0) {
+                    Write-MyOutput 'No pending Windows security/critical updates found (WUA)'
+                    return
+                }
+                Write-MyOutput ('{0} update(s) found, installing via WUA COM API' -f $toInstall.Count)
+                $downloader = $session.CreateUpdateDownloader()
+                $downloader.Updates = $toInstall
+                $downloader.Download() | Out-Null
+                $installer = $session.CreateUpdateInstaller()
+                $installer.Updates = $toInstall
+                $installResult = $installer.Install()
+                $rebootNeeded  = $installResult.RebootRequired
+                Write-MyOutput ('WUA install result code: {0}' -f $installResult.ResultCode)
+            }
+            catch {
+                Write-MyWarning ('WUA COM API error: {0}' -f $_.Exception.Message)
+            }
+        }
+
+        if ($rebootNeeded) {
+            Write-MyWarning 'Windows Updates require a reboot'
+            $State['RebootRequired'] = $true
+        }
+        else {
+            Write-MyOutput 'Windows Updates installed, no reboot required'
+        }
+    }
+
+    # Known Exchange Security Updates (SU): hashtable of SetupVersion -> SU info
+    # Format: @{ '<ExSetup build>' = @{ KB='KBxxxxxxx'; URL='<msp url>'; TargetVersion='<build after SU>' } }
+    # Maps RTM setup.exe version -> latest known Security Update.
+    # Keys are ExSetup.exe ProductVersion strings (from Get-DetectedFileVersion on setup.exe).
+    # FileName must be the .exe installer name; URL must be a direct download link.
+    # Update this table whenever Microsoft releases a new Exchange Security Update.
+    $ExchangeSUMap = @{
+        # Exchange SE RTM (15.02.2562.017) -> Feb 2026 SU (KB5074992)
+        '15.02.2562.017' = @{
+            KB            = 'KB5074992'
+            FileName      = 'ExchangeSE-KB5074992-x64-en.exe'
+            URL           = 'https://download.microsoft.com/download/f/0/3/f03a5dab-40cd-44c4-97d4-2cee29064561/ExchangeSE-KB5074992-x64-en.exe'
+            TargetVersion = '15.02.2562.024'
+        }
+        # Exchange 2019 CU15 (15.02.1748.008) -> Jan 2025 SU (KB5049233 SU3 V2)
+        '15.02.1748.008' = @{
+            KB            = 'KB5049233'
+            FileName      = 'Exchange2019-KB5049233-x64-en.exe'
+            URL           = 'https://download.microsoft.com/download/8/0/b/80b356e4-f7b1-4e11-9586-d3132a7a2fc3/Exchange2019-KB5049233-x64-en.exe'
+            TargetVersion = '15.02.1748.016'
+        }
+        # Exchange 2019 CU14 (15.02.1544.004) -> Jan 2025 SU (KB5049233 SU3 V2)
+        '15.02.1544.004' = @{
+            KB            = 'KB5049233'
+            FileName      = 'Exchange2019-KB5049233-x64-en.exe'
+            URL           = 'https://download.microsoft.com/download/8/0/b/80b356e4-f7b1-4e11-9586-d3132a7a2fc3/Exchange2019-KB5049233-x64-en.exe'
+            TargetVersion = '15.02.1544.014'
+        }
+        # Exchange 2019 CU13 (15.02.1258.012) -> Jan 2025 SU (KB5049233 SU7 V2)
+        '15.02.1258.012' = @{
+            KB            = 'KB5049233'
+            FileName      = 'Exchange2019-KB5049233-x64-en.exe'
+            URL           = 'https://download.microsoft.com/download/4/e/5/4e5cbbcc-5894-457d-88c4-c0b2ff7f208f/Exchange2019-KB5049233-x64-en.exe'
+            TargetVersion = '15.02.1258.032'
+        }
+        # Exchange 2016 CU23 (15.01.2507.006) -> Jan 2025 SU (KB5049233 SU14 V2)
+        '15.01.2507.006' = @{
+            KB            = 'KB5049233'
+            FileName      = 'Exchange2016-KB5049233-x64-en.exe'
+            URL           = 'https://download.microsoft.com/download/0/9/9/0998c26c-8eb6-403a-b97a-ae44c4db5e20/Exchange2016-KB5049233-x64-en.exe'
+            TargetVersion = '15.01.2507.043'
+        }
+    }
+
+    function Get-LatestExchangeSecurityUpdate {
+        # Returns SU info hashtable for the currently installed Exchange setup version, or $null if up to date / not applicable.
+        $currentBuild = $State['SetupVersion']
+        if (-not $currentBuild) { return $null }
+        if ($ExchangeSUMap.ContainsKey($currentBuild)) {
+            return $ExchangeSUMap[$currentBuild]
+        }
+        return $null
+    }
+
+    function Install-ExchangeSecurityUpdate {
+        # Downloads and installs an Exchange Security Update .msp patch.
+        if (-not $State['InstallWindowsUpdates']) {
+            Write-MyVerbose 'InstallWindowsUpdates not set, skipping Exchange SU check'
+            return
+        }
+        $su = Get-LatestExchangeSecurityUpdate
+        if (-not $su) {
+            Write-MyOutput 'No known Exchange Security Update applicable for this build'
+            return
+        }
+        Write-MyOutput ('Exchange Security Update {0} available for build {1} -> {2}' -f $su.KB, $State['SetupVersion'], $su.TargetVersion)
+        $suPath = Join-Path $State['InstallPath'] $su.FileName
+        if (-not (Test-Path $suPath)) {
+            Write-MyOutput ('Downloading {0}' -f $su.KB)
+            try {
+                Get-MyPackage -Package $su.KB -URL $su.URL -FileName $su.FileName -InstallPath $State['InstallPath']
+            }
+            catch {
+                Write-MyWarning ('Could not download Exchange SU {0}: {1}. Skipping.' -f $su.KB, $_.Exception.Message)
+                return
+            }
+        }
+        if (Test-Path $suPath) {
+            Write-MyOutput ('Installing Exchange SU {0}' -f $su.KB)
+            $rc = Invoke-Process -FilePath $State['InstallPath'] -FileName $su.FileName -ArgumentList '/passive /norestart'
+            if ($rc -eq 0 -or $rc -eq 3010) {
+                Write-MyOutput ('Exchange SU {0} installed successfully' -f $su.KB)
+                if ($rc -eq 3010) {
+                    Write-MyWarning 'Exchange SU requires a reboot'
+                    $State['RebootRequired'] = $true
+                }
+            }
+            else {
+                Write-MyWarning ('Exchange SU install returned exit code {0}' -f $rc)
+            }
+        }
+    }
+
+    function Test-IsClientOS {
+        # Returns $true when running on a client SKU (Windows 10/11), $false on Server
+        $osInfo = Get-CimInstance -ClassName Win32_OperatingSystem
+        # ProductType: 1 = Workstation/Client, 2 = Domain Controller, 3 = Server
+        return ($osInfo.ProductType -eq 1)
+    }
+
+    function Install-RecipientManagementPrereqs {
+        # Phase 1 of Recipient Management install: OS detection and prerequisite installation
+        if (Test-IsClientOS) {
+            Write-MyOutput 'Client OS detected, installing RSAT Active Directory tools via Add-WindowsCapability'
+            try {
+                $cap = Get-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools*' -ErrorAction Stop
+                if ($cap.State -ne 'Installed') {
+                    Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
+                    Write-MyOutput 'RSAT ADDS tools installed'
+                }
+                else {
+                    Write-MyOutput 'RSAT ADDS tools already installed'
+                }
+            }
+            catch {
+                Write-MyError ('Failed to install RSAT ADDS tools: {0}' -f $_.Exception.Message)
+                exit $ERR_PROBLEMADDINGFEATURE
+            }
+        }
+        else {
+            Write-MyOutput 'Server OS detected, installing RSAT-ADDS via Install-WindowsFeature'
+            try {
+                if (-not (Get-WindowsFeature -Name 'RSAT-ADDS').Installed) {
+                    Install-WindowsFeature -Name 'RSAT-ADDS' -ErrorAction Stop | Out-Null
+                    Write-MyOutput 'RSAT-ADDS installed'
+                }
+                else {
+                    Write-MyOutput 'RSAT-ADDS already installed'
+                }
+            }
+            catch {
+                Write-MyError ('Failed to install RSAT-ADDS feature: {0}' -f $_.Exception.Message)
+                exit $ERR_PROBLEMADDINGFEATURE
+            }
+        }
+    }
+
+    function Install-RecipientManagement {
+        # Phase 2 of Recipient Management install: run setup.exe /roles:ManagementTools + EMT permission script
+        Write-MyVerbose 'Validating Exchange organization is reachable'
+        if (-not (Test-ExchangeOrganization)) {
+            Write-MyWarning 'Exchange organization not detected in Active Directory - installation may fail if AD was not prepared'
+        }
+
+        $setupExe = Join-Path $State['SourcePath'] 'setup.exe'
+        if (-not (Test-Path $setupExe)) {
+            Write-MyError ('Exchange setup.exe not found at {0}' -f $setupExe)
+            exit $ERR_UNEXPTECTEDPHASE
+        }
+
+        Write-MyOutput 'Running Exchange setup.exe /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        $rc = Invoke-Process -FilePath $State['SourcePath'] -FileName 'setup.exe' -ArgumentList '/mode:install /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        if ($rc -ne 0) {
+            Write-MyError ('Exchange setup returned exit code {0}' -f $rc)
+            exit $ERR_UNEXPTECTEDPHASE
+        }
+        Write-MyOutput 'Exchange Management Tools setup completed'
+
+        # Run CSS-Exchange Add-PermissionForEMT.ps1 if available
+        $emtScript = Join-Path $State['InstallPath'] 'Add-PermissionForEMT.ps1'
+        $emtUrl = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/Add-PermissionForEMT.ps1'
+        if (-not (Test-Path $emtScript)) {
+            try {
+                Write-MyVerbose ('Downloading Add-PermissionForEMT from {0}' -f $emtUrl)
+                Start-BitsTransfer -Source $emtUrl -Destination $emtScript -ErrorAction Stop
+            }
+            catch {
+                Write-MyWarning ('Could not download Add-PermissionForEMT.ps1: {0}' -f $_.Exception.Message)
+            }
+        }
+        if (Test-Path $emtScript) {
+            try {
+                Write-MyOutput 'Running Add-PermissionForEMT.ps1'
+                & $emtScript
+            }
+            catch {
+                Write-MyWarning ('Add-PermissionForEMT.ps1 execution failed: {0}' -f $_.Exception.Message)
+            }
+        }
+    }
+
+    function New-RecipientManagementShortcut {
+        # Phase 3 of Recipient Management install: create desktop shortcut loading the RecipientManagement snapin
+        try {
+            $desktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
+            $shortcutPath = Join-Path $desktop 'Exchange Recipient Management.lnk'
+            $shell = New-Object -ComObject WScript.Shell
+            $shortcut = $shell.CreateShortcut($shortcutPath)
+            $shortcut.TargetPath = (Get-Command powershell.exe).Source
+            $shortcut.Arguments = '-NoExit -Command "Add-PSSnapin *RecipientManagement; Write-Host ''Recipient Management snap-in loaded'' -ForegroundColor Green"'
+            $shortcut.IconLocation = '%SystemRoot%\System32\dsa.msc, 0'
+            $shortcut.Description = 'Exchange Recipient Management PowerShell'
+            $shortcut.Save()
+            Write-MyOutput ('Desktop shortcut created: {0}' -f $shortcutPath)
+        }
+        catch {
+            Write-MyWarning ('Could not create desktop shortcut: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Invoke-RecipientManagementADCleanup {
+        # Optional AD cleanup after Recipient Management upgrade install
+        Write-MyOutput 'RecipientMgmtCleanup requested - reviewing legacy Exchange permissions'
+        Write-MyWarning 'AD cleanup is a manual safety gate. Review the following and run required Set-ADPermission commands manually if desired.'
+        Write-MyOutput 'Reference: https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/post-installation-tasks'
+    }
+
+    function Install-ManagementToolsPrereqs {
+        # Phase 1 of Management Tools install: Windows prerequisites
+        Write-MyOutput 'Installing Windows prerequisites for Exchange Management Tools'
+        if (Test-IsClientOS) {
+            Write-MyError 'Exchange Management Tools setup requires a Windows Server OS. Use -InstallRecipientManagement for client OS installs.'
+            exit $ERR_UNEXPECTEDOS
+        }
+        $features = @('RSAT-ADDS', 'NET-Framework-45-Features')
+        foreach ($f in $features) {
+            if (-not (Get-WindowsFeature -Name $f -ErrorAction SilentlyContinue).Installed) {
+                try {
+                    Install-WindowsFeature -Name $f -ErrorAction Stop | Out-Null
+                    Write-MyOutput ('Installed Windows feature: {0}' -f $f)
+                }
+                catch {
+                    Write-MyWarning ('Could not install {0}: {1}' -f $f, $_.Exception.Message)
+                }
+            }
+        }
+    }
+
+    function Install-ManagementToolsRuntimePrereqs {
+        # Phase 2 of Management Tools install: runtime prerequisites (VC++, URL Rewrite)
+        Write-MyOutput 'Installing runtime prerequisites for Exchange Management Tools'
+        # Management Tools only needs the baseline runtimes, not the full Exchange server stack.
+        # Reuse existing VC++ helper functions where applicable (Install-MyPackage with the same IDs).
+        Write-MyVerbose 'VC++ and URL Rewrite prerequisites are pulled in by setup.exe /roles:ManagementTools on demand'
+    }
+
+    function Install-ManagementToolsOnly {
+        # Phase 3 of Management Tools install: run setup /roles:ManagementTools
+        $setupExe = Join-Path $State['SourcePath'] 'setup.exe'
+        if (-not (Test-Path $setupExe)) {
+            Write-MyError ('Exchange setup.exe not found at {0}' -f $setupExe)
+            exit $ERR_UNEXPTECTEDPHASE
+        }
+        Write-MyOutput 'Running Exchange setup.exe /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        $rc = Invoke-Process -FilePath $State['SourcePath'] -FileName 'setup.exe' -ArgumentList '/mode:install /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        if ($rc -ne 0) {
+            Write-MyError ('Exchange setup returned exit code {0}' -f $rc)
+            exit $ERR_UNEXPTECTEDPHASE
+        }
+        Write-MyOutput 'Exchange Management Tools installed successfully'
+    }
+
     function Cleanup {
         Write-MyOutput "Cleaning up .."
 
-        if ( Get-WindowsFeature Bits) {
+        if ( (Get-WindowsFeature -Name 'Bits').Installed) {
             Write-MyOutput "Removing BITS feature"
             Remove-WindowsFeature Bits
         }
@@ -2560,9 +3217,42 @@ $($htmlRows -join "`n")
         Remove-Item $Statefile
     }
 
+    function Write-PhaseProgress {
+        # Lightweight wrapper: Write-Progress for phase-level and step-level feedback.
+        # Id 0 = overall install progress (Phase X of 6)
+        # Id 1 = current-phase step progress (used in Phase 5 only)
+        param(
+            [int]$Id = 0,
+            [string]$Activity,
+            [string]$Status,
+            [int]$PercentComplete = -1,
+            [switch]$Completed
+        )
+        if ($Completed) {
+            Write-Progress -Id $Id -Activity $Activity -Completed
+        }
+        elseif ($PercentComplete -ge 0) {
+            Write-Progress -Id $Id -Activity $Activity -Status $Status -PercentComplete $PercentComplete
+        }
+        else {
+            Write-Progress -Id $Id -Activity $Activity -Status $Status
+        }
+    }
+
     function LockScreen {
         Write-MyVerbose 'Locking system'
         rundll32.exe user32.dll, LockWorkStation
+    }
+
+    function Clear-DesktopBackground {
+        # Remove the desktop wallpaper during install — reduces visual distraction and
+        # avoids Windows trying to render/cache wallpaper images while setup runs.
+        # No restore needed: the server reboots multiple times during installation.
+        # Uses registry + RUNDLL32 to avoid slow Add-Type/C# compilation on each phase start.
+        Write-MyVerbose 'Clearing desktop background'
+        Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name Wallpaper -Value '' -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name WallpaperStyle -Value '0' -ErrorAction SilentlyContinue
+        Start-Process -FilePath 'RUNDLL32.EXE' -ArgumentList 'user32.dll, UpdatePerUserSystemParameters' -NoNewWindow -Wait -ErrorAction SilentlyContinue
     }
 
     function Enable-HighPerformancePowerPlan {
@@ -2756,6 +3446,44 @@ $($htmlRows -join "`n")
         }
     }
 
+    function Disable-ServerManagerAtLogon {
+        # Disable Server Manager at logon for ALL users (machine-wide).
+        # Three layers are used for complete coverage:
+        #   1. Machine-wide Group Policy key — overrides per-user HKCU settings
+        #   2. Default user hive — applies to new user profiles created after this point
+        #   3. Scheduled task — belt-and-suspenders, prevents task-triggered launch
+        Write-MyOutput 'Disabling Server Manager at logon for all users'
+
+        # Layer 1: Machine-wide policy (overrides HKCU for all users)
+        $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Server\ServerManager'
+        if (-not (Test-Path $policyPath -ErrorAction SilentlyContinue)) {
+            New-Item -Path $policyPath -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-RegistryValue -Path $policyPath -Name 'DoNotOpenAtLogon' -Value 1 -PropertyType DWord
+
+        # Layer 2: Default user profile hive (new users created after this point)
+        $defaultHive    = 'C:\Users\Default\NTUSER.DAT'
+        $defaultHiveKey = 'HKU\ExchangeInstallDefault'
+        if (Test-Path $defaultHive) {
+            $null = reg load $defaultHiveKey $defaultHive 2>$null
+            if (Test-Path "Registry::$defaultHiveKey\Software\Microsoft\ServerManager") {
+                Set-ItemProperty -Path "Registry::$defaultHiveKey\Software\Microsoft\ServerManager" -Name 'DoNotOpenServerManagerAtLogon' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+            }
+            else {
+                New-Item -Path "Registry::$defaultHiveKey\Software\Microsoft\ServerManager" -Force -ErrorAction SilentlyContinue | Out-Null
+                New-ItemProperty -Path "Registry::$defaultHiveKey\Software\Microsoft\ServerManager" -Name 'DoNotOpenServerManagerAtLogon' -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            $null = reg unload $defaultHiveKey 2>$null
+        }
+
+        # Layer 3: Disable the ServerManager scheduled task (machine-wide)
+        $smTask = Get-ScheduledTask -TaskName 'ServerManager' -TaskPath '\Microsoft\Windows\Server Manager\' -ErrorAction SilentlyContinue
+        if ($smTask -and $smTask.State -ne 'Disabled') {
+            $smTask | Disable-ScheduledTask | Out-Null
+            Write-MyVerbose 'Disabled scheduled task: \Microsoft\Windows\Server Manager\ServerManager'
+        }
+    }
+
     function Set-CRLCheckTimeout {
         # Prevents Exchange startup delays when CRL endpoints are unreachable
         Write-MyOutput 'Configuring Certificate Revocation List check timeout (15 seconds)'
@@ -2781,17 +3509,55 @@ $($htmlRows -join "`n")
     }
 
     function Enable-RSSOnAllNICs {
-        # HealthChecker warns if RSS is supported by the NIC but disabled
+        # HealthChecker warns if RSS is disabled or queue count does not match physical core count
         Write-MyOutput 'Enabling Receive Side Scaling (RSS) on all supported NICs'
+        $physicalCores = (Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue |
+            Measure-Object -Property NumberOfCores -Sum).Sum
+        if (-not $physicalCores -or $physicalCores -lt 1) { $physicalCores = 1 }
+        Write-MyVerbose ('Physical core count: {0} — setting RSS queue count to match' -f $physicalCores)
         try {
-            Get-NetAdapterRss -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $false } | ForEach-Object {
-                Write-MyVerbose ('Enabling RSS on adapter: {0}' -f $_.Name)
-                Enable-NetAdapterRss -Name $_.Name -ErrorAction SilentlyContinue
+            Get-NetAdapterRss -ErrorAction SilentlyContinue | ForEach-Object {
+                if (-not $_.Enabled) {
+                    Write-MyVerbose ('Enabling RSS on adapter: {0}' -f $_.Name)
+                    Enable-NetAdapterRss -Name $_.Name -ErrorAction SilentlyContinue
+                }
+                Set-NetAdapterRss -Name $_.Name -NumberOfReceiveQueues $physicalCores -ErrorAction SilentlyContinue
+                Write-MyVerbose ('Set RSS queues to {0} on adapter: {1}' -f $physicalCores, $_.Name)
             }
         }
         catch {
-            Write-MyWarning ('Problem enabling RSS: {0}' -f $_.Exception.Message)
+            Write-MyWarning ('Problem configuring RSS: {0}' -f $_.Exception.Message)
         }
+    }
+
+    function Enable-LSAProtection {
+        # Enables LSA Protection (RunAsPPL) to prevent credential theft from LSASS memory.
+        # Exchange 2019 CU12+ and Exchange SE are compatible with LSA Protection.
+        # Earlier Exchange versions (2016, pre-CU12 2019) may conflict with legacy auth providers.
+        # The setting takes effect after the next reboot.
+        $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa'
+        $current = (Get-ItemProperty -Path $regPath -Name RunAsPPL -ErrorAction SilentlyContinue).RunAsPPL
+        if ($current -eq 1) {
+            Write-MyVerbose 'LSA Protection (RunAsPPL) already enabled'
+            return
+        }
+        Write-MyOutput 'Enabling LSA Protection (RunAsPPL) — effective after next reboot'
+        Set-RegistryValue -Path $regPath -Name 'RunAsPPL' -Value 1 -PropertyType DWord
+        # Audit mode first (2) is not used here as Exchange servers are domain-joined production systems
+        # and Exchange 2019 CU12+/SE are fully compatible with RunAsPPL = 1.
+    }
+
+    function Set-MaxConcurrentAPI {
+        # Netlogon MaxConcurrentApi limits simultaneous Kerberos/NTLM authentication requests
+        # against domain controllers. Exchange generates heavy auth load; the default (10) can
+        # cause 0xC000005E (No logon servers) errors under load on busy servers.
+        # Microsoft recommendation for Exchange: raise to match logical processor count (min 10).
+        Write-MyOutput 'Setting Netlogon MaxConcurrentApi for Kerberos authentication optimization'
+        $logicalProcs = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue).NumberOfLogicalProcessors
+        if (-not $logicalProcs -or $logicalProcs -lt 10) { $logicalProcs = 10 }
+        $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
+        Set-RegistryValue -Path $regPath -Name 'MaxConcurrentApi' -Value $logicalProcs -PropertyType DWord
+        Write-MyVerbose ('MaxConcurrentApi set to {0}' -f $logicalProcs)
     }
 
     function Set-CtsProcessorAffinityPercentage {
@@ -3180,7 +3946,7 @@ $($htmlRows -join "`n")
                             Stop-WebAppPool -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction Stop
                         }
                         catch {
-                            Write-Error ('Failed to stop app pool: {0}' -f $Error[0].ExceptionMessage)
+                            Write-Error ('Failed to stop app pool: {0}' -f $_.Exception.Message)
                         }
                     }
                     try {
@@ -3188,7 +3954,7 @@ $($htmlRows -join "`n")
                         Set-ItemProperty "IIS:\AppPools\MSExchangeAutodiscoverAppPool" -Name "startMode" -Value "OnDemand" -ErrorAction Stop
                     }
                     catch {
-                        Write-Error ('Failed to update app pool properties: {0}' -f $Error[0].ExceptionMessage)
+                        Write-Error ('Failed to update app pool properties: {0}' -f $_.Exception.Message)
                     }
                     return $true
                 }
@@ -3212,7 +3978,7 @@ $($htmlRows -join "`n")
     function Enable-MSExchangeAutodiscoverAppPool {
         if (Get-WebAppPoolState -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction SilentlyContinue) {
 
-            Write-Host 'Starting and enabling startup of MSExchangeAutodiscoverAppPool'
+            Write-MyOutput 'Starting and enabling startup of MSExchangeAutodiscoverAppPool'
             try {
                 Start-WebAppPool -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction Stop
             }
@@ -3255,13 +4021,256 @@ $($htmlRows -join "`n")
         }
     }
 
+    function Show-InstallationMenu {
+        # Interactive console menu. Returns a hashtable of all chosen settings, or $null if user cancelled.
+        # Uses Read-Host for all input so it works reliably over RDP, Hyper-V console and Windows Terminal.
+
+        $modes = @{
+            1 = 'Exchange Server (Mailbox)'
+            2 = 'Exchange Server (Edge Transport)'
+            3 = 'Recipient Management Tools'
+            4 = 'Exchange Management Tools only'
+            5 = 'Recovery Mode'
+        }
+
+        # Toggle definitions: Key=letter, Name=parameter name, Default=initial state
+        # TLS 1.3 requires Windows Server 2022 (build 20348) or later
+        $tls13Default = [int]$MinorOSVersion -ge 20348
+
+        # Name = parameter/cfg key; Label = display text shown in menu
+        $toggleDefs = [ordered]@{
+            'A' = @{ Name='AutoPilot';             Label='AutoPilot (auto-reboot)';      Default=$true  }
+            'B' = @{ Name='IncludeFixes';           Label='Install Exchange SU';           Default=$true  }
+            'C' = @{ Name='DisableSSL3';            Label='Disable SSL 3.0';               Default=$true  }
+            'D' = @{ Name='DisableRC4';             Label='Disable RC4';                   Default=$true  }
+            'E' = @{ Name='EnableECC';              Label='Enable ECC ciphers';            Default=$true  }
+            'F' = @{ Name='NoCBC';                  Label='Disable CBC (not recommended)'; Default=$false }
+            'G' = @{ Name='EnableAMSI';             Label='Enable AMSI';                   Default=$true  }
+            'H' = @{ Name='EnableTLS12';            Label='Enforce TLS 1.2';               Default=$true  }
+            'I' = @{ Name='DoNotEnableEP';          Label='No Extended Protection';        Default=$false }
+            'J' = @{ Name='EnableTLS13';            Label='Enable TLS 1.3';                Default=$tls13Default }
+            'K' = @{ Name='DiagnosticData';         Label='Send diagnostic data';          Default=$false }
+            'L' = @{ Name='Lock';                   Label='Lock screen during install';    Default=$false }
+            'M' = @{ Name='SkipRolesCheck';         Label='Skip AD roles check';           Default=$false }
+            'N' = @{ Name='PreflightOnly';          Label='Preflight only (no install)';   Default=$false }
+            'O' = @{ Name='NoCheckpoint';           Label='Skip restore checkpoints';      Default=$false }
+            'P' = @{ Name='SkipHealthCheck';        Label='Skip HealthChecker';            Default=$false }
+            'Q' = @{ Name='NoNet481';               Label='Skip .NET 4.8.1 install';       Default=$false }
+            'R' = @{ Name='InstallWindowsUpdates';  Label='Install Windows Updates';       Default=$true  }
+        }
+
+        # Toggles disabled per mode (letters that cannot be toggled in that mode)
+        $disabledToggles = @{
+            1 = @()
+            2 = @('I','G')
+            3 = @('B','C','D','E','F','G','H','I','J','K','L','M','N','P','Q','R')
+            4 = @('B','I','G')
+            5 = @()
+        }
+
+        # Initialize toggle states from defaults
+        $toggleState = @{}
+        foreach ($k in $toggleDefs.Keys) { $toggleState[$k] = $toggleDefs[$k].Default }
+
+        $selectedMode = 0
+
+        function Write-MenuLine {
+            param([string]$Line, [System.ConsoleColor]$Color = [System.ConsoleColor]::White)
+            Write-Host $Line -ForegroundColor $Color
+        }
+
+        function Draw-Menu {
+            param([int]$Mode, [hashtable]$ToggState, [string]$StatusMsg = '')
+            Clear-Host
+            Write-MenuLine ('=' * 60) Cyan
+            Write-MenuLine ('  Install-Exchange15 v{0}' -f $ScriptVersion) Cyan
+            Write-MenuLine ('=' * 60) Cyan
+            Write-Host ''
+            Write-MenuLine '  Installation Mode:' Yellow
+            for ($i = 1; $i -le 5; $i++) {
+                $marker = if ($Mode -eq $i) { '>' } else { ' ' }
+                $color  = if ($Mode -eq $i) { [System.ConsoleColor]::Green } else { [System.ConsoleColor]::Gray }
+                Write-Host ('    [{0}] {1}  {2}' -f $i, $marker, $modes[$i]) -ForegroundColor $color
+            }
+            Write-Host ''
+            Write-MenuLine '  Switches (toggle A-R, then ENTER to proceed to inputs):' Yellow
+
+            $disabled = if ($Mode -gt 0) { $disabledToggles[$Mode] } else { @() }
+            $letters  = @($toggleDefs.Keys)
+            # Render two columns
+            for ($r = 0; $r -lt [Math]::Ceiling($letters.Count / 2); $r++) {
+                $left  = $letters[$r]
+                $right = $letters[$r + [Math]::Ceiling($letters.Count / 2)]
+                $leftDis  = $disabled -contains $left
+                $rightDis = $right -and ($disabled -contains $right)
+                $leftVal  = if ($ToggState[$left])  { 'X' } else { ' ' }
+                $rightVal = if ($right -and $ToggState[$right]) { 'X' } else { ' ' }
+                $leftStr  = '  [{0}] {1,-28} [{2}]' -f $left,  $toggleDefs[$left].Label,  $leftVal
+                $rightStr = if ($right) { '   [{0}] {1,-28} [{2}]' -f $right, $toggleDefs[$right].Label, $rightVal } else { '' }
+                $lColor = if ($leftDis)  { [System.ConsoleColor]::DarkGray } else { [System.ConsoleColor]::White }
+                $rColor = if ($rightDis) { [System.ConsoleColor]::DarkGray } else { [System.ConsoleColor]::White }
+                Write-Host $leftStr  -ForegroundColor $lColor -NoNewline
+                Write-Host $rightStr -ForegroundColor $rColor
+            }
+
+            Write-Host ''
+            if ($StatusMsg) { Write-Host "  $StatusMsg" -ForegroundColor Yellow }
+        }
+
+        # --- Step 1: Mode selection ---
+        while ($selectedMode -lt 1 -or $selectedMode -gt 5) {
+            Draw-Menu -Mode $selectedMode -ToggState $toggleState
+            $raw = Read-Host '  Mode [1-5]'
+            if ($raw -match '^[1-5]$') {
+                $selectedMode = [int]$raw
+                # Apply mode-specific toggle defaults
+                switch ($selectedMode) {
+                    2 { $toggleState['G'] = $false; $toggleState['I'] = $false }
+                    3 { foreach ($k in $disabledToggles[3]) { $toggleState[$k] = $false } }
+                }
+            }
+        }
+
+        # --- Step 2: Toggle switches ---
+        # Try RawUI.ReadKey (no Enter needed); fall back to Read-Host if console is not interactive
+        # (e.g. stdin redirected, PS2Exe without console, or restricted host).
+        $useRawKey = $false
+        try {
+            $null = $host.UI.RawUI.KeyAvailable  # throws if RawUI is not available
+            $useRawKey = $true
+        } catch { }
+
+        $statusMsg = ''
+        while ($true) {
+            Draw-Menu -Mode $selectedMode -ToggState $toggleState -StatusMsg $statusMsg
+            $statusMsg = ''
+
+            if ($useRawKey) {
+                Write-Host '  Press A-R to toggle, ENTER to continue: ' -NoNewline -ForegroundColor Cyan
+                try {
+                    $keyInfo = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                    $vk  = $keyInfo.VirtualKeyCode
+                    $raw = $keyInfo.Character.ToString().ToUpper()
+                    Write-Host $raw  # echo the pressed key
+                    if ($vk -eq 13) { break }                          # Enter
+                    if ($vk -eq 27) { return $null }                   # Escape = cancel
+                } catch {
+                    # RawUI failed mid-session — fall back
+                    $useRawKey = $false
+                    $raw = (Read-Host '').Trim().ToUpper()
+                    if ($raw -eq '') { break }
+                }
+            }
+            else {
+                $raw = (Read-Host '  Toggle [A-R] or ENTER to continue').Trim().ToUpper()
+                if ($raw -eq '') { break }
+            }
+
+            if ($raw.Length -eq 1 -and $toggleDefs.Contains($raw)) {
+                if ($disabledToggles[$selectedMode] -contains $raw) {
+                    $statusMsg = "[$raw] is not available in this mode"
+                }
+                else {
+                    $toggleState[$raw] = -not $toggleState[$raw]
+                }
+            }
+            elseif ($raw.Length -gt 0) {
+                $statusMsg = "Unknown key '$raw' — press A-R to toggle or ENTER to continue"
+            }
+        }
+
+        # --- Step 3: String inputs (context-dependent) ---
+        Clear-Host
+        Write-MenuLine ('=' * 60) Cyan
+        Write-MenuLine ("  Install-Exchange15 v{0} - Mode: {1}" -f $ScriptVersion, $modes[$selectedMode]) Cyan
+        Write-MenuLine ('=' * 60) Cyan
+        Write-Host ''
+        Write-MenuLine '  Enter values (leave blank for default, shown in [brackets]):' Yellow
+        Write-Host ''
+
+        function Read-MenuInput {
+            param([string]$Prompt, [string]$Default = '', [bool]$Required = $false)
+            $displayDefault = if ($Default) { "[$Default]" } else { '' }
+            $full = if ($displayDefault) { "  $Prompt $displayDefault" } else { "  $Prompt" }
+            while ($true) {
+                $val = Read-Host $full
+                if ($val -eq '') { $val = $Default }
+                if ($Required -and -not $val) {
+                    Write-Host '  (required - cannot be empty)' -ForegroundColor Yellow
+                }
+                else { return $val }
+            }
+        }
+
+        $cfg = @{}
+        $cfg['Mode']       = $selectedMode
+        $cfg['SourcePath'] = Read-MenuInput -Prompt 'Exchange source (folder or .iso)' -Default 'C:\Install\Exchange-Server-Install.iso' -Required $true
+        $cfg['InstallPath'] = Read-MenuInput -Prompt 'Working/log folder' -Default 'C:\Install'
+
+        if ($selectedMode -eq 1) {
+            $cfg['Organization']     = Read-MenuInput -Prompt 'Organization name      (blank = use existing org)'
+            $cfg['MDBName']          = Read-MenuInput -Prompt 'Mailbox DB name        (blank = default name)'
+            $cfg['MDBDBPath']        = Read-MenuInput -Prompt 'Mailbox DB path        (blank = Exchange default)'
+            $cfg['MDBLogPath']       = Read-MenuInput -Prompt 'Mailbox log path       (blank = Exchange default)'
+            $cfg['SCP']              = Read-MenuInput -Prompt 'Autodiscover SCP URL   (blank = keep, - = remove)'
+            $cfg['TargetPath']       = Read-MenuInput -Prompt 'Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'
+            $cfg['DAGName']          = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+            $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none)'
+            $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)'
+        }
+        elseif ($selectedMode -eq 2) {
+            $cfg['EdgeDNSSuffix'] = Read-MenuInput -Prompt 'Edge DNS suffix (e.g. edge.contoso.com)' -Required $true
+            $cfg['TargetPath']    = Read-MenuInput -Prompt 'Exchange install path  (blank = Exchange default)'
+        }
+        elseif ($selectedMode -eq 3) {
+            $cfg['RecipientMgmtCleanup'] = (Read-MenuInput -Prompt 'Run AD cleanup after install? [Y/N]' -Default 'N') -imatch '^[Yy]'
+        }
+
+        # Copy toggle values into cfg
+        foreach ($k in $toggleDefs.Keys) {
+            $cfg[$toggleDefs[$k].Name] = $toggleState[$k]
+        }
+
+        # --- Step 4: Summary + confirmation ---
+        while ($true) {
+            Clear-Host
+            Write-MenuLine ('=' * 60) Cyan
+            Write-MenuLine '  Summary' Cyan
+            Write-MenuLine ('=' * 60) Cyan
+            Write-Host ''
+            Write-Host ('  Mode    : {0}' -f $modes[$selectedMode]) -ForegroundColor Green
+            Write-Host ('  Source  : {0}' -f $cfg['SourcePath'])
+            Write-Host ('  Install : {0}' -f $cfg['InstallPath'])
+            if ($cfg['Organization']) { Write-Host ('  Org     : {0}' -f $cfg['Organization']) }
+            # Active switches
+            $activeToggles = ($toggleDefs.Keys | Where-Object { $toggleState[$_] -and ($disabledToggles[$selectedMode] -notcontains $_) }) -join ', '
+            if ($activeToggles) { Write-Host ('  Switches: {0}' -f $activeToggles) }
+            Write-Host ''
+            $confirm = Read-Host '  Start installation? [Y=yes / N=back to menu / Q=quit]'
+            if ($confirm -imatch '^[Yy]') { return $cfg }
+            if ($confirm -imatch '^[Qq]') { return $null }
+            # N or anything else = restart from mode selection
+            $selectedMode = 0
+            while ($selectedMode -lt 1 -or $selectedMode -gt 5) {
+                Draw-Menu -Mode $selectedMode -ToggState $toggleState
+                $raw = Read-Host '  Mode [1-5]'
+                if ($raw -match '^[1-5]$') { $selectedMode = [int]$raw }
+            }
+        }
+    }
+
     ########################################
     # MAIN
     ########################################
 
     #Requires -Version 5.1
 
-    $ScriptFullName = $MyInvocation.MyCommand.Path
+    # When compiled with PS2Exe, MyInvocation.MyCommand.Path is empty — fall back to the process image path
+    $ScriptFullName = if ($MyInvocation.MyCommand.Path) {
+        $MyInvocation.MyCommand.Path
+    } else {
+        [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    }
     $ScriptName = $ScriptFullName.Split("\")[-1]
     $ParameterString = $PSBoundParameters.getEnumerator() -join " "
     $OSVersionParts = (Get-CimInstance -ClassName Win32_OperatingSystem).Version.Split('.')
@@ -3289,8 +4298,121 @@ $($htmlRows -join "`n")
     Write-Output ('Running on OS build {0}' -f $FullOSVersion)
 
     if (! $State.Count) {
-        # No state, initialize settings from parameters
-        if ( $($PsCmdlet.ParameterSetName) -eq "AutoPilot") {
+        # No state, initialize settings from parameters.
+        # When started interactively with no meaningful parameters (default AutoPilot set, no bound params
+        # other than the defaults), show the interactive installation menu.
+        $isInteractiveStart = [Environment]::UserInteractive -and
+                              ($PsCmdlet.ParameterSetName -eq 'AutoPilot') -and
+                              ($PSBoundParameters.Keys | Where-Object { $_ -notin @('InstallPath','Verbose','Debug') }).Count -eq 0
+
+        if ($isInteractiveStart) {
+            $menuResult = Show-InstallationMenu
+            if (-not $menuResult) {
+                Write-Output 'Installation cancelled.'
+                exit $ERR_OK
+            }
+            # Map menu result back to parameter-equivalent variables so the standard state init below can run
+            $mode            = $menuResult['Mode']
+            $SourcePath      = $menuResult['SourcePath']
+            $InstallPath     = if ($menuResult['InstallPath']) { $menuResult['InstallPath'] } else { 'C:\Install' }
+            $Organization    = $menuResult['Organization']
+            $MDBName         = $menuResult['MDBName']
+            $MDBDBPath       = $menuResult['MDBDBPath']
+            $MDBLogPath      = $menuResult['MDBLogPath']
+            $SCP             = if ($menuResult['SCP']) { $menuResult['SCP'] } else { '' }
+            $TargetPath      = $menuResult['TargetPath']
+            $DAGName         = $menuResult['DAGName']
+            $CopyServerConfig    = $menuResult['CopyServerConfig']
+            $CertificatePath     = $menuResult['CertificatePath']
+            $EdgeDNSSuffix       = $menuResult['EdgeDNSSuffix']
+            $AutoPilot           = [switch]($menuResult['AutoPilot'])
+            $IncludeFixes        = [switch]($menuResult['IncludeFixes'])
+            $DisableSSL3         = [switch]($menuResult['DisableSSL3'])
+            $DisableRC4          = [switch]($menuResult['DisableRC4'])
+            $EnableECC           = [switch]($menuResult['EnableECC'])
+            $NoCBC               = [switch]($menuResult['NoCBC'])
+            $EnableAMSI          = [switch]($menuResult['EnableAMSI'])
+            $EnableTLS12         = [switch]($menuResult['EnableTLS12'])
+            $EnableTLS13         = [switch]($menuResult['EnableTLS13'])
+            $DoNotEnableEP       = [switch]($menuResult['DoNotEnableEP'])
+            $DiagnosticData      = [switch]($menuResult['DiagnosticData'])
+            $Lock                = [switch]($menuResult['Lock'])
+            $SkipRolesCheck      = [switch]($menuResult['SkipRolesCheck'])
+            $PreflightOnly       = [switch]($menuResult['PreflightOnly'])
+            $NoCheckpoint        = [switch]($menuResult['NoCheckpoint'])
+            $SkipHealthCheck         = [switch]($menuResult['SkipHealthCheck'])
+            $NoNet481                = [switch]($menuResult['NoNet481'])
+            $InstallWindowsUpdates   = [switch]($menuResult['InstallWindowsUpdates'])
+            $InstallEdge         = [switch]($mode -eq 2)
+            $Recover             = [switch]($mode -eq 5)
+            $NoSetup             = [switch]($false)
+            $InstallRecipientManagement = [switch]($mode -eq 3)
+            $InstallManagementTools     = [switch]($mode -eq 4)
+            $RecipientMgmtCleanup = [switch]($menuResult['RecipientMgmtCleanup'])
+            # Reload state file path with potentially updated InstallPath
+            $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
+        }
+        elseif ($ConfigFile) {
+            # Headless mode: load all parameters from a .psd1 config file.
+            # The menu is automatically skipped when -ConfigFile is specified.
+            Write-MyOutput "Loading configuration from $ConfigFile"
+            $cfg = Import-PowerShellDataFile -Path $ConfigFile -ErrorAction Stop
+
+            # Helper: read a value from the config, or keep the current parameter value
+            function Get-CfgValue { param($Key, $Current) if ($cfg.ContainsKey($Key)) { $cfg[$Key] } else { $Current } }
+
+            # Paths
+            $SourcePath   = Get-CfgValue 'SourcePath'   $SourcePath
+            $InstallPath  = if (Get-CfgValue 'InstallPath' $InstallPath) { Get-CfgValue 'InstallPath' $InstallPath } else { 'C:\Install' }
+
+            # Exchange config
+            $Organization     = Get-CfgValue 'Organization'     $Organization
+            $MDBName          = Get-CfgValue 'MDBName'          $MDBName
+            $MDBDBPath        = Get-CfgValue 'MDBDBPath'        $MDBDBPath
+            $MDBLogPath       = Get-CfgValue 'MDBLogPath'       $MDBLogPath
+            $SCP              = Get-CfgValue 'SCP'              $SCP
+            $TargetPath       = Get-CfgValue 'TargetPath'       $TargetPath
+            $DAGName          = Get-CfgValue 'DAGName'          $DAGName
+            $CopyServerConfig = Get-CfgValue 'CopyServerConfig' $CopyServerConfig
+            $CertificatePath  = Get-CfgValue 'CertificatePath'  $CertificatePath
+            $EdgeDNSSuffix    = Get-CfgValue 'EdgeDNSSuffix'    $EdgeDNSSuffix
+
+            # Installation mode
+            $InstallEdge                = [switch](Get-CfgValue 'InstallEdge'                ([bool]$InstallEdge))
+            $Recover                    = [switch](Get-CfgValue 'Recover'                    ([bool]$Recover))
+            $NoSetup                    = [switch](Get-CfgValue 'NoSetup'                    ([bool]$NoSetup))
+            $InstallRecipientManagement = [switch](Get-CfgValue 'InstallRecipientManagement' ([bool]$InstallRecipientManagement))
+            $InstallManagementTools     = [switch](Get-CfgValue 'InstallManagementTools'     ([bool]$InstallManagementTools))
+            $RecipientMgmtCleanup       = [switch](Get-CfgValue 'RecipientMgmtCleanup'       ([bool]$RecipientMgmtCleanup))
+
+            # Security / TLS switches
+            $AutoPilot      = [switch](Get-CfgValue 'AutoPilot'      ([bool]$AutoPilot))
+            $IncludeFixes   = [switch](Get-CfgValue 'IncludeFixes'   ([bool]$IncludeFixes))
+            $DisableSSL3    = [switch](Get-CfgValue 'DisableSSL3'    ([bool]$DisableSSL3))
+            $DisableRC4     = [switch](Get-CfgValue 'DisableRC4'     ([bool]$DisableRC4))
+            $EnableECC      = [switch](Get-CfgValue 'EnableECC'      ([bool]$EnableECC))
+            $NoCBC          = [switch](Get-CfgValue 'NoCBC'          ([bool]$NoCBC))
+            $EnableAMSI     = [switch](Get-CfgValue 'EnableAMSI'     ([bool]$EnableAMSI))
+            $EnableTLS12    = [switch](Get-CfgValue 'EnableTLS12'    ([bool]$EnableTLS12))
+            $EnableTLS13    = [switch](Get-CfgValue 'EnableTLS13'    ([bool]$EnableTLS13))
+            $DoNotEnableEP  = [switch](Get-CfgValue 'DoNotEnableEP'  ([bool]$DoNotEnableEP))
+            $DiagnosticData = [switch](Get-CfgValue 'DiagnosticData' ([bool]$DiagnosticData))
+
+            # Options
+            $Lock                 = [switch](Get-CfgValue 'Lock'                 ([bool]$Lock))
+            $SkipRolesCheck       = [switch](Get-CfgValue 'SkipRolesCheck'       ([bool]$SkipRolesCheck))
+            $PreflightOnly        = [switch](Get-CfgValue 'PreflightOnly'        ([bool]$PreflightOnly))
+            $NoCheckpoint         = [switch](Get-CfgValue 'NoCheckpoint'         ([bool]$NoCheckpoint))
+            $SkipHealthCheck      = [switch](Get-CfgValue 'SkipHealthCheck'      ([bool]$SkipHealthCheck))
+            $NoNet481             = [switch](Get-CfgValue 'NoNet481'             ([bool]$NoNet481))
+            $InstallWindowsUpdates = [switch](Get-CfgValue 'InstallWindowsUpdates' ([bool]$InstallWindowsUpdates))
+            $SkipWindowsUpdates   = [switch](Get-CfgValue 'SkipWindowsUpdates'   ([bool]$SkipWindowsUpdates))
+
+            # Recalculate state file path with potentially overridden InstallPath
+            $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
+            Write-MyOutput "Configuration loaded: mode=$(if ($InstallEdge){'Edge'}elseif($Recover){'Recovery'}else{'Mailbox'}), source=$SourcePath, org=$Organization"
+        }
+        elseif ( $($PsCmdlet.ParameterSetName) -eq "AutoPilot") {
             Write-Error "Running in AutoPilot mode but no state file present"
             exit $ERR_AUTOPILOTNOSTATEFILE
         }
@@ -3302,10 +4424,17 @@ $($htmlRows -join "`n")
         $State["InstallMDBName"] = $MDBName
         $State["InstallPhase"] = 0
         $State["OrganizationName"] = $Organization
-        $State["AdminAccount"] = $Credentials.UserName
-        $State["AdminPassword"] = ($Credentials.Password | ConvertFrom-SecureString -ErrorAction SilentlyContinue)
+        $State["AdminAccount"] = if ($Credentials) { $Credentials.UserName } else { $null }
+        $State["AdminPassword"] = if ($Credentials) { ($Credentials.Password | ConvertFrom-SecureString -ErrorAction SilentlyContinue) } else { $null }
         if ( Get-DiskImage -ImagePath $SourcePath -ErrorAction SilentlyContinue) {
             $State['SourceImage'] = $SourcePath
+            # Unblock ISO before mounting: on WS2022+ Windows propagates MOTW from the ISO container
+            # to all files executed from it. Zone.Identifier ADS on the ISO itself must be removed first
+            # because files inside UDF (ISO9660) cannot carry ADS and cannot be unblocked after mounting.
+            if ( Get-Item -Path $SourcePath -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue) {
+                Write-MyOutput "ISO source has Zone.Identifier — unblocking before mount to prevent MOTW propagation"
+                Unblock-File -Path $SourcePath
+            }
             $State["SourcePath"] = Resolve-SourcePath -SourceImage $SourcePath
         }
         else {
@@ -3350,6 +4479,10 @@ $($htmlRows -join "`n")
         $State["SkipHealthCheck"] = $SkipHealthCheck
         $State["NoCheckpoint"] = $NoCheckpoint
         $State["ServerConfigExportPath"] = $null
+        $State["InstallRecipientManagement"] = [bool]$InstallRecipientManagement
+        $State["InstallManagementTools"] = [bool]$InstallManagementTools
+        $State["RecipientMgmtCleanup"] = [bool]$RecipientMgmtCleanup
+        $State["InstallWindowsUpdates"] = [bool]$InstallWindowsUpdates -and -not [bool]$SkipWindowsUpdates
 
         # Prompt for PFX password at startup if certificate path specified
         if ($CertificatePath) {
@@ -3376,6 +4509,8 @@ $($htmlRows -join "`n")
         LockScreen
     }
 
+    Clear-DesktopBackground
+
     if ( $State.containsKey("LastSuccessfulPhase")) {
         Write-MyVerbose "Continuing from last successful phase $($State["InstallPhase"])"
         $State["InstallPhase"] = $State["LastSuccessfulPhase"]
@@ -3397,6 +4532,10 @@ $($htmlRows -join "`n")
     if ( $State["NoSetup"]) {
         $MAX_PHASE = 3
     }
+    elseif ( $State["InstallRecipientManagement"] -or $State["InstallManagementTools"]) {
+        # Recipient Management and Management Tools modes use a 3-phase flow
+        $MAX_PHASE = 3
+    }
     else {
         $MAX_PHASE = 6
     }
@@ -3407,15 +4546,17 @@ $($htmlRows -join "`n")
         Start-Sleep -Seconds $COUNTDOWN_TIMER
     }
 
-    # Generate Pre-Flight Report
-    New-Item -Path $State['InstallPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
-    $preflightFailures = New-PreflightReport
-    if ($State['PreflightOnly']) {
-        Write-MyOutput 'PreflightOnly mode - exiting after report generation'
-        if ($preflightFailures -gt 0) {
-            Write-MyWarning ('{0} preflight check(s) failed - review the report' -f $preflightFailures)
+    # Generate Pre-Flight Report (only on first phase or PreflightOnly mode)
+    if ($State['InstallPhase'] -le 1 -or $State['PreflightOnly']) {
+        New-Item -Path $State['InstallPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+        $preflightFailures = New-PreflightReport
+        if ($State['PreflightOnly']) {
+            Write-MyOutput 'PreflightOnly mode - exiting after report generation'
+            if ($preflightFailures -gt 0) {
+                Write-MyWarning ('{0} preflight check(s) failed - review the report' -f $preflightFailures)
+            }
+            exit $ERR_OK
         }
-        exit $ERR_OK
     }
 
     Test-Preflight
@@ -3443,26 +4584,86 @@ $($htmlRows -join "`n")
         Write-MyVerbose "Current phase is $($State["InstallPhase"]) of $MAX_PHASE"
 
         Write-MyVerbose 'Disabling Server Manager at logon'
-        New-ItemProperty -Path 'HKCU:\Software\Microsoft\ServerManager' -Name DoNotOpenServerManagerAtLogon -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+        New-ItemProperty -Path 'HKCU:\Software\Microsoft\ServerManager' -Name DoNotOpenServerManagerAtLogon -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
 
-        # Create System Restore checkpoint before each phase
+        # Create System Restore checkpoint before each phase.
+        # Checkpoint-Computer is only supported on client OS (ProductType=1).
+        # It exists as a cmdlet on Windows Server but throws at runtime — check OS type first.
         if (-not $State['NoCheckpoint']) {
-            try {
-                Checkpoint-Computer -Description ('Exchange Install Phase {0}' -f $State['InstallPhase']) -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
-                Write-MyOutput ('System Restore checkpoint created for Phase {0}' -f $State['InstallPhase'])
+            $isClientOS = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).ProductType -eq 1
+            if ($isClientOS) {
+                try {
+                    Checkpoint-Computer -Description ('Exchange Install Phase {0}' -f $State['InstallPhase']) -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+                    Write-MyOutput ('System Restore checkpoint created for Phase {0}' -f $State['InstallPhase'])
+                }
+                catch {
+                    Write-MyWarning ('Could not create System Restore checkpoint: {0}' -f $_.Exception.Message)
+                }
             }
-            catch {
-                Write-MyWarning ('Could not create System Restore checkpoint: {0}' -f $_.Exception.Message)
+            else {
+                Write-MyVerbose 'System Restore not supported on Windows Server — skipping checkpoint'
             }
         }
 
+        if ($State["InstallRecipientManagement"]) {
+            switch ($State["InstallPhase"]) {
+                1 {
+                    Write-MyOutput 'Recipient Management Tools - Phase 1: Installing prerequisites'
+                    Install-RecipientManagementPrereqs
+                    if ( Test-RebootPending) {
+                        if ($State['AutoPilot']) { Write-MyWarning 'Reboot pending, will reboot and continue' }
+                        else { Write-MyOutput 'Reboot pending, please reboot and restart script' }
+                    }
+                }
+                2 {
+                    Write-MyOutput 'Recipient Management Tools - Phase 2: Installing Exchange Management Tools'
+                    Install-RecipientManagement
+                }
+                3 {
+                    Write-MyOutput 'Recipient Management Tools - Phase 3: Post-install configuration'
+                    New-RecipientManagementShortcut
+                    if ($State['RecipientMgmtCleanup']) {
+                        Invoke-RecipientManagementADCleanup
+                    }
+                    Write-MyOutput 'Recipient Management Tools installation complete'
+                }
+                default {
+                    Write-MyError "Unknown phase ($($State["InstallPhase"])) in RecipientManagement mode"
+                }
+            }
+        }
+        elseif ($State["InstallManagementTools"]) {
+            switch ($State["InstallPhase"]) {
+                1 {
+                    Write-MyOutput 'Exchange Management Tools - Phase 1: Installing Windows prerequisites'
+                    Install-ManagementToolsPrereqs
+                    if ( Test-RebootPending) {
+                        if ($State['AutoPilot']) { Write-MyWarning 'Reboot pending, will reboot and continue' }
+                        else { Write-MyOutput 'Reboot pending, please reboot and restart script' }
+                    }
+                }
+                2 {
+                    Write-MyOutput 'Exchange Management Tools - Phase 2: Installing runtime prerequisites'
+                    Install-ManagementToolsRuntimePrereqs
+                }
+                3 {
+                    Write-MyOutput 'Exchange Management Tools - Phase 3: Running Exchange setup /roles:ManagementTools'
+                    Install-ManagementToolsOnly
+                    Write-MyOutput 'Exchange Management Tools installation complete'
+                }
+                default {
+                    Write-MyError "Unknown phase ($($State["InstallPhase"])) in ManagementTools mode"
+                }
+            }
+        }
+        else {
         switch ($State["InstallPhase"]) {
             1 {
 
                 if ( [System.Version]$FullOSVersion -ge [System.Version]$WS2016_MAJOR) {
 
-                    Write-MyOutput ('Exchange setup version {0} detected' -f $State['SetupVersion'])
-                    Write-MyOutput ('Operating System version {0} detected' -f $FullOSVersion)
+                    Write-MyOutput ('Exchange setup detected: {0}' -f (Get-SetupTextVersion $State['SetupVersion']))
+                    Write-MyOutput ('Operating System detected: {0}' -f (Get-OSVersionText $FullOSVersion))
 
                     if ( $State["NoNet481"]) {
                         Write-MyOutput "NoNet481 specified, will not install .NET Framework 4.8.1"
@@ -3490,19 +4691,29 @@ $($htmlRows -join "`n")
                     Write-MyError ('Operating System version {0} not supported' -f $FullOSVersion)
                     exit $ERR_UNEXPECTEDOS
                 }
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Windows Features + .NET' -PercentComplete 0
                 Write-MyOutput "Installing Operating System prerequisites"
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Installing Windows Features' -PercentComplete 10
                 Install-WindowsFeatures $MajorOSVersion
 
                 if ($State['CopyServerConfig']) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Exporting source server config' -PercentComplete 80
                     Export-SourceServerConfig $State['CopyServerConfig']
                 }
+
+                # Install pending Windows Updates before rebooting (if requested)
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Windows Updates' -PercentComplete 90
+                Install-PendingWindowsUpdates
+                Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
             2 {
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Prerequisites' -PercentComplete 0
                 Write-MyOutput "Installing BITS module"
                 Import-Module BITSTransfer
 
                 # Check .NET FrameWork 4.8.1 needs to be installed
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: .NET Framework' -PercentComplete 10
                 if ( $State["Install481"]) {
 
                     Remove-NETFrameworkInstallBlock '4.8.1' '-' '481'
@@ -3535,6 +4746,7 @@ $($htmlRows -join "`n")
                 }
 
                 # Check if need to install VC++ Runtimes
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Visual C++ Runtimes' -PercentComplete 50
                 if ( ($State['InstallEdge'])) {
                     if ( -not (Get-VCRuntime -version '11.0') -and $State["VCRedist2012"] ) {
                         Install-MyPackage "" "Visual C++ 2012 Redistributable" "vcredist_x64_2012.exe" "https://download.microsoft.com/download/1/6/B/16B06F60-3B20-4FF2-B699-5E9B7962F9AE/VSU_4/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
@@ -3546,13 +4758,17 @@ $($htmlRows -join "`n")
                 }
 
                 # URL Rewrite module
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: URL Rewrite Module' -PercentComplete 80
                 Install-MyPackage "{9BCA2118-F753-4A1E-BCF3-5A820729965C}" "URL Rewrite Module 2.1" "rewrite_amd64_en-US.msi" "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi" ("/quiet", "/norestart")
+                Write-PhaseProgress -Activity 'Exchange Installation' -Completed
 
             }
 
             3 {
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: Prerequisites (continued)' -PercentComplete 0
                 if ( !($State['InstallEdge'])) {
                     Write-MyOutput "Installing Exchange prerequisites (continued)"
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: UCMA Runtime' -PercentComplete 20
                     if ( [System.Version]$FullOSVersion -ge [System.Version]$WS2019_PREFULL -and (Test-ServerCore) ) {
                         Install-MyPackage "{41D635FE-4F9D-47F7-8230-9B29D6D42D31}" "Unified Communications Managed API 4.0 Runtime (Core)" "Setup.exe" (Join-Path -Path $State['SourcePath'] -ChildPath 'UcmaRedist\Setup.exe') ("/passive", "/norestart") -NoDownload
                     }
@@ -3565,13 +4781,16 @@ $($htmlRows -join "`n")
                     Set-EdgeDNSSuffix -DNSSuffix $State['EdgeDNSSuffix']
                 }
                 if ($State["OrganizationName"]) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: Preparing Active Directory' -PercentComplete 60
                     Write-MyOutput "Preparing Active Directory"
                     Initialize-Exchange
                 }
+                Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
             4 {
                 Write-MyOutput "Installing Exchange"
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 6: Running Exchange Setup (this may take 30-60 min)' -PercentComplete 0
 
                 switch ( $State["SCP"]) {
                     '' {
@@ -3591,6 +4810,7 @@ $($htmlRows -join "`n")
 
                 # Cleanup any background jobs
                 Stop-BackgroundJobs
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 6: Configuring transport services' -PercentComplete 95
 
                 if ( Get-Service MSExchangeTransport -ErrorAction SilentlyContinue) {
                     Write-MyOutput "Configuring MSExchangeTransport startup to Manual"
@@ -3600,38 +4820,56 @@ $($htmlRows -join "`n")
                     Write-MyOutput "Configuring MSExchangeFrontEndTransport startup to Manual"
                     Set-Service MSExchangeFrontEndTransport -StartupType Manual
                 }
+                Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
             5 {
                 Write-MyOutput "Post-configuring"
+                $p5Steps = @(
+                    'Windows Defender exclusions', 'Power plan', 'NIC power management', 'Page file',
+                    'TCP settings', 'SMBv1', 'Windows Search', 'WDigest', 'HTTP/2', 'TCP offload',
+                    'Credential Guard', 'LM compatibility', 'LSA Protection', 'RSS / NIC queues',
+                    'MaxConcurrentAPI', 'Disk allocation', 'Scheduled tasks', 'Server Manager',
+                    'CRL timeout', 'TLS / Schannel', 'Exchange module + search tuning',
+                    'Security hardening', 'Exchange SU', 'Server config import', 'Certificate'
+                )
+                $p5Total = $p5Steps.Count; $p5Step = 0
+                function Step-P5($desc) {
+                    $script:p5Step++
+                    Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 6: Post-configuration' -Status $desc -PercentComplete ($script:p5Step * 100 / $script:p5Total)
+                }
 
-                Enable-WindowsDefenderExclusions
-                Enable-HighPerformancePowerPlan
-                Disable-NICPowerManagement
-                Set-Pagefile
-                Set-TCPSettings
-                Disable-SMBv1
-                Disable-WindowsSearchService
-                Disable-WDigestCredentialCaching
-                Disable-HTTP2
-                Disable-TCPOffload
-                Disable-CredentialGuard
-                Set-LmCompatibilityLevel
-                Enable-RSSOnAllNICs
-                Test-DiskAllocationUnitSize
-                Disable-UnnecessaryScheduledTasks
-                Set-CRLCheckTimeout
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 5 of 6: Post-configuration' -PercentComplete 0
+                Step-P5 'Windows Defender exclusions';  Enable-WindowsDefenderExclusions
+                Step-P5 'Power plan';                   Enable-HighPerformancePowerPlan
+                Step-P5 'NIC power management';         Disable-NICPowerManagement
+                Step-P5 'Page file';                    Set-Pagefile
+                Step-P5 'TCP settings';                 Set-TCPSettings
+                Step-P5 'SMBv1';                        Disable-SMBv1
+                Step-P5 'Windows Search service';       Disable-WindowsSearchService
+                Step-P5 'WDigest caching';              Disable-WDigestCredentialCaching
+                Step-P5 'HTTP/2';                       Disable-HTTP2
+                Step-P5 'TCP offload';                  Disable-TCPOffload
+                Step-P5 'Credential Guard';             Disable-CredentialGuard
+                Step-P5 'LM compatibility level';       Set-LmCompatibilityLevel
+                Step-P5 'LSA Protection (RunAsPPL)';   Enable-LSAProtection
+                Step-P5 'RSS / NIC queues';             Enable-RSSOnAllNICs
+                Step-P5 'MaxConcurrentAPI';             Set-MaxConcurrentAPI
+                Step-P5 'Disk allocation unit';         Test-DiskAllocationUnitSize
+                Step-P5 'Scheduled tasks';              Disable-UnnecessaryScheduledTasks
+                Step-P5 'Server Manager at logon';      Disable-ServerManagerAtLogon
+                Step-P5 'CRL check timeout';            Set-CRLCheckTimeout
+                Step-P5 'TLS / Schannel'
                 if ( $State["DisableSSL3"]) {
                     Disable-SSL3
                 }
                 if ( $State["DisableRC4"]) {
                     Disable-RC4
                 }
-
                 Set-TLSSettings -TLS12 $State["EnableTLS12"] -TLS13 $State["EnableTLS13"]
 
+                Step-P5 'Exchange module + search tuning'
                 Import-ExchangeModule
-
                 Set-CtsProcessorAffinityPercentage
                 Enable-SerializedDataSigning
                 Set-NodeRunnerMemoryLimit
@@ -3655,6 +4893,7 @@ $($htmlRows -join "`n")
                 }
                 # Insert your own generic customizations here
 
+                Step-P5 'Exchange Security Updates'
                 if ( $State["IncludeFixes"]) {
                     Write-MyOutput "Installing additional recommended hotfixes and security updates for Exchange"
 
@@ -3681,18 +4920,26 @@ $($htmlRows -join "`n")
 
                 }
 
+                # Install Exchange Security Update if available and requested
+                Install-ExchangeSecurityUpdate
+
                 # Import server configuration from source server
+                Step-P5 'Server configuration import'
                 if ($State['CopyServerConfig'] -and $State['ServerConfigExportPath']) {
                     Import-ServerConfig
                 }
 
                 # Import PFX certificate
+                Step-P5 'PFX certificate import'
                 if ($State['CertificatePath']) {
                     Import-ExchangeCertificateFromPFX
                 }
+                Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 6: Post-configuration' -Completed
+                Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
             6 {
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Finalizing' -PercentComplete 0
                 if ( Get-Service MSExchangeTransport -ErrorAction SilentlyContinue) {
                     Write-MyOutput "Configuring MSExchangeTransport startup to Automatic"
                     Set-Service MSExchangeTransport -StartupType Automatic
@@ -3706,16 +4953,15 @@ $($htmlRows -join "`n")
 
                 # Join Database Availability Group
                 if ($State['DAGName']) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Joining DAG' -PercentComplete 30
                     Import-ExchangeModule
                     Join-DAG
                 }
 
-                Write-MyVerbose 'Restoring Server Manager startup configuration'
-                if ( $State['DoNotOpenServerManagerAtLogon']) {
-                    New-ItemProperty -Path 'HKCU:\Software\Microsoft\ServerManager' -Name DoNotOpenServerManagerAtLogon -Value $State['DoNotOpenServerManagerAtLogon'] -Force -ErrorAction SilentlyContinue | Out-Null
-                }
+                # Server Manager stays disabled permanently on Exchange servers (set machine-wide in Phase 5)
 
                 if ( !($State['InstallEdge'])) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: IIS health check' -PercentComplete 60
                     Write-MyVerbose 'Performing Health Monitor checks..'
                     # Warmup IIS
                     $hcPassed = 0
@@ -3723,8 +4969,17 @@ $($htmlRows -join "`n")
                     'OWA', 'ECP', 'EWS', 'Autodiscover', 'Microsoft-Server-ActiveSync', 'OAB', 'mapi', 'rpc' | ForEach-Object {
                         $url = 'https://localhost/{0}/healthcheck.htm' -f $_
                         try {
-                            $response = Invoke-WebRequest -Uri $url -SkipCertificateCheck -UseBasicParsing -ErrorAction Stop
-                            Write-MyOutput ('Healthcheck {0}: {1}' -f $url, ($response.Content -split '<')[0])
+                            if ($PSVersionTable.PSVersion.Major -ge 6) {
+                                $response = Invoke-WebRequest -Uri $url -SkipCertificateCheck -UseBasicParsing -ErrorAction Stop
+                                $responseContent = $response.Content
+                            } else {
+                                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                                $prevCb = [Net.ServicePointManager]::ServerCertificateValidationCallback
+                                [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+                                try { $responseContent = (New-Object System.Net.WebClient).DownloadString($url) }
+                                finally { [Net.ServicePointManager]::ServerCertificateValidationCallback = $prevCb }
+                            }
+                            Write-MyOutput ('Healthcheck {0}: {1}' -f $url, ($responseContent -split '<')[0])
                             $script:hcPassed++
                         }
                         catch {
@@ -3742,10 +4997,12 @@ $($htmlRows -join "`n")
                 }
 
                 # Run CSS-Exchange HealthChecker
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: HealthChecker' -PercentComplete 80
                 if (-not $State['SkipHealthCheck']) {
                     Invoke-HealthChecker
                 }
 
+                Write-PhaseProgress -Activity 'Exchange Installation' -Completed
                 Enable-UAC
                 Enable-IEESC
                 Write-MyOutput "Setup finished - We're good to go."
@@ -3756,6 +5013,7 @@ $($htmlRows -join "`n")
                 exit $ERR_UNEXPTECTEDPHASE
             }
         }
+        } # end else (standard Exchange install switch)
     }
     $State["LastSuccessfulPhase"] = $State["InstallPhase"]
     Enable-OpenFileSecurityWarning
