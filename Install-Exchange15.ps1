@@ -411,6 +411,19 @@
             - Fixed $Error[0] in autodiscover background job catch blocks
             - Fixed Get-WindowsFeature Bits check in Cleanup (missing .Installed)
             - Parameter block: removed ValueFromPipelineByPropertyName=$false (PS default)
+            - Fixed Zone.Identifier check on UDF/ISO source paths: skip ADS query when source is a
+              mounted ISO (UDF has no ADS support); added try/catch safety net for exotic filesystems
+            - Fixed Server Manager appearing during AutoPilot reboots: Disable-ServerManagerAtLogon
+              now called in AutoPilot preparation block before every reboot (was Phase 5 only)
+            - Install-PendingWindowsUpdates: per-update prompt (Y/N/A/S) in interactive mode;
+              AutoPilot installs all without prompting; download+install runs in background job
+              with $WU_DOWNLOAD_TIMEOUT_SEC (300s) timeout — Exchange install continues on timeout
+            - config.psd1 auto-detection: if found in script/exe folder on interactive start,
+              user is asked whether to use it before the installation menu is shown
+            - Install-PendingWindowsUpdates: prompt shown whenever console is interactive
+              (AutoPilot no longer suppresses prompt); timeout raised to 3600s (60 min)
+            - Write-PhaseProgress: PS2Exe fallback — emits status via Write-MyOutput when
+              Write-Progress is not rendered (Id 0 = phase transitions, Id 1 = Phase 5 steps)
 
     .PARAMETER Organization
     Specifies name of the Exchange organization to create. When omitted, the step
@@ -826,6 +839,7 @@ process {
     $ERR_SOURCESERVERCONNECT = 1036
 
     $COUNTDOWN_TIMER = 10
+    $WU_DOWNLOAD_TIMEOUT_SEC = 3600  # seconds before a stalled Windows Update download is aborted (60 min)
     $DOMAIN_MIXEDMODE = 0
     $FOREST_LEVEL2012 = 5
     $FOREST_LEVEL2012R2 = 6
@@ -2195,12 +2209,20 @@ process {
             Write-MyOutput "Exchange setup located at $(Join-Path $($State['SourcePath']) "setup.exe")"
         }
 
-        # Unblock files to prevent .NET assembly sandboxing errors (Zone.Identifier from downloaded files)
-        $blockedFiles = Get-ChildItem -Path $State['SourcePath'] -Recurse -File | Where-Object { $null -ne (Get-Item -Path $_.FullName -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue) }
-        if ($blockedFiles) {
-            Write-MyWarning ('{0} blocked file(s) detected in source path, unblocking ..' -f $blockedFiles.Count)
-            $blockedFiles | Unblock-File
-            Write-MyOutput 'Source files unblocked successfully'
+        # Unblock files to prevent .NET assembly sandboxing errors (Zone.Identifier from downloaded files).
+        # Skip when source is a mounted ISO: UDF/ISO9660 does not support Alternate Data Streams, and
+        # the ISO itself was already unblocked before mounting (see above). Querying ADS on UDF throws
+        # a terminating Win32Exception ("The parameter is incorrect") that -ErrorAction cannot suppress.
+        if (-not $State['SourceImage']) {
+            $blockedFiles = Get-ChildItem -Path $State['SourcePath'] -Recurse -File | Where-Object {
+                try { $null -ne (Get-Item -Path $_.FullName -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue) }
+                catch { $false }
+            }
+            if ($blockedFiles) {
+                Write-MyWarning ('{0} blocked file(s) detected in source path, unblocking ..' -f $blockedFiles.Count)
+                $blockedFiles | Unblock-File
+                Write-MyOutput 'Source files unblocked successfully'
+            }
         }
 
         $State['ExSetupVersion'] = Get-DetectedFileVersion "$($State['SourcePath'])\Setup\ServerRoles\Common\ExSetup.exe"
@@ -2869,6 +2891,10 @@ $($htmlRows -join "`n")
 
     function Install-PendingWindowsUpdates {
         # Installs pending Windows security and critical updates.
+        # Interactive mode: prompts per update (Y/N/A=all/S=skip rest).
+        # AutoPilot mode:   installs all without prompting.
+        # Download + install runs in a background job with $WU_DOWNLOAD_TIMEOUT_SEC timeout;
+        # on timeout the update step is skipped and Exchange installation continues.
         # Uses PSWindowsUpdate module when available; falls back to Windows Update Agent COM API.
         # Sets $State['RebootRequired'] = $true when a reboot is needed after updates.
 
@@ -2877,8 +2903,14 @@ $($htmlRows -join "`n")
             return
         }
 
+        # Interactive prompts whenever a real console is available.
+        # AutoPilot does NOT suppress the prompt — if someone is at the keyboard they can still
+        # review each update. In a truly headless run [Environment]::UserInteractive is $false.
+        $isInteractive = [Environment]::UserInteractive
+
         Write-MyOutput 'Checking for pending Windows Updates (Security + Critical)'
 
+        # --- Detect PSWindowsUpdate module ---
         $useModule = $false
         if (Get-Module -ListAvailable -Name PSWindowsUpdate -ErrorAction SilentlyContinue) {
             $useModule = $true
@@ -2895,54 +2927,126 @@ $($htmlRows -join "`n")
             }
         }
 
-        $rebootNeeded = $false
+        # --- Phase 1: Search (fast, runs in main thread) ---
+        $candidates = @()   # [PSCustomObject]@{ Title; KB; Severity }
 
         if ($useModule) {
             try {
                 Import-Module PSWindowsUpdate -ErrorAction Stop
-                $updates = Get-WindowsUpdate -Category 'Security Updates','Critical Updates' -NotTitle 'Preview' -ErrorAction Stop
-                if ($updates.Count -eq 0) {
-                    Write-MyOutput 'No pending Windows security/critical updates found'
-                    return
-                }
-                Write-MyOutput ('{0} update(s) found, installing' -f $updates.Count)
-                $result = Install-WindowsUpdate -Category 'Security Updates','Critical Updates' -NotTitle 'Preview' -AcceptAll -IgnoreReboot -ErrorAction Stop
-                $rebootNeeded = ($result | Where-Object { $_.RebootRequired }) -as [bool]
-                Write-MyOutput ('{0} update(s) installed' -f ($result | Where-Object { $_.Result -eq 'Installed' }).Count)
+                $wuList = Get-WindowsUpdate -Category 'Security Updates','Critical Updates' -NotTitle 'Preview' -ErrorAction Stop
+                $candidates = @($wuList | ForEach-Object {
+                    [PSCustomObject]@{ Title = $_.Title; KB = $_.KB; Severity = $_.MsrcSeverity }
+                })
             }
             catch {
-                Write-MyWarning ('PSWindowsUpdate error: {0}' -f $_.Exception.Message)
+                Write-MyWarning ('PSWindowsUpdate search error: {0}' -f $_.Exception.Message)
             }
         }
         else {
-            # Fallback: WUA COM API
             try {
-                $session   = New-Object -ComObject Microsoft.Update.Session
-                $searcher  = $session.CreateUpdateSearcher()
-                $result    = $searcher.Search("IsInstalled=0 and IsHidden=0 and BrowseOnly=0")
-                $toInstall = New-Object -ComObject Microsoft.Update.UpdateColl
-                foreach ($u in $result.Updates) {
+                $wuaSession  = New-Object -ComObject Microsoft.Update.Session
+                $wuaSearcher = $wuaSession.CreateUpdateSearcher()
+                $wuaResult   = $wuaSearcher.Search('IsInstalled=0 and IsHidden=0 and BrowseOnly=0')
+                $candidates  = @(foreach ($u in $wuaResult.Updates) {
                     if ($u.MsrcSeverity -in @('Critical','Important') -or $u.AutoSelectOnWebSites) {
-                        $toInstall.Add($u) | Out-Null
+                        [PSCustomObject]@{ Title = $u.Title; KB = ($u.KBArticleIDs | Select-Object -First 1); Severity = $u.MsrcSeverity }
                     }
-                }
-                if ($toInstall.Count -eq 0) {
-                    Write-MyOutput 'No pending Windows security/critical updates found (WUA)'
-                    return
-                }
-                Write-MyOutput ('{0} update(s) found, installing via WUA COM API' -f $toInstall.Count)
-                $downloader = $session.CreateUpdateDownloader()
-                $downloader.Updates = $toInstall
-                $downloader.Download() | Out-Null
-                $installer = $session.CreateUpdateInstaller()
-                $installer.Updates = $toInstall
-                $installResult = $installer.Install()
-                $rebootNeeded  = $installResult.RebootRequired
-                Write-MyOutput ('WUA install result code: {0}' -f $installResult.ResultCode)
+                })
             }
             catch {
-                Write-MyWarning ('WUA COM API error: {0}' -f $_.Exception.Message)
+                Write-MyWarning ('WUA COM API search error: {0}' -f $_.Exception.Message)
             }
+        }
+
+        if ($candidates.Count -eq 0) {
+            Write-MyOutput 'No pending Windows security/critical updates found'
+            return
+        }
+
+        Write-MyOutput ('{0} update(s) found' -f $candidates.Count)
+
+        # --- Phase 2: Per-update prompt (interactive only; AutoPilot installs all) ---
+        $approvedKBs = @()
+        $installAll  = -not $isInteractive   # AutoPilot: approve everything immediately
+
+        for ($idx = 0; $idx -lt $candidates.Count; $idx++) {
+            $u = $candidates[$idx]
+            $label = '[{0}/{1}] {2} — {3}' -f ($idx + 1), $candidates.Count, $u.Title, $(if ($u.Severity) { $u.Severity } else { 'Unknown' })
+
+            if ($installAll) {
+                Write-MyOutput ('Will install: {0}' -f $label)
+                if ($u.KB) { $approvedKBs += $u.KB }
+                continue
+            }
+
+            Write-Host $label -ForegroundColor Cyan
+            $ans = (Read-Host '  Install? [Y=yes / N=no / A=all / S=skip remaining]').Trim().ToUpper()
+            switch ($ans) {
+                'A' { $installAll = $true;  if ($u.KB) { $approvedKBs += $u.KB }; Write-MyOutput ('Approved (all): {0}' -f $u.Title) }
+                'S' { Write-MyOutput 'Skipping all remaining updates'; $idx = $candidates.Count; continue }
+                'N' { Write-MyOutput ('Skipping: {0}' -f $u.Title) }
+                default { if ($u.KB) { $approvedKBs += $u.KB }; Write-MyOutput ('Approved: {0}' -f $u.Title) }
+            }
+        }
+
+        if ($approvedKBs.Count -eq 0) {
+            Write-MyOutput 'No updates approved for installation — skipping Windows Update step'
+            return
+        }
+
+        # --- Phase 3: Download + Install in background job with timeout ---
+        Write-MyOutput ('Installing {0} approved update(s) (timeout: {1}s) ...' -f $approvedKBs.Count, $WU_DOWNLOAD_TIMEOUT_SEC)
+
+        if ($useModule) {
+            $wuJob = Start-Job -ScriptBlock {
+                param([string[]]$kbs)
+                Import-Module PSWindowsUpdate -ErrorAction Stop
+                $result = Install-WindowsUpdate -KBArticleID $kbs -AcceptAll -IgnoreReboot -ErrorAction Stop
+                $result | Select-Object Title, KB, Result, RebootRequired
+            } -ArgumentList (,$approvedKBs)
+        }
+        else {
+            $wuJob = Start-Job -ScriptBlock {
+                param([string[]]$kbs)
+                $session  = New-Object -ComObject Microsoft.Update.Session
+                $searcher = $session.CreateUpdateSearcher()
+                $filter   = ($kbs | ForEach-Object { "KBArticleID='$_'" }) -join ' or '
+                $found    = $searcher.Search("IsInstalled=0 and ($filter)")
+                if ($found.Updates.Count -eq 0) { return @{ Installed=0; RebootRequired=$false } }
+                $dl = $session.CreateUpdateDownloader()
+                $dl.Updates = $found.Updates
+                $dl.Download() | Out-Null
+                $inst       = $session.CreateUpdateInstaller()
+                $inst.Updates = $found.Updates
+                $instResult = $inst.Install()
+                @{ Installed = $found.Updates.Count; RebootRequired = $instResult.RebootRequired; ResultCode = $instResult.ResultCode }
+            } -ArgumentList (,$approvedKBs)
+        }
+
+        $completed = $wuJob | Wait-Job -Timeout $WU_DOWNLOAD_TIMEOUT_SEC
+        if (-not $completed) {
+            Stop-Job  $wuJob -ErrorAction SilentlyContinue
+            Remove-Job $wuJob -Force -ErrorAction SilentlyContinue
+            Write-MyWarning ('Windows Update download/install timed out after {0}s — continuing Exchange installation without updates' -f $WU_DOWNLOAD_TIMEOUT_SEC)
+            return
+        }
+
+        $jobOut    = Receive-Job $wuJob -ErrorVariable wuErrors
+        Remove-Job $wuJob -Force -ErrorAction SilentlyContinue
+
+        if ($wuErrors) {
+            Write-MyWarning ('Windows Update error: {0}' -f $wuErrors[0].Exception.Message)
+        }
+
+        $rebootNeeded = $false
+        if ($useModule) {
+            $installed    = @($jobOut | Where-Object { $_.Result -eq 'Installed' }).Count
+            $rebootNeeded = ($jobOut | Where-Object { $_.RebootRequired }) -as [bool]
+            Write-MyOutput ('{0} update(s) installed' -f $installed)
+        }
+        else {
+            $rebootNeeded = $jobOut.RebootRequired
+            Write-MyOutput ('{0} update(s) installed, WUA result code: {1}' -f $jobOut.Installed, $jobOut.ResultCode)
         }
 
         if ($rebootNeeded) {
@@ -3221,6 +3325,8 @@ $($htmlRows -join "`n")
         # Lightweight wrapper: Write-Progress for phase-level and step-level feedback.
         # Id 0 = overall install progress (Phase X of 6)
         # Id 1 = current-phase step progress (used in Phase 5 only)
+        # PS2Exe does not render Write-Progress visually — fall back to Write-MyOutput for
+        # meaningful milestones so progress is still visible in the console window.
         param(
             [int]$Id = 0,
             [string]$Activity,
@@ -3236,6 +3342,18 @@ $($htmlRows -join "`n")
         }
         else {
             Write-Progress -Id $Id -Activity $Activity -Status $Status
+        }
+
+        # PS2Exe fallback: emit status as plain output so progress is not lost
+        if ($IsPS2Exe -and -not $Completed -and $Status) {
+            if ($Id -eq 0) {
+                # Phase-level: only log when status changes (major transitions)
+                Write-MyOutput ('[{0}] {1}' -f $Activity, $Status)
+            }
+            elseif ($Id -eq 1) {
+                # Step-level (Phase 5): log every step
+                Write-MyOutput ('  -> {0}' -f $Status)
+            }
         }
     }
 
@@ -4204,7 +4322,8 @@ $($htmlRows -join "`n")
 
         $cfg = @{}
         $cfg['Mode']       = $selectedMode
-        $cfg['SourcePath'] = Read-MenuInput -Prompt 'Exchange source (folder or .iso)' -Default 'C:\Install\Exchange-Server-Install.iso' -Required $true
+        $defaultIso = Join-Path (Split-Path $ScriptFullName -Parent) 'ExchangeServerSE-x64.iso'
+        $cfg['SourcePath'] = Read-MenuInput -Prompt 'Exchange source (folder or .iso)' -Default $defaultIso -Required $true
         $cfg['InstallPath'] = Read-MenuInput -Prompt 'Working/log folder' -Default 'C:\Install'
 
         if ($selectedMode -eq 1) {
@@ -4271,6 +4390,8 @@ $($htmlRows -join "`n")
     } else {
         [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     }
+    # Detect PS2Exe compiled run: MyCommand.Path is empty; Write-Progress is not rendered visually
+    $IsPS2Exe = -not $MyInvocation.MyCommand.Path
     $ScriptName = $ScriptFullName.Split("\")[-1]
     $ParameterString = $PSBoundParameters.getEnumerator() -join " "
     $OSVersionParts = (Get-CimInstance -ClassName Win32_OperatingSystem).Version.Split('.')
@@ -4306,6 +4427,21 @@ $($htmlRows -join "`n")
                               ($PSBoundParameters.Keys | Where-Object { $_ -notin @('InstallPath','Verbose','Debug') }).Count -eq 0
 
         if ($isInteractiveStart) {
+            # Auto-detect config.psd1 in the same folder as the script / compiled .exe
+            if (-not $ConfigFile) {
+                $autoConfigPath = Join-Path (Split-Path $ScriptFullName -Parent) 'config.psd1'
+                if (Test-Path $autoConfigPath -PathType Leaf) {
+                    Write-Host ("Found 'config.psd1' in script folder ({0})." -f (Split-Path $ScriptFullName -Parent)) -ForegroundColor Cyan
+                    $useAuto = (Read-Host 'Use this configuration file? [Y=yes / N=show menu]').Trim().ToUpper()
+                    if ($useAuto -eq 'Y') {
+                        $ConfigFile = $autoConfigPath
+                        Write-MyOutput ("Auto-detected configuration loaded: {0}" -f $ConfigFile)
+                    }
+                }
+            }
+        }
+
+        if ($isInteractiveStart -and -not $ConfigFile) {
             $menuResult = Show-InstallationMenu
             if (-not $menuResult) {
                 Write-Output 'Installation cancelled.'
@@ -5027,6 +5163,7 @@ $($htmlRows -join "`n")
             Write-MyVerbose "Preparing system for next phase"
             Disable-UAC
             Disable-IEESC
+            Disable-ServerManagerAtLogon
             Enable-AutoLogon
             Enable-RunOnce
         }
