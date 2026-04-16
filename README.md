@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.1 (April 2026)
+**Version:** 5.1 (April 2026, last updated 2026-04-16)
 **License:** As-Is, without warranty
 
 ---
@@ -41,6 +41,8 @@ Start the script without parameters to open the interactive installation menu:
 ```
 
 The menu lets you select the installation mode and toggle all options. Press letter keys to toggle switches instantly; press Enter to start.
+
+If a `config.psd1` file is found in the same folder as the script or `.exe`, you are asked whether to use it — allowing a fully pre-configured start without manual input.
 
 ### Command-line / unattended
 
@@ -187,20 +189,22 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
-### v5.1 — April 2026
+### v5.1 — April 2026 (latest: 2026-04-16)
 
 - **Interactive installation menu** — start without parameters; numbered mode selection + letter toggles; RawUI.ReadKey for instant response (falls back to Read-Host for RDP/PS2Exe compatibility)
 - **Credential validation loop** — `Get-ValidatedCredentials` with up to 3 retries (R=Retry / Q=Quit)
 - **Recipient Management Tools** (`-InstallRecipientManagement`) — 3-phase install for dedicated admin workstations; works on Server and Client OS; includes RSAT-ADDS prereqs, Add-PermissionForEMT.ps1, and desktop shortcut
 - **Exchange Management Tools** (`-InstallManagementTools`) — 3-phase install of `setup.exe /roles:ManagementTools` on Server OS
-- **Config file support** (`-ConfigFile`) — load all parameters from a `.psd1` (see `deploy-example.psd1`)
-- **Windows Update integration** (`-InstallWindowsUpdates`) — installs security/critical updates in Phase 1 via PSWindowsUpdate module (auto-installed if needed) with WUA COM fallback
+- **Config file support** (`-ConfigFile`) — load all parameters from a `.psd1` (see `deploy-example.psd1`); `config.psd1` in script folder is auto-detected on interactive start
+- **Windows Update integration** (`-InstallWindowsUpdates`) — per-update prompt `[Y/N/A/S]` in interactive mode; download+install in background job with 60-minute timeout (Exchange install continues on timeout); WUA COM fallback
 - **Exchange Security Update automation** — built-in `$ExchangeSUMap` with direct download URLs for all supported CUs; installed in Phase 5 when `-IncludeFixes` is set
-- **Build.ps1** — compile script to self-contained `.exe` via PS2Exe (`-requireAdmin`, preserves all parameters, embeds version metadata)
-- **Write-Progress indicators** — overall phase progress (Id 0) and Phase 5 step counter (Id 1, ~25 steps)
+- **Build.ps1** — compile script to self-contained `.exe` via PS2Exe (`-requireAdmin`, preserves all parameters, embeds version metadata); progress output visible via Write-MyOutput fallback
+- **Write-Progress indicators** — overall phase progress (Id 0) and Phase 5 step counter (Id 1, ~25 steps); PS2Exe fallback via plain output
 - **LSA Protection** — `Enable-LSAProtection` sets `RunAsPPL=1`; Exchange 2019 CU12+ / Exchange SE; takes effect after reboot
 - **MaxConcurrentAPI** — `Set-MaxConcurrentAPI` configures Netlogon to prevent 0xC000005E under Exchange auth load
 - **Performance fixes** — `Clear-DesktopBackground` no longer uses `Add-Type`/C# (3–10s faster per phase start); `Get-DetectedFileVersion` uses `FileVersionInfo` API instead of `Get-Command`
+- **Bugfix** — `Zone.Identifier` ADS check skipped for mounted ISO sources (UDF/ISO9660 has no ADS support)
+- **Bugfix** — Server Manager no longer appears on intermediate AutoPilot reboots (`Disable-ServerManagerAtLogon` moved to pre-reboot preparation)
 
 ### v5.01 — April 2026
 

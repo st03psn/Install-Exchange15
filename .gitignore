@@ -1,8 +1,10 @@
 # General
 *.DS_Store
 
-# Claude Code local settings (machine-specific)
+# Claude Code files (internal, not for repo consumers)
 .claude/
+CLAUDE.md
+project_v51_plan.md
 Microsoft.Exchange.WebServices.Auth.dll
 Microsoft.Exchange.WebServices.Auth.xml
 Microsoft.Exchange.WebServices.dll
