@@ -2991,8 +2991,15 @@ $($htmlRows -join "`n")
         $healthy     = $false
         for ($i = 1; $i -le $maxAttempts; $i++) {
             try {
+                # repadmin /showrepl /errorsonly also outputs DC header lines even when no
+                # errors exist: "SITE\SERVER", "DSA Options:", "DSA object GUID:", etc.
+                # Exclude all known header patterns — only actual error lines remain.
                 $errors = & repadmin /showrepl /errorsonly 2>&1 |
-                    Where-Object { $_ -and $_ -notmatch '^\s*$' -and $_ -notmatch '^Repadmin' }
+                    Where-Object { $_ -and $_ -notmatch '^\s*$' -and
+                        $_ -notmatch '^Repadmin' -and
+                        $_ -notmatch '^DSA ' -and
+                        $_ -notmatch '^Site Options:' -and
+                        $_ -notmatch '^\S+\\\S+' }
                 if (-not $errors) {
                     Write-MyOutput ('AD replication healthy (attempt {0}/{1})' -f $i, $maxAttempts)
                     $healthy = $true
@@ -4176,6 +4183,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         else {
             Write-MyVerbose 'PSWindowsUpdate module not found, attempting to install from PSGallery'
             try {
+                # Ensure NuGet provider present unattended — without this Install-Module
+                # prompts interactively even in non-interactive/AutoPilot sessions.
+                Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
                 Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
                 $useModule = $true
                 Write-MyOutput 'PSWindowsUpdate module installed'
@@ -4237,8 +4247,33 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 continue
             }
 
-            Write-Host $label -ForegroundColor Cyan
-            $ans = (Read-Host '  Install? [Y=yes / N=no / A=all / S=skip remaining]').Trim().ToUpper()
+            # Timed prompt: auto-skip (N) after 120 seconds with no keypress.
+            # Uses RawUI.ReadKey so no Enter is required; falls back to Read-Host
+            # (blocking, no timeout) when console is unavailable (redirected stdin).
+            $WU_PROMPT_TIMEOUT_SEC = 120
+            Write-Host ('{0}' -f $label) -ForegroundColor Cyan
+            $ans = ''
+            if ($host.UI.RawUI -and $host.UI.RawUI.KeyAvailable -ne $null) {
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                Write-Host ('  Install? [Y/N/A=all/S=skip] (auto-No in {0}s) ' -f $WU_PROMPT_TIMEOUT_SEC) -NoNewline -ForegroundColor DarkCyan
+                while ($sw.Elapsed.TotalSeconds -lt $WU_PROMPT_TIMEOUT_SEC) {
+                    if ($host.UI.RawUI.KeyAvailable) {
+                        $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                        $ans = $key.Character.ToString().ToUpper()
+                        Write-Host $ans
+                        break
+                    }
+                    Start-Sleep -Milliseconds 200
+                }
+                if ($ans -eq '') {
+                    Write-Host 'N (timeout)'
+                    $ans = 'N'
+                }
+            }
+            else {
+                $ans = (Read-Host '  Install? [Y=yes / N=no / A=all / S=skip remaining]').Trim().ToUpper()
+                if ($ans -eq '') { $ans = 'N' }
+            }
             switch ($ans) {
                 'A' { $installAll = $true;  if ($u.KB) { $approvedKBs += $u.KB }; Write-MyOutput ('Approved (all): {0}' -f $u.Title) }
                 'S' { Write-MyOutput 'Skipping all remaining updates'; $idx = $candidates.Count; continue }
@@ -5398,28 +5433,29 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     }
 
     function Enable-MSExchangeAutodiscoverAppPool {
-        if (Get-WebAppPoolState -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction SilentlyContinue) {
-
-            Write-MyOutput 'Starting and enabling startup of MSExchangeAutodiscoverAppPool'
-            try {
-                Start-WebAppPool -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction Stop
-            }
-            catch {
-                Write-MyError ('Failed to start app pool: {0}' -f $_.Exception.Message)
-            }
-            try {
-                Set-ItemProperty "IIS:\AppPools\MSExchangeAutodiscoverAppPool" -Name "autoStart" -Value $true -ErrorAction Stop
-                Set-ItemProperty "IIS:\AppPools\MSExchangeAutodiscoverAppPool" -Name "startMode" -Value "OnDemand" -ErrorAction Stop
-            }
-            catch {
-                Write-MyError ('Failed to update app pool properties: {0}' -f $_.Exception.Message)
-            }
-            return $true
-        }
-        else {
-            Write-MyVerbose ('MSExchangeAutodiscoverAppPool not found')
+        # Use Test-Path instead of Get-WebAppPoolState: the latter internally calls
+        # Get-WebItemState which throws a provider PathNotFound error that is NOT
+        # suppressed by -ErrorAction SilentlyContinue.
+        if (-not (Test-Path 'IIS:\AppPools\MSExchangeAutodiscoverAppPool' -ErrorAction SilentlyContinue)) {
+            Write-MyVerbose 'MSExchangeAutodiscoverAppPool not found'
             return $false
         }
+
+        Write-MyOutput 'Starting and enabling startup of MSExchangeAutodiscoverAppPool'
+        try {
+            Start-WebAppPool -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction Stop
+        }
+        catch {
+            Write-MyWarning ('Failed to start app pool: {0}' -f $_.Exception.Message)
+        }
+        try {
+            Set-ItemProperty 'IIS:\AppPools\MSExchangeAutodiscoverAppPool' -Name 'autoStart' -Value $true  -ErrorAction Stop
+            Set-ItemProperty 'IIS:\AppPools\MSExchangeAutodiscoverAppPool' -Name 'startMode' -Value 'OnDemand' -ErrorAction Stop
+        }
+        catch {
+            Write-MyWarning ('Failed to update app pool properties: {0}' -f $_.Exception.Message)
+        }
+        return $true
     }
 
     function Stop-BackgroundJobs {
