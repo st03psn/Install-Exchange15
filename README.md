@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.1 (April 2026, last updated 2026-04-16)
+**Version:** 5.4 (April 2026, last updated 2026-04-18)
 **License:** As-Is, without warranty
 
 ---
@@ -77,6 +77,11 @@ If a `config.psd1` file is found in the same folder as the script or `.exe`, you
 
 # Install Exchange Management Tools only (Server OS)
 .\Install-Exchange15.ps1 -InstallManagementTools -SourcePath D:\Exchange
+
+# Run all post-install optimizations on an existing Exchange server (no setup required)
+.\Install-Exchange15.ps1 -StandaloneOptimize -Namespace mail.contoso.com `
+    -CertificatePath C:\certs\mail.pfx -LogRetentionDays 30 `
+    -RelaySubnets '10.0.1.0/24' -ExternalRelaySubnets '10.0.2.5'
 ```
 
 ### Compile to .exe (optional)
@@ -125,6 +130,13 @@ Use `Build.ps1` to compile the script into a self-contained Windows executable v
 | `-SkipHealthCheck` | Skip CSS-Exchange HealthChecker run at end |
 | `-NoCheckpoint` | Skip System Restore checkpoints |
 | `-SkipWindowsUpdates` | Skip Windows Update check even when `-InstallWindowsUpdates` is set |
+| `-RunEOMT` | Download and run CSS-Exchange Emergency Mitigation Tool (EOMT) in Phase 5 |
+| `-WaitForADSync` | After PrepareAD, wait up to 6 minutes for AD replication to be error-free |
+| `-LogRetentionDays` | Register a daily scheduled task to delete IIS + Exchange logs older than N days (1–365) |
+| `-RelaySubnets` | IP ranges for anonymous internal relay (accepted domains only, no external relay right) |
+| `-ExternalRelaySubnets` | IP ranges for anonymous external relay (any recipient); removes AnonymousUsers from Default Frontend on success |
+| `-StandaloneOptimize` | Run all post-install tasks on an already-installed Exchange server without running the full install flow |
+| `-SkipInstallReport` | Skip the HTML/PDF installation report generated at Phase 6 completion |
 
 See `deploy-example.psd1` for a fully documented configuration file template.
 
@@ -154,6 +166,8 @@ Recipient Management / Management Tools modes use phases 0–2 only.
 The following best-practice configurations are automatically applied after Exchange setup:
 
 ### Security Hardening
+- **HSTS header** — `Strict-Transport-Security: max-age=31536000` on OWA and ECP; only applied when `-CertificatePath` is set (avoids browser lockout with self-signed certificates)
+- **Anonymous relay connectors** — dedicated internal (`-RelaySubnets`) and external (`-ExternalRelaySubnets`) relay connectors; `AnonymousUsers` removed from Default Frontend on success; account resolved via SID S-1-5-7 (language-independent)
 - **Windows Defender exclusions** — folder, process, and extension exclusions per Microsoft guidance
 - **SMBv1 disabled** — removes legacy protocol attack vector
 - **SSL 3.0 disabled** (optional) — POODLE mitigation
@@ -189,7 +203,44 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
-### v5.1 — April 2026 (latest: 2026-04-16)
+### v5.4 — April 2026 (latest: 2026-04-18)
+
+- **Installation Report** (`New-InstallationReport`) — comprehensive HTML report generated automatically at the end of Phase 6; 6 sections: Installation Parameters, System Information, Active Directory, Exchange Configuration (virtual directory URLs, mailbox databases, receive connectors, certificates), Security Settings, Performance & Tuning; status badges (green/orange/red) for every setting; sidebar navigation; print-friendly CSS
+- **PDF export** — automatic via Microsoft Edge headless (`--print-to-pdf`) when Edge is installed on the server; graceful fallback message if not found
+- **`-SkipInstallReport`** — switch to suppress report generation when not needed
+- **Verbose logging** — verbose messages are always written to the log file; console output remains clean (`$VerbosePreference = SilentlyContinue`)
+
+### v5.3 — April 2026
+
+Code quality and robustness improvements; no new parameters.
+
+- **`Add-BackgroundJob` helper** — prunes `Completed`/`Failed`/`Stopped` jobs from `$Global:BackgroundJobs` before each append; prevents unbounded list growth across phases
+- **`New-LDAPSearch` helper** — encapsulates `DirectorySearcher` creation (SearchRoot + Filter); eliminates duplicated 3-line blocks in four functions (`Clear-AutodiscoverSCP`, `Set-AutodiscoverSCP`, `Test-ExistingExchangeServer`, `Get-ExchangeServerObjects`)
+- **Registry idempotency** — `RunOnce`, `Disable/Enable-UAC`, `Enable-AutoLogon`, `Disable-OpenFileSecurityWarning`, `Set-NETFrameworkInstallBlock`, and `Disable-ServerManagerAtLogon` now all use `Set-RegistryValue`; write is skipped when the value is already correct
+- **BSTR memory zeroing** — `ZeroFreeBSTR` called immediately after `PtrToStringAuto` in `Test-Credentials` and `Enable-AutoLogon`; eliminates plaintext password residue in process memory
+- **Exit code checks** — `RUNDLL32.EXE` (`Clear-DesktopBackground`) and `powercfg.exe` (`Enable-HighPerformancePowerPlan`) now emit `Write-MyWarning` on non-zero exit codes
+- **Pester tests** extended from 45 to 54 tests: `Set-RegistryValue` idempotency (5 cases) + `Add-BackgroundJob` pruning (4 cases); assertion fix for Exchange 2016 CU23 label
+
+### v5.2 — April 2026
+
+- **HSTS header** (`Set-HSTSHeader`) — configures `Strict-Transport-Security: max-age=31536000` on OWA and ECP; conditional on `-CertificatePath` to avoid browser lockout with self-signed certificates (Phase 5)
+- **Emergency Mitigation Tool** (`-RunEOMT`) — downloads and runs CSS-Exchange EOMT for CVE mitigation; BITS download with PS 5.1 fallback; SHA256 logged (Phase 5)
+- **AD replication check** (`-WaitForADSync`) — polls `repadmin /showrepl /errorsonly` after PrepareAD until error-free or 6-minute timeout (Phase 3)
+- **Database/log path check** (`Test-DBLogPathSeparation`) — warns when DB and log share the same volume root; DAG-aware size guidance (Phase 6)
+- **Log cleanup task** (`-LogRetentionDays`) — registers `\Exchange\Exchange Log Cleanup` scheduled task (daily 02:00, SYSTEM, 1h limit) for IIS, transport, and tracking logs (Phase 6)
+- **Anonymous relay connectors** (`-RelaySubnets`, `-ExternalRelaySubnets`) — two-connector design: internal relay (no external relay right) and external relay (`Ms-Exch-SMTP-Accept-Any-Recipient`); `AnonymousUsers` removed from Default Frontend on success; account name resolved via SID S-1-5-7 (language-independent, works on DE/EN/FR/etc.) (Phase 6)
+- **Standalone optimize mode** (`-StandaloneOptimize`) — single-phase run of all post-install tasks on an existing Exchange server; no setup flow required; shares `-Namespace`, `-CertificatePath`, `-DAGName`, `-SkipHealthCheck`, `-RelaySubnets`, `-ExternalRelaySubnets`, `-LogRetentionDays`
+- **Pre-flight report** — added Exchange database sizing best-practices section (DAG vs. standalone limits, log/DB separation, 64 KB allocation unit, free space guidance)
+- **Pester tests** extended — `Get-FullDomainAccount` edge cases, DB/log separation logic, HSTS header value validation (no `includeSubDomains`, min 1-year `max-age`)
+
+**Bugfixes and quality improvements (2026-04-17):**
+- **ValidatePattern regex** — removed inline `(?# ...)` comment from `-Organization` pattern that caused a parse error (`Too many )'s`) on script load
+- **Windows Update count** — installed count now restricted to approved KBs; PSWindowsUpdate previously included already-installed updates in the `Installed` result set
+- **`Disable-IEESC` and `Disable-ServerManagerAtLogon`** — moved from AutoPilot reboot preparation to Phase 1 (called once; registry changes persist across reboots)
+- **Dead code removed** — `DisableSharedCacheServiceProbe` function (defined but never called)
+- **Named constants** — `$ERR_SUS_NOT_APPLICABLE` and `$POWERPLAN_HIGH_PERFORMANCE` replace hardcoded magic values
+
+### v5.1 — April 2026
 
 - **Interactive installation menu** — start without parameters; numbered mode selection + letter toggles; RawUI.ReadKey for instant response (falls back to Read-Host for RDP/PS2Exe compatibility)
 - **Credential validation loop** — `Get-ValidatedCredentials` with up to 3 retries (R=Retry / Q=Quit)
@@ -204,7 +255,7 @@ The following best-practice configurations are automatically applied after Excha
 - **MaxConcurrentAPI** — `Set-MaxConcurrentAPI` configures Netlogon to prevent 0xC000005E under Exchange auth load
 - **Performance fixes** — `Clear-DesktopBackground` no longer uses `Add-Type`/C# (3–10s faster per phase start); `Get-DetectedFileVersion` uses `FileVersionInfo` API instead of `Get-Command`
 - **Bugfix** — `Zone.Identifier` ADS check skipped for mounted ISO sources (UDF/ISO9660 has no ADS support)
-- **Bugfix** — Server Manager no longer appears on intermediate AutoPilot reboots (`Disable-ServerManagerAtLogon` moved to pre-reboot preparation)
+- **Bugfix** — Server Manager no longer appears on intermediate AutoPilot reboots (`Disable-ServerManagerAtLogon` moved to AutoPilot preparation block before every reboot; later refined to Phase 1 in v5.2)
 
 ### v5.01 — April 2026
 
@@ -231,10 +282,11 @@ The following best-practice configurations are automatically applied after Excha
 ## Notes
 
 - State file: `<InstallPath>\<ComputerName>_Install-Exchange15_state.xml` (default: `C:\Install\`)
-- Log file: `<InstallPath>\<ComputerName>_Install-Exchange15.log`
+- Log file: `<InstallPath>\<ComputerName>_Install-Exchange15_<timestamp>.log` — always verbose; `[INFO]`, `[WARNING]`, `[ERROR]`, `[VERBOSE]` entries
+- Installation report: `<InstallPath>\<ComputerName>_InstallationReport_<timestamp>.html` (+ `.pdf` if Edge available)
 - With `-AutoPilot`: AutoLogon is temporarily enabled and removed after next login
 - All downloads use BITS with `Invoke-WebDownload` fallback (PS 5.1-compatible, handles certificate bypass)
-- Pester tests: `Invoke-Pester .\Install-Exchange15.Tests.ps1 -Output Detailed` (requires Pester 5.x)
+- Pester tests (54 total): `Invoke-Pester .\Install-Exchange15.Tests.ps1 -Output Detailed` (requires Pester 5.x)
 
 ---
 
