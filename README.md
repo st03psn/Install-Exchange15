@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.5 (April 2026, last updated 2026-04-19)
+**Version:** 5.6 (April 2026, last updated 2026-04-19)
 **License:** As-Is, without warranty
 
 ---
@@ -203,6 +203,28 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v5.6 — April 2026 (latest: 2026-04-19)
+
+- **Reports subfolder** — all reports and logs are now written to `<InstallPath>\reports\` (default `C:\Install\reports\`); folder is created automatically on first run and on AutoPilot resume
+- **RBAC Role Group Membership** in Installation Report — 10 standard Exchange role groups queried live via `Get-RoleGroupMember`; members shown with `RecipientType`; new section 8 in HTML report
+- **Installation Log** in Installation Report — full transcript embedded as scrollable dark block; new section 9 in HTML report
+- **Autodiscover SCP** moved into Virtual Directory URLs table — first row, queried via `Get-ClientAccessService`
+- **UAC re-enabled before report** — `Enable-UAC` and `Enable-IEESC` now run before `New-InstallationReport`; report correctly shows UAC as Enabled
+- **HealthChecker section** distinguishes `-SkipHealthCheck` (intentionally skipped with actionable hint) from HC failure (directs to installation log)
+- **Relay connectors** — menu now always creates both internal **and** external relay connectors when `[Y]` selected; blank subnet entry uses RFC 5737 placeholder `192.0.2.1/32` (never routable); Default Frontend hardening skipped when only placeholders set — no risk of anonymous lockout
+- **Log cleanup prompt** — interactive folder prompt suppressed in AutoPilot mode (uses default `C:\#service` silently)
+
+### v5.51 — April 2026 (2026-04-19) — Bugfixes
+
+- **Credential prompt** — `Get-Credential` PSObject cast fixed; `Read-Host` fallback added for PS2Exe/compiled-exe and console environments where `Get-Credential` returns `$null`
+- **`Start-DisableMSExchangeAutodiscoverAppPoolJob`** — `Test-Path 'IIS:\AppPools\...'` replaces `Get-WebAppPoolState` (PathNotFound not suppressed by `-ErrorAction SilentlyContinue`)
+- **Service restart warnings** — `-WarningAction SilentlyContinue` on all `Restart-Service` calls for W3SVC/WAS and MSExchangeTransport; antispam install script output redirected via `3>$null`; `Enable/Disable-TransportAgent` warnings suppressed
+- **Virtual directory URL confirmation** — `-Confirm:$false` on all `Set-*VirtualDirectory` calls; suppresses "host can't be resolved, continue?" prompt during AutoPilot
+- **Log cleanup input loop** — `FlushInputBuffer` moved to its own `try/catch`; a failure no longer aborts the 2-minute RawUI loop and jumps immediately to `Read-Host`
+- **VC++ 2012 (v11.0)** — install condition extended to all Exchange versions (was Exchange 2016/Edge only); HealthChecker flags v11.0 as required for Exchange 2019/SE
+- **KB5074992 download URL** — Windows Update Catalog CAB URL added; SU is now downloaded automatically without manual file placement
+- **`Reconnect-ExchangeSession`** — new helper reconnects the Exchange implicit-remoting PS session after IIS restarts from `Enable-ECC`/`Enable-CBC`/`Enable-AMSI`; waits up to 90 s for the Exchange PS endpoint; called automatically before `Invoke-ExchangeOptimizations`
+
 ### v5.5 — April 2026 (latest: 2026-04-19)
 
 - **Anti-spam agents** (`Install-AntispamAgents`) — runs `Install-AntispamAgents.ps1`, restarts transport, disables all agents except RecipientFilter Agent (Phase 6)
@@ -295,8 +317,9 @@ Code quality and robustness improvements; no new parameters.
 ## Notes
 
 - State file: `<InstallPath>\<ComputerName>_Install-Exchange15_state.xml` (default: `C:\Install\`)
-- Log file: `<InstallPath>\<ComputerName>_Install-Exchange15_<timestamp>.log` — always verbose; `[INFO]`, `[WARNING]`, `[ERROR]`, `[VERBOSE]` entries
-- Installation report: `<InstallPath>\<ComputerName>_InstallationReport_<timestamp>.html` (+ `.pdf` if Edge available)
+- Log file: `<InstallPath>\reports\<ComputerName>_Install-Exchange15_<timestamp>.log` — always verbose; `[INFO]`, `[WARNING]`, `[ERROR]`, `[VERBOSE]` entries
+- Installation report: `<InstallPath>\reports\<ComputerName>_InstallationReport_<timestamp>.html` (+ `.pdf` if Edge available)
+- All reports (Preflight, Installation, RBAC, HealthChecker) written to `<InstallPath>\reports\`
 - With `-AutoPilot`: AutoLogon is temporarily enabled and removed after next login
 - All downloads use BITS with `Invoke-WebDownload` fallback (PS 5.1-compatible, handles certificate bypass)
 - Pester tests (54 total): `Invoke-Pester .\Install-Exchange15.Tests.ps1 -Output Detailed` (requires Pester 5.x)

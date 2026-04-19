@@ -516,6 +516,47 @@
               Chrome DevTools renderer noise; --log-level=3 flag added
             - VC++ 2013 URL updated to stable Microsoft CDN URL (KB3138367)
             - VC++ 2012 now also installed for Exchange 2016 CU23 (was Edge-only)
+    5.51    Bugfixes (2026-04-19):
+            - Get-ValidatedCredentials: PSObject cast fixed — Get-Credential result unwrapped
+              via PSObject.BaseObject before assigning to typed $Credentials variable; Read-Host
+              fallback added for PS2Exe/compiled-exe environments where Get-Credential returns $null
+            - Start-DisableMSExchangeAutodiscoverAppPoolJob: Test-Path 'IIS:\AppPools\...' replaces
+              Get-WebAppPoolState — PathNotFound exception not suppressed by -ErrorAction SilentlyContinue
+              (same fix already applied to Enable-MSExchangeAutodiscoverAppPool in v5.5)
+            - Restart-Service W3SVC/WAS and MSExchangeTransport: -WarningAction SilentlyContinue
+              added to suppress repetitive polling warnings
+            - Install-AntispamAgents: Install-AntispamAgents.ps1 output redirected (3>$null);
+              Enable/Disable-TransportAgent get -WarningAction SilentlyContinue
+            - Set-VirtualDirectoryURLs: -Confirm:$false added to all Set-*VirtualDirectory calls
+              to suppress "host can't be resolved" confirmation prompt
+            - Register-ExchangeLogCleanup: FlushInputBuffer in own try/catch — exception no longer
+              aborts entire 2-minute RawUI input loop; falls back to Read-Host correctly
+            - VC++ 2012 (v11.0): condition extended to all Exchange versions (was Exchange 2016/Edge
+              only); HealthChecker flags v11.0 as required for Exchange 2019/SE
+            - ExchangeSUMap KB5074992: Windows Update Catalog CAB URL added — auto-download now
+              works without manual file placement
+            - Reconnect-ExchangeSession: new helper reconnects Exchange implicit-remoting PS session
+              after W3SVC restarts caused by Enable-ECC/CBC/AMSI; waits up to 90s for endpoint;
+              called before Invoke-ExchangeOptimizations when any of ECC/CBC/AMSI were enabled
+    5.6     Report improvements and relay connector enhancements (2026-04-19):
+            - New-InstallationReport: RBAC Role Group Membership section added (10 groups, queried
+              live via Get-RoleGroupMember; members shown with RecipientType)
+            - New-InstallationReport: Installation Log section added (transcript content embedded
+              as scrollable dark <pre> block; HTML-escaped)
+            - New-InstallationReport: Autodiscover SCP moved into Virtual Directory URLs table
+              (first row; queried via Get-ClientAccessService)
+            - New-InstallationReport: UAC now re-enabled before report generation (was after);
+              report correctly shows UAC = Enabled
+            - New-InstallationReport: HealthChecker section distinguishes -SkipHealthCheck
+              (intentionally skipped) from report not found (HC failed)
+            - Reports subfolder: all reports and logs written to <InstallPath>\reports\
+              ($State['ReportsPath']); folder created on first run and on AutoPilot resume
+            - New-AnonymousRelayConnector: menu now creates both internal AND external relay
+              connectors when [Y] selected; blank subnet entry uses RFC 5737 placeholder
+              192.0.2.1/32 (never routable, no SMTP traffic matches until updated); Default
+              Frontend AnonymousUsers hardening skipped when only placeholders are set
+            - Register-ExchangeLogCleanup: interactive prompt skipped in AutoPilot mode (uses
+              default C:\#service silently)
     5.4     Installation Report + Verbose Logging (2026-04-18):
             - New-InstallationReport: comprehensive HTML report at Phase 6 completion;
               6 sections: Installation Parameters, System Info, Active Directory,
@@ -1028,7 +1069,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.5'
+    $ScriptVersion = '5.6'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -1514,7 +1555,21 @@ process {
         for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             try {
                 $defaultUser = if ($State['AdminAccount']) { $State['AdminAccount'] } else { [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
-                $Script:Credentials = Get-Credential -UserName $defaultUser -Message ('Enter credentials for AutoPilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                $rawCred = Get-Credential -UserName $defaultUser -Message ('Enter credentials for AutoPilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                # Get-Credential can return a PSObject wrapper in some terminal environments; unwrap before assigning to the typed $Credentials parameter variable.
+                $Script:Credentials = if ($rawCred -is [pscredential]) { $rawCred }
+                                      elseif ($rawCred -and $rawCred.PSObject.BaseObject -is [pscredential]) { $rawCred.PSObject.BaseObject }
+                                      else { $null }
+                # Fallback: Get-Credential returns $null silently in PS2Exe/compiled-exe and some RDP/Hyper-V console sessions.
+                if (-not $Script:Credentials) {
+                    Write-MyOutput ('Enter credentials for AutoPilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                    $fbUser = Read-Host -Prompt ('Username [{0}]' -f $defaultUser)
+                    if ([string]::IsNullOrWhiteSpace($fbUser)) { $fbUser = $defaultUser }
+                    $fbPass = Read-Host -Prompt 'Password' -AsSecureString
+                    if ($fbPass -and $fbPass.Length -gt 0) {
+                        $Script:Credentials = New-Object System.Management.Automation.PSCredential($fbUser, $fbPass)
+                    }
+                }
                 if (-not $Script:Credentials) {
                     Write-MyWarning 'No credentials entered'
                 }
@@ -1963,6 +2018,46 @@ process {
         }
         else {
             Write-MyVerbose 'Exchange module already loaded'
+        }
+    }
+
+    function Reconnect-ExchangeSession {
+        # After W3SVC restarts (ECC/CBC/AMSI), the implicit-remoting PS session that
+        # Exchange cmdlets use gets disconnected. Remove the dead session and reconnect.
+        Write-MyVerbose 'Reconnecting Exchange PS session after IIS restart'
+        Get-PSSession | Where-Object { $_.ConfigurationName -eq 'Microsoft.Exchange' } | Remove-PSSession -ErrorAction SilentlyContinue
+
+        # Wait up to 90 s for the Exchange PowerShell endpoint to accept connections
+        $maxWait = 90
+        $elapsed = 0
+        $ready   = $false
+        Write-MyVerbose 'Waiting for Exchange PowerShell endpoint to become available'
+        do {
+            Start-Sleep -Seconds 5
+            $elapsed += 5
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                $wc = New-Object System.Net.WebClient
+                try { $null = $wc.DownloadString('http://localhost/PowerShell/'); $ready = $true }
+                finally { $wc.Dispose() }
+            }
+            catch { }
+        } while (-not $ready -and $elapsed -lt $maxWait)
+
+        if (-not $ready) {
+            Write-MyWarning 'Exchange PowerShell endpoint did not become available within 90 s — optimizations may fail'
+        }
+
+        try {
+            $savedVP = $VerbosePreference
+            $VerbosePreference = 'SilentlyContinue'
+            Connect-ExchangeServer (Get-LocalFQDNHostname) -NoShellBanner 6>&1 | Out-Null
+            $VerbosePreference = $savedVP
+            Write-MyVerbose 'Exchange PS session reconnected'
+        }
+        catch {
+            $VerbosePreference = $savedVP
+            Write-MyWarning ('Failed to reconnect Exchange PS session: {0}' -f $_.Exception.Message)
         }
     }
 
@@ -2811,7 +2906,7 @@ process {
         }
 
         # Generate HTML report
-        $reportPath = Join-Path $State['InstallPath'] ('PreflightReport_{0}.html' -f $env:COMPUTERNAME)
+        $reportPath = Join-Path $State['ReportsPath'] ('PreflightReport_{0}.html' -f $env:COMPUTERNAME)
         $failCount = ($results | Where-Object { $_.Status -eq 'FAIL' }).Count
         $warnCount = ($results | Where-Object { $_.Status -eq 'WARN' }).Count
         $statusColor = if ($failCount -gt 0) { '#dc3545' } elseif ($warnCount -gt 0) { '#ffc107' } else { '#28a745' }
@@ -3134,7 +3229,7 @@ $($htmlRows -join "`n")
             Write-MyOutput ('Enter folder for log cleanup script [{0}] (ENTER = default, auto-accept in 2 min):' -f $defaultScriptFolder)
             $inputBuffer = ''
             try {
-                $host.UI.RawUI.FlushInputBuffer()
+                try { $host.UI.RawUI.FlushInputBuffer() } catch { }
                 $deadline = [DateTime]::Now.AddSeconds(120)
                 while ([DateTime]::Now -lt $deadline) {
                     if ($host.UI.RawUI.KeyAvailable) {
@@ -3328,8 +3423,9 @@ Write-Log 'Exchange log cleanup finished'
         if (-not $existingAgents) {
             Write-MyOutput 'Installing Exchange antispam agents'
             try {
-                & $installScript -ErrorAction Stop
-                Restart-Service MSExchangeTransport -Force -ErrorAction SilentlyContinue
+                & $installScript 3>$null
+                Write-MyVerbose 'Restarting MSExchangeTransport after antispam agent install'
+                Restart-Service MSExchangeTransport -Force -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
                 Write-MyVerbose 'MSExchangeTransport restarted after antispam agent install'
             }
             catch {
@@ -3349,7 +3445,7 @@ Write-Log 'Exchange log cleanup finished'
             $isRecipientFilter = $agent.Identity -like '*Recipient Filter*'
             if ($isRecipientFilter) {
                 if (-not $agent.Enabled) {
-                    Enable-TransportAgent -Identity $agent.Identity -Confirm:$false -ErrorAction SilentlyContinue
+                    Enable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
                     Write-MyOutput ('Enabled: {0}' -f $agent.Identity)
                     $needsTransportRestart = $true
                 }
@@ -3359,7 +3455,7 @@ Write-Log 'Exchange log cleanup finished'
             }
             else {
                 if ($agent.Enabled) {
-                    Disable-TransportAgent -Identity $agent.Identity -Confirm:$false -ErrorAction SilentlyContinue
+                    Disable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
                     Write-MyOutput ('Disabled: {0}' -f $agent.Identity)
                     $needsTransportRestart = $true
                 }
@@ -3369,7 +3465,8 @@ Write-Log 'Exchange log cleanup finished'
             }
         }
         if ($needsTransportRestart) {
-            Restart-Service MSExchangeTransport -Force -ErrorAction SilentlyContinue
+            Write-MyVerbose 'Restarting MSExchangeTransport after agent configuration change'
+            Restart-Service MSExchangeTransport -Force -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
             Write-MyVerbose 'MSExchangeTransport restarted after agent configuration change'
         }
         Write-MyOutput 'Antispam agents configured: only Recipient Filter Agent is enabled'
@@ -3393,9 +3490,20 @@ Write-Log 'Exchange log cleanup finished'
 
         # --- Internal relay connector (no Ms-Exch-SMTP-Accept-Any-Recipient) ---
         # Anonymous senders can deliver to accepted domains only; cannot relay externally.
+        # RFC 5737 TEST-NET placeholder — never routable, used when no subnets were specified.
+        # Prevents the relay connector from matching real SMTP traffic until the admin sets proper IPs.
+        $RELAY_PLACEHOLDER = '192.0.2.1/32'
+        $internalIsPlaceholder = ($State['RelaySubnets'].Count -eq 1 -and $State['RelaySubnets'][0] -eq $RELAY_PLACEHOLDER)
+        $externalIsPlaceholder = ($State['ExternalRelaySubnets'].Count -eq 1 -and $State['ExternalRelaySubnets'][0] -eq $RELAY_PLACEHOLDER)
+
         if ($hasInternal) {
-            $intName = ('Anonymous Internal Relay - {0}' -f $server)
-            Write-MyOutput ('Configuring internal relay connector "{0}" — subnets: {1}' -f $intName, ($State['RelaySubnets'] -join ', '))
+            $intName    = ('Anonymous Internal Relay - {0}' -f $server)
+            $subnetList = $State['RelaySubnets'] -join ', '
+            if ($internalIsPlaceholder) {
+                Write-MyWarning 'Internal relay connector: no subnets specified — using placeholder IP (192.0.2.1/32, RFC 5737).'
+                Write-MyWarning 'No real SMTP traffic will match this connector until you set RemoteIPRanges to your actual relay sources.'
+            }
+            Write-MyOutput ('Configuring internal relay connector "{0}" — subnets: {1}' -f $intName, $subnetList)
             try {
                 $existing = Get-ReceiveConnector -Identity "$server\$intName" -ErrorAction SilentlyContinue
                 if ($existing) {
@@ -3422,6 +3530,10 @@ Write-Log 'Exchange log cleanup finished'
         if ($hasExternal) {
             $extName = ('Anonymous External Relay - {0}' -f $server)
             Write-MyWarning 'SECURITY: External relay connector allows anonymous relay to ANY recipient.'
+            if ($externalIsPlaceholder) {
+                Write-MyWarning 'External relay connector: no subnets specified — using placeholder IP (192.0.2.1/32, RFC 5737).'
+                Write-MyWarning 'No real SMTP traffic will match this connector until you set RemoteIPRanges to your actual relay sources.'
+            }
             Write-MyWarning ('         External relay subnets: {0}' -f ($State['ExternalRelaySubnets'] -join ', '))
             try {
                 # Resolve ANONYMOUS LOGON by SID (S-1-5-7) — language-independent
@@ -3456,7 +3568,10 @@ Write-Log 'Exchange log cleanup finished'
         # Only when at least one dedicated relay connector was configured successfully.
         # This prevents unauthenticated inbound from arbitrary IPs while keeping
         # relay restricted to the explicitly defined subnets above.
-        if ($success) {
+        # Skip Default Frontend hardening when only placeholder IPs are set — the relay connector
+        # won't match real traffic yet, so removing AnonymousUsers would break inbound mail.
+        $onlyPlaceholders = ($hasInternal -and $internalIsPlaceholder) -and (-not $hasExternal -or $externalIsPlaceholder)
+        if ($success -and -not $onlyPlaceholders) {
             $defaultName = ('Default Frontend {0}' -f $server)
             try {
                 $rc = Get-ReceiveConnector -Identity "$server\$defaultName" -ErrorAction SilentlyContinue
@@ -3472,6 +3587,9 @@ Write-Log 'Exchange log cleanup finished'
             catch {
                 Write-MyWarning ('Failed to modify Default Frontend connector: {0}' -f $_.Exception.Message)
             }
+        }
+        elseif ($onlyPlaceholders) {
+            Write-MyWarning ('Default Frontend connector NOT modified — relay connector uses placeholder IPs only. Set real RemoteIPRanges first, then remove AnonymousUsers from "{0}" manually.' -f ('Default Frontend {0}' -f $server))
         }
         else {
             Write-MyWarning 'One or more relay connectors failed — Default Frontend connector was NOT modified'
@@ -3628,7 +3746,7 @@ Write-Log 'Exchange log cleanup finished'
                 Set-OwaVirtualDirectory -Identity "$server\owa (Default Web Site)" `
                     -InternalUrl "https://$ns/owa" -ExternalUrl "https://$ns/owa" `
                     -LogonFormat PrincipalName -DefaultDomain '' `
-                    -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'OWA virtual directory configured (UPN logon)'
                 $changed++
             }
@@ -3643,7 +3761,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-EcpVirtualDirectory -Identity "$server\ecp (Default Web Site)" `
                     -InternalUrl "https://$ns/ecp" -ExternalUrl "https://$ns/ecp" `
-                    -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'ECP virtual directory configured'
                 $changed++
             }
@@ -3658,7 +3776,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-WebServicesVirtualDirectory -Identity "$server\EWS (Default Web Site)" `
                     -InternalUrl "https://$ns/EWS/Exchange.asmx" -ExternalUrl "https://$ns/EWS/Exchange.asmx" `
-                    -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'EWS virtual directory configured'
                 $changed++
             }
@@ -3673,7 +3791,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-OabVirtualDirectory -Identity "$server\OAB (Default Web Site)" `
                     -InternalUrl "https://$ns/OAB" -ExternalUrl "https://$ns/OAB" `
-                    -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'OAB virtual directory configured'
                 $changed++
             }
@@ -3688,7 +3806,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-ActiveSyncVirtualDirectory -Identity "$server\Microsoft-Server-ActiveSync (Default Web Site)" `
                     -InternalUrl "https://$ns/Microsoft-Server-ActiveSync" -ExternalUrl "https://$ns/Microsoft-Server-ActiveSync" `
-                    -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'ActiveSync virtual directory configured'
                 $changed++
             }
@@ -3703,7 +3821,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
                     -InternalUrl "https://$ns/mapi" -ExternalUrl "https://$ns/mapi" `
-                    -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'MAPI virtual directory URL configured'
                 $changed++
             }
@@ -3825,10 +3943,10 @@ Write-Log 'Exchange log cleanup finished'
             try {
                 # Suppress all HealthChecker console output — it writes hundreds of verbose lines.
                 # The HTML report is what matters; capture all streams and redirect to transcript only.
-                $hcOutput = & $hcPath -OutputFilePath $State['InstallPath'] -SkipVersionCheck *>&1
+                $hcOutput = & $hcPath -OutputFilePath $State['ReportsPath'] -SkipVersionCheck *>&1
                 foreach ($line in $hcOutput) { Write-MyVerbose ('[HealthChecker] {0}' -f [string]$line) }
                 # Find the report file HealthChecker just created
-                $hcReport = Get-ChildItem -Path $State['InstallPath'] -Filter 'HealthChecker*.htm*' |
+                $hcReport = Get-ChildItem -Path $State['ReportsPath'] -Filter 'HealthChecker*.htm*' |
                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
                 if ($hcReport) {
                     Write-MyOutput ('HealthChecker report saved to {0}' -f $hcReport.FullName)
@@ -3896,7 +4014,7 @@ Write-Log 'Exchange log cleanup finished'
 
     function New-InstallationReport {
         Write-MyOutput 'Generating Installation Report'
-        $reportPath = Join-Path $State['InstallPath'] ('{0}_InstallationReport_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMddHHmmss'))
+        $reportPath = Join-Path $State['ReportsPath'] ('{0}_InstallationReport_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMddHHmmss'))
         $reportDate = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
         function Format-Badge($text, $type) {
@@ -4033,8 +4151,13 @@ Write-Log 'Exchange log cleanup finished'
             }
         } catch { }
 
-        # Virtual directories — OWA, ECP, EWS, OAB, ActiveSync, MAPI
+        # Virtual directories — Autodiscover SCP + OWA, ECP, EWS, OAB, ActiveSync, MAPI
         $vdirRows.Add('<tr><th>Service</th><th>Internal URL</th><th>External URL</th></tr>')
+        try {
+            $cas = Get-ClientAccessService -Identity $env:COMPUTERNAME -ErrorAction Stop
+            $scpUri = if ($cas.AutoDiscoverServiceInternalUri) { $cas.AutoDiscoverServiceInternalUri.AbsoluteUri } else { '<em>not set</em>' }
+            $vdirRows.Add(('<tr><td>Autodiscover SCP</td><td>{0}</td><td><em>n/a (SCP)</em></td></tr>' -f $scpUri))
+        } catch { }
         @(
             @{ Name='OWA';         Cmd={ Get-OwaVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
             @{ Name='ECP';         Cmd={ Get-EcpVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
@@ -4199,13 +4322,47 @@ Write-Log 'Exchange log cleanup finished'
         $perfContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th></tr>{0}</table>' -f ($perfRows -join '')
 
         # ── 7. HEALTHCHECKER RESULTS ──────────────────────────────────────────
-        $hcReport = Get-ChildItem -Path $State['InstallPath'] -Filter 'HealthChecker*.htm*' -ErrorAction SilentlyContinue |
+        $hcReport = Get-ChildItem -Path $State['ReportsPath'] -Filter 'HealthChecker*.htm*' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
         $hcContent = if ($hcReport) {
             $hcRelPath = $hcReport.Name
             '<p style="margin-bottom:12px">HealthChecker report: <a href="{0}" target="_blank"><code>{1}</code></a></p><iframe src="{0}" style="width:100%;height:700px;border:1px solid #e1dfdd;border-radius:4px" title="HealthChecker Report"></iframe>' -f $hcRelPath, $hcReport.FullName
+        } elseif ($State['SkipHealthCheck']) {
+            '<p style="color:#8a8886"><em>HealthChecker was skipped (-SkipHealthCheck). Re-run Phase 6 without -SkipHealthCheck or run HealthChecker.ps1 manually from <code>{0}</code>.</em></p>' -f $State['ReportsPath']
         } else {
-            '<p style="color:#8a8886"><em>HealthChecker report not found in {0}. Run HealthChecker.ps1 manually or re-run Phase 6 without -SkipHealthCheck.</em></p>' -f $State['InstallPath']
+            '<p style="color:#8a8886"><em>HealthChecker report not found in <code>{0}</code>. HealthChecker may have failed — check the installation log above.</em></p>' -f $State['ReportsPath']
+        }
+
+        # ── 8. RBAC ROLE GROUP MEMBERSHIP ─────────────────────────────────────
+        $rbacGroups = @(
+            'Organization Management', 'Server Management', 'Recipient Management',
+            'Help Desk', 'Hygiene Management', 'Compliance Management',
+            'Records Management', 'Discovery Management',
+            'Public Folder Management', 'View-Only Organization Management'
+        )
+        $rbacRows = [System.Collections.Generic.List[string]]::new()
+        $rbacRows.Add('<tr><th>Role Group</th><th>Members</th></tr>')
+        foreach ($group in $rbacGroups) {
+            try {
+                $members = @(Get-RoleGroupMember -Identity $group -ErrorAction Stop)
+                $memberHtml = if ($members.Count -gt 0) {
+                    ($members | ForEach-Object { '<code>{0}</code> <span style="color:#888;font-size:11px">({1})</span>' -f [string]$_.Name, [string]$_.RecipientType }) -join '<br>'
+                } else { '<em style="color:#888">no members</em>' }
+                $rbacRows.Add(('<tr><td>{0}</td><td>{1}</td></tr>' -f $group, $memberHtml))
+            }
+            catch {
+                $rbacRows.Add(('<tr><td>{0}</td><td style="color:#c50f1f"><em>Query failed: {1}</em></td></tr>' -f $group, $_.Exception.Message))
+            }
+        }
+        $rbacContent = '<table class="data-table">{0}</table>' -f ($rbacRows -join '')
+
+        # ── 9. INSTALLATION LOG ───────────────────────────────────────────────
+        $logContent = if ($State['TranscriptFile'] -and (Test-Path $State['TranscriptFile'])) {
+            $logText = [System.IO.File]::ReadAllText($State['TranscriptFile'], [System.Text.Encoding]::UTF8)
+            $logEscaped = $logText -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+            '<pre style="font-family:Consolas,monospace;font-size:12px;line-height:1.5;background:#1e1e1e;color:#d4d4d4;padding:16px;border-radius:4px;overflow:auto;max-height:600px;white-space:pre-wrap;word-break:break-all">{0}</pre>' -f $logEscaped
+        } else {
+            '<p style="color:#8a8886"><em>Log file not found: {0}</em></p>' -f $State['TranscriptFile']
         }
 
         # ── BUILD HTML ────────────────────────────────────────────────────────
@@ -4252,6 +4409,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             (New-HtmlSection 'security'     'Security Settings'         $secContent)
             (New-HtmlSection 'performance'  'Performance &amp; Tuning'  $perfContent)
             (New-HtmlSection 'healthchecker' 'HealthChecker Results'    $hcContent)
+            (New-HtmlSection 'rbac'         'RBAC Role Group Membership' $rbacContent)
+            (New-HtmlSection 'installlog'   'Installation Log'          $logContent)
         )
 
         $toc = @(
@@ -4263,6 +4422,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             '<a href="#security">Security Settings</a>'
             '<a href="#performance">Performance &amp; Tuning</a>'
             '<a href="#healthchecker">HealthChecker Results</a>'
+            '<a href="#rbac">RBAC Role Groups</a>'
+            '<a href="#installlog">Installation Log</a>'
         )
 
         $html = @"
@@ -4343,7 +4504,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     function Get-RBACReport {
         Write-MyOutput 'Generating RBAC role group membership report'
         $ts = Get-Date -Format 'yyyyMMddHHmmss'
-        $reportPath = Join-Path $State['InstallPath'] "${env:COMPUTERNAME}_RBACReport_${ts}.txt"
+        $reportPath = Join-Path $State['ReportsPath'] "${env:COMPUTERNAME}_RBACReport_${ts}.txt"
 
         $roleGroups = @(
             'Organization Management',
@@ -4941,12 +5102,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     # Update this table whenever Microsoft releases a new Exchange Security Update.
     $ExchangeSUMap = @{
         # Exchange SE RTM (15.02.2562.017) -> Feb 2026 SU (KB5074992)
-        # No direct download URL available; place EXE manually in InstallPath to enable auto-install
-        # Download page: https://www.microsoft.com/en-us/download/details.aspx?id=108556
         '15.02.2562.017' = @{
             KB            = 'KB5074992'
             FileName      = 'ExchangeSubscriptionEdition-KB5074992-x64-en.cab'
-            URL           = ''
+            URL           = 'https://catalog.s.download.windowsupdate.com/d/msdownload/update/software/secu/2026/02/exchangesubscriptionedition-kb5074992-x64-en_ecb78e726db724e5e225aaa00644f568291cbc82.cab'
             TargetVersion = '15.02.2562.037'
         }
         # Exchange 2019 CU15 (15.02.1748.008) -> Jan 2025 SU (KB5049233 SU3 V2)
@@ -5705,7 +5864,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             Write-MyVerbose ('Override for ECC found, removing (obsolete)')
             $Override | Remove-SettingOverride
             Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh | Out-Null
-            Restart-Service -Name W3SVC, WAS -Force
+            Write-MyVerbose 'Restarting W3SVC and WAS'
+            Restart-Service -Name W3SVC, WAS -Force -WarningAction SilentlyContinue
         }
         else {
             Write-MyVerbose ('No override configuration for ECC found')
@@ -5723,7 +5883,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         else {
             New-SettingOverride -Name "EnableEncryptionAlgorithmCBC" -Parameters @("Enabled=True") -Component Encryption -Reason "Enable CBC encryption" -Section EnableEncryptionAlgorithmCBC | Out-Null
             Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh | Out-Null
-            Restart-Service -Name W3SVC, WAS -Force
+            Write-MyVerbose 'Restarting W3SVC and WAS'
+            Restart-Service -Name W3SVC, WAS -Force -WarningAction SilentlyContinue
         }
     }
 
@@ -5736,7 +5897,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         New-SettingOverride -Name "EnableAMSIBodyScan" -Component Cafe -Section AmsiRequestBodyScanning -Parameters $ConfigParam -Reason "Enabling AMSI body Scan"
         Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh
-        Restart-Service -Name W3SVC, WAS -Force
+        Write-MyVerbose 'Restarting W3SVC and WAS'
+        Restart-Service -Name W3SVC, WAS -Force -WarningAction SilentlyContinue
     }
 
     function Set-SchannelProtocol {
@@ -5955,9 +6117,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         $ScriptBlock = {
             do {
-                if (Get-WebAppPoolState -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction SilentlyContinue) {
+                # Use Test-Path instead of Get-WebAppPoolState: the latter internally calls
+                # Get-WebItemState which throws PathNotFound and is NOT suppressed by -ErrorAction SilentlyContinue.
+                if (Test-Path 'IIS:\AppPools\MSExchangeAutodiscoverAppPool') {
 
-                    Write-MyVerbose 'Stopping and blocking startup of MSExchangeAutodiscoverAppPool'
+                    Write-Verbose 'Stopping and blocking startup of MSExchangeAutodiscoverAppPool'
                     if ( (Get-WebAppPoolState -Name 'MSExchangeAutodiscoverAppPool').Value -ine 'Stopped') {
                         try {
                             Stop-WebAppPool -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction Stop
@@ -6309,12 +6473,13 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             } else {
                 $cfg['LogRetentionDays'] = 0
             }
-            $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated IPs/CIDRs, blank = none)'
-            $cfg['RelaySubnets'] = if ($relay) { $relay -split '\s*,\s*' | Where-Object { $_ } } else { @() }
-            if ($cfg['RelaySubnets'].Count -gt 0) {
-                $extRelay = Read-MenuInput -Prompt 'External relay subnets  (comma-separated IPs/CIDRs, blank = none)'
-                $cfg['ExternalRelaySubnets'] = if ($extRelay) { $extRelay -split '\s*,\s*' | Where-Object { $_ } } else { @() }
+            if ((Read-MenuInput -Prompt 'Create relay connectors? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
+                $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)'
+                $cfg['RelaySubnets'] = if ($relay) { $relay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.1/32') }
+                $extRelay = Read-MenuInput -Prompt 'External relay subnets  (comma-separated CIDRs, blank = placeholder)'
+                $cfg['ExternalRelaySubnets'] = if ($extRelay) { $extRelay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.1/32') }
             } else {
+                $cfg['RelaySubnets'] = @()
                 $cfg['ExternalRelaySubnets'] = @()
             }
         }
@@ -6335,12 +6500,13 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             } else {
                 $cfg['LogRetentionDays'] = 0
             }
-            $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated IPs/CIDRs, blank = none)'
-            $cfg['RelaySubnets'] = if ($relay) { $relay -split '\s*,\s*' | Where-Object { $_ } } else { @() }
-            if ($cfg['RelaySubnets'].Count -gt 0) {
-                $extRelay = Read-MenuInput -Prompt 'External relay subnets  (comma-separated IPs/CIDRs, blank = none)'
-                $cfg['ExternalRelaySubnets'] = if ($extRelay) { $extRelay -split '\s*,\s*' | Where-Object { $_ } } else { @() }
+            if ((Read-MenuInput -Prompt 'Create relay connectors? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
+                $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)'
+                $cfg['RelaySubnets'] = if ($relay) { $relay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.1/32') }
+                $extRelay = Read-MenuInput -Prompt 'External relay subnets  (comma-separated CIDRs, blank = placeholder)'
+                $cfg['ExternalRelaySubnets'] = if ($extRelay) { $extRelay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.1/32') }
             } else {
+                $cfg['RelaySubnets'] = @()
                 $cfg['ExternalRelaySubnets'] = @()
             }
         }
@@ -6403,6 +6569,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     $State = @{}
     $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
     $State = Restore-State
+    # Ensure reports folder exists on AutoPilot resume (state restored from XML)
+    if ($State['ReportsPath'] -and -not (Test-Path $State['ReportsPath'])) {
+        New-Item -Path $State['ReportsPath'] -ItemType Directory -Force | Out-Null
+    }
 
     $BackgroundJobs = @()
 
@@ -6627,8 +6797,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $State["DiagnosticData"] = $DiagnosticData
         $State["Lock"] = $Lock
         $State["EdgeDNSSuffix"] = $EdgeDNSSuffix
-        $State["InstallPath"] = $InstallPath
-        $State["TranscriptFile"] = "$($State["InstallPath"])\$($env:computerName)_$($ScriptName)_$(Get-Date -Format "yyyyMMddHHmmss").log"
+        $State["InstallPath"]  = $InstallPath
+        $State["ReportsPath"]  = Join-Path $InstallPath 'reports'
+        if (-not (Test-Path $State["ReportsPath"])) { New-Item -Path $State["ReportsPath"] -ItemType Directory -Force | Out-Null }
+        $State["TranscriptFile"] = Join-Path $State["ReportsPath"] ('{0}_{1}_{2}.log' -f $env:computerName, $ScriptName, (Get-Date -Format 'yyyyMMddHHmmss'))
         $State["PreflightOnly"] = $PreflightOnly
         $State["CopyServerConfig"] = $CopyServerConfig
         $State["CertificatePath"] = $CertificatePath
@@ -6964,9 +7136,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
                 # Check if need to install VC++ Runtimes
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Visual C++ Runtimes' -PercentComplete 50
-                # VC++ 2012 (v11.0): required for Exchange 2016 CU23 and Edge Transport role
-                if ( ($State['InstallEdge'] -or ($State['MajorSetupVersion'] -eq $EX2016_MAJOR)) -and
-                     -not (Get-VCRuntime -version '11.0') -and $State["VCRedist2012"] ) {
+                # VC++ 2012 (v11.0): required for Exchange 2016 CU23, Exchange 2019, SE and Edge Transport role (flagged by HealthChecker)
+                if ( -not (Get-VCRuntime -version '11.0') -and $State["VCRedist2012"] ) {
                     Install-MyPackage "" "Visual C++ 2012 Redistributable" "vcredist_x64_2012.exe" "https://download.microsoft.com/download/1/6/B/16B06F60-3B20-4FF2-B699-5E9B7962F9AE/VSU_4/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
                 }
 
@@ -7121,6 +7292,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 # Org / Transport optimizations (interactive menu or AutoPilot defaults)
                 if (-not $State['InstallEdge']) {
                     Step-P5 'Org/Transport optimizations'
+                    # ECC/CBC/AMSI above may have restarted W3SVC, killing the implicit-remoting session.
+                    if ($State['EnableECC'] -or $State['EnableCBC'] -or $State['EnableAMSI']) {
+                        Reconnect-ExchangeSession
+                    }
                     Invoke-ExchangeOptimizations
                 }
 
@@ -7133,8 +7308,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
                     switch ( $State['ExSetupVersion']) {
                         $EXSESETUPEXE_RTM {
-                            # Download page: https://www.microsoft.com/en-us/download/details.aspx?id=108556
-                            Install-MyPackage 'KB5074992' 'Security Update For Exchange Server SE RTM Feb26SU' 'ExchangeSubscriptionEdition-KB5074992-x64-en.cab' '' ('/passive /norestart') -ContinueOnError
+                            Install-MyPackage 'KB5074992' 'Security Update For Exchange Server SE RTM Feb26SU' 'ExchangeSubscriptionEdition-KB5074992-x64-en.cab' 'https://catalog.s.download.windowsupdate.com/d/msdownload/update/software/secu/2026/02/exchangesubscriptionedition-kb5074992-x64-en_ecb78e726db724e5e225aaa00644f568291cbc82.cab' ('/passive /norestart') -ContinueOnError
                         }
                         $EX2019SETUPEXE_CU14 {
                             Install-MyPackage 'KB5049233' 'Security Update For Exchange Server 2019 CU14 SU3 V2' 'Exchange2019-KB5049233-x64-en.exe' 'https://download.microsoft.com/download/8/0/b/80b356e4-f7b1-4e11-9586-d3132a7a2fc3/Exchange2019-KB5049233-x64-en.exe' ('/passive')
@@ -7296,6 +7470,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     Invoke-HealthChecker
                 }
 
+                Enable-UAC
+                Enable-IEESC
+
                 # Installation Report
                 if (-not $State['SkipInstallReport'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Installation Report' -PercentComplete 92
@@ -7303,8 +7480,6 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 }
 
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
-                Enable-UAC
-                Enable-IEESC
                 Write-MyOutput "Setup finished - We're good to go."
             }
 

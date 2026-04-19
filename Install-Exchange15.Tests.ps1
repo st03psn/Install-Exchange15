@@ -192,9 +192,9 @@ Describe 'ExchangeSUMap structure' {
         }
     }
 
-    It 'All FileName entries end in .exe (not .msp or .cab)' {
+    It 'All FileName entries end in .exe or .cab (not .msp)' {
         foreach ($key in $ExchangeSUMap.Keys) {
-            $ExchangeSUMap[$key].FileName | Should -BeLike '*.exe' -Because "SU packages must be .exe, not .msp or .cab (key: $key)"
+            $ExchangeSUMap[$key].FileName | Should -Match '\.(exe|cab)$' -Because "SU packages must be .exe or .cab, not .msp (key: $key)"
         }
     }
 
