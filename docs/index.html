@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Install-Exchange15.ps1 — Automated Exchange Server Deployment</title>
+<style>
+:root {
+  --primary: #1a2332;
+  --accent:  #0078d4;
+  --green:   #107c10;
+  --bg:      #f3f2f1;
+  --card:    #ffffff;
+  --border:  #e1dfdd;
+  --text:    #252423;
+  --muted:   #605e5c;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.6; }
+
+/* ─── HERO ─────────────────────────────────────────────────────────────── */
+.hero {
+  background: linear-gradient(135deg, #1a2332 0%, #0f3460 60%, #0078d4 100%);
+  color: #fff;
+  padding: 72px 40px 80px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.hero::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+.hero-logo {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 72px; height: 72px;
+  background: rgba(255,255,255,0.15);
+  border: 2px solid rgba(255,255,255,0.3);
+  border-radius: 16px;
+  font-size: 32px; font-weight: 800;
+  margin-bottom: 24px;
+  backdrop-filter: blur(4px);
+}
+.hero h1 { font-size: 36px; font-weight: 300; letter-spacing: -0.5px; margin-bottom: 12px; }
+.hero h1 strong { font-weight: 700; }
+.hero .tagline { font-size: 18px; opacity: 0.8; margin-bottom: 32px; max-width: 640px; margin-left: auto; margin-right: auto; }
+.badge-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 36px; }
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.25);
+  backdrop-filter: blur(4px);
+}
+.badge .dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; }
+.btn-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 12px 28px; border-radius: 8px; font-size: 15px; font-weight: 600;
+  text-decoration: none; transition: all .2s;
+}
+.btn-primary { background: #fff; color: var(--primary); }
+.btn-primary:hover { background: #f0f0f0; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(0,0,0,.2); }
+.btn-secondary { background: rgba(255,255,255,0.12); color: #fff; border: 1px solid rgba(255,255,255,.3); }
+.btn-secondary:hover { background: rgba(255,255,255,0.2); }
+
+/* ─── SUPPORTED VERSIONS STRIP ─────────────────────────────────────────── */
+.versions-strip {
+  background: var(--primary);
+  color: #c8c6c4;
+  padding: 16px 40px;
+  display: flex; gap: 40px; justify-content: center; flex-wrap: wrap;
+  font-size: 13px;
+}
+.versions-strip strong { color: #fff; }
+
+/* ─── MAIN CONTENT ─────────────────────────────────────────────────────── */
+.container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+/* ─── FEATURES GRID ─────────────────────────────────────────────────────── */
+.features { padding: 64px 0 48px; }
+.section-label { text-align: center; color: var(--accent); font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; }
+.section-title { text-align: center; font-size: 28px; font-weight: 300; color: var(--primary); margin-bottom: 8px; }
+.section-title strong { font-weight: 700; }
+.section-sub { text-align: center; color: var(--muted); font-size: 15px; margin-bottom: 48px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+.feature-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  transition: box-shadow .2s, transform .2s;
+}
+.feature-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,.1); transform: translateY(-2px); }
+.feature-icon {
+  width: 44px; height: 44px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; margin-bottom: 16px;
+}
+.feature-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--primary); }
+.feature-card p { font-size: 14px; color: var(--muted); line-height: 1.5; }
+
+/* ─── PHASES ────────────────────────────────────────────────────────────── */
+.phases { background: var(--card); padding: 64px 0; border-top: 1px solid var(--border); }
+.phase-list { display: flex; flex-direction: column; gap: 0; max-width: 800px; margin: 0 auto; }
+.phase-item {
+  display: flex; gap: 20px; align-items: flex-start;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+.phase-item:last-child { border-bottom: none; }
+.phase-num {
+  flex-shrink: 0;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700;
+}
+.phase-body h4 { font-size: 15px; font-weight: 600; color: var(--primary); margin-bottom: 4px; }
+.phase-body p { font-size: 14px; color: var(--muted); }
+
+/* ─── CODE BLOCK ────────────────────────────────────────────────────────── */
+.quickstart { padding: 64px 0; }
+.code-block {
+  background: #1e1e1e; color: #d4d4d4;
+  border-radius: 12px; padding: 28px 32px;
+  font-family: Consolas, 'Courier New', monospace; font-size: 13.5px; line-height: 1.7;
+  overflow-x: auto; position: relative;
+}
+.code-block .comment { color: #6a9955; }
+.code-block .cmd { color: #569cd6; }
+.code-block .param { color: #9cdcfe; }
+.code-block .val { color: #ce9178; }
+.code-tabs { display: flex; gap: 0; margin-bottom: -1px; }
+.code-tab {
+  padding: 8px 20px; border-radius: 8px 8px 0 0;
+  background: #2d2d2d; color: #888;
+  font-size: 13px; font-weight: 600; cursor: pointer; border: none;
+}
+.code-tab.active { background: #1e1e1e; color: #fff; }
+
+/* ─── REPORT PREVIEW ────────────────────────────────────────────────────── */
+.report-preview { padding: 64px 0; background: linear-gradient(180deg, #f3f2f1 0%, #eae8e6 100%); border-top: 1px solid var(--border); }
+.report-mockup {
+  background: var(--card);
+  border-radius: 12px;
+  box-shadow: 0 8px 40px rgba(0,0,0,.15);
+  overflow: hidden;
+  max-width: 900px;
+  margin: 40px auto 0;
+  border: 1px solid var(--border);
+}
+.mockup-bar {
+  background: #e8e8e8; padding: 10px 16px;
+  display: flex; align-items: center; gap: 8px;
+}
+.mockup-dot { width: 12px; height: 12px; border-radius: 50%; }
+.mockup-header {
+  background: var(--primary); color: #fff;
+  padding: 18px 28px; display: flex; align-items: center; gap: 14px;
+}
+.mockup-logo {
+  width: 36px; height: 36px; background: var(--accent); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 14px; flex-shrink: 0;
+}
+.mockup-title { font-size: 16px; font-weight: 300; }
+.mockup-title small { display: block; font-size: 11px; opacity: .6; margin-top: 2px; }
+.mockup-summary {
+  background: var(--accent); color: rgba(255,255,255,.9);
+  padding: 10px 28px; display: flex; gap: 32px; font-size: 12px; flex-wrap: wrap;
+}
+.mockup-body { display: flex; height: 340px; }
+.mockup-nav {
+  width: 180px; background: #1a2332; padding: 16px 0; flex-shrink: 0;
+}
+.mockup-nav-item {
+  padding: 8px 18px; font-size: 12px; color: #c8c8c8;
+  border-left: 3px solid transparent;
+}
+.mockup-nav-item.active { color: #fff; border-left-color: var(--accent); background: rgba(255,255,255,.06); }
+.mockup-content { flex: 1; padding: 20px; overflow: hidden; }
+.mockup-section {
+  background: #fff; border-radius: 6px; margin-bottom: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06); overflow: hidden;
+}
+.mockup-section-title {
+  background: var(--primary); color: #fff;
+  padding: 8px 16px; font-size: 12px;
+}
+.mockup-row {
+  display: flex; padding: 6px 16px; border-bottom: 1px solid #f0efee;
+  font-size: 11px;
+}
+.mockup-row:last-child { border-bottom: none; }
+.mockup-row .label { color: #605e5c; width: 140px; flex-shrink: 0; }
+.mockup-row .value { color: #252423; }
+.mockup-badge {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: 10px; font-weight: 600; margin-left: 6px;
+}
+.ok { background: #107c10; color: #fff; }
+.warn { background: #d83b01; color: #fff; }
+
+/* ─── FOOTER ────────────────────────────────────────────────────────────── */
+footer {
+  background: var(--primary); color: #8a8886;
+  padding: 40px; text-align: center; font-size: 13px;
+}
+footer a { color: #0078d4; text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+.footer-links { display: flex; gap: 24px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
+
+@media (max-width: 640px) {
+  .hero { padding: 48px 24px 56px; }
+  .hero h1 { font-size: 26px; }
+  .versions-strip { gap: 20px; }
+  .mockup-nav { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ HERO ══════════════════════════════════════════════════════════════ -->
+<section class="hero">
+  <div class="hero-logo">Ex</div>
+  <h1><strong>Install-Exchange15</strong>.ps1</h1>
+  <p class="tagline">
+    Fully unattended installation of Microsoft Exchange Server 2016, 2019 &amp; SE —
+    prerequisites, AD preparation, security hardening, and post-configuration in one script.
+  </p>
+  <div class="badge-row">
+    <span class="badge"><span class="dot"></span> v5.5 — April 2026</span>
+    <span class="badge">⚡ PowerShell 5.1+</span>
+    <span class="badge">🛡 Exchange SE / 2019 / 2016</span>
+    <span class="badge">🔄 AutoPilot — auto-reboot</span>
+  </div>
+  <div class="btn-row">
+    <a href="https://github.com/st03ps/Install-Exchange15" class="btn btn-primary">
+      📦 View on GitHub
+    </a>
+    <a href="https://github.com/st03ps/Install-Exchange15/raw/master/Install-Exchange15.ps1" class="btn btn-secondary">
+      ⬇ Download Script
+    </a>
+  </div>
+</section>
+
+<!-- ═══ SUPPORTED VERSIONS ════════════════════════════════════════════════ -->
+<div class="versions-strip">
+  <span><strong>Exchange 2016 CU23</strong> on Windows Server 2016</span>
+  <span><strong>Exchange 2019 CU10–CU14</strong> on Windows Server 2019 / 2022</span>
+  <span><strong>Exchange 2019 CU15+</strong> on Windows Server 2025</span>
+  <span><strong>Exchange SE RTM</strong> on Windows Server 2022 / 2025</span>
+</div>
+
+<!-- ═══ FEATURES ══════════════════════════════════════════════════════════ -->
+<div class="features">
+  <div class="container">
+    <div class="section-label">What it does</div>
+    <h2 class="section-title">Everything you need, <strong>automated</strong></h2>
+    <p class="section-sub">From bare Windows Server to a fully hardened Exchange installation — 6 phases, fully unattended.</p>
+    <div class="grid">
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#e8f5e9">🔁</div>
+        <h3>AutoPilot — Zero-Touch Install</h3>
+        <p>Automatically reboots and resumes at the correct phase via RunOnce. State is persisted to XML — safe against crashes and power failures.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#e3f2fd">🛡</div>
+        <h3>Security Hardening</h3>
+        <p>TLS 1.2/1.3, SMBv1 disabled, WDigest off, LSA Protection, Serialized Data Signing, NTLM level 5, Credential Guard, HTTP/2 disabled — all applied automatically.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#fff3e0">⚡</div>
+        <h3>Performance Tuning</h3>
+        <p>High Performance power plan, pagefile sizing, TCP settings, RSS + NIC queues, Netlogon MaxConcurrentAPI, Exchange Search affinity — per Microsoft &amp; CSS-Exchange recommendations.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#f3e5f5">📋</div>
+        <h3>HTML + PDF Installation Report</h3>
+        <p>Comprehensive post-install report: Exchange config, virtual directory URLs, certificates, security settings with best-practice comparison, HealthChecker results embedded.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#e8eaf6">🖥</div>
+        <h3>Interactive Menu</h3>
+        <p>Start without parameters for a guided installation menu. Instant toggle switches, credential validation, auto-detected config.psd1, and PS2Exe-compiled .exe support.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#e0f7fa">🔄</div>
+        <h3>Swing Migration Ready</h3>
+        <p>Export config from source server, import virtual directory URLs and connectors, import PFX certificate, join a Database Availability Group — all in one run.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#fce4ec">🔒</div>
+        <h3>Certificate Management</h3>
+        <p>Import PFX certificate, enable for IIS + SMTP (+ IMAP/POP for non-wildcard), configure HSTS on OWA/ECP. Wildcard vs. named cert detection.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#e8f5e9">🧰</div>
+        <h3>CSS-Exchange Integration</h3>
+        <p>HealthChecker auto-downloaded and run in Phase 6. SetupAssist triggered on Phase 4 failure. EOMT for CVE mitigation. Auth Certificate monitoring setup.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#fff8e1">📦</div>
+        <h3>.exe Compilation</h3>
+        <p>Build.ps1 wraps the script into a self-contained Windows executable via PS2Exe — runs elevated, preserves all parameters, includes version metadata.</p>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ═══ PHASES ════════════════════════════════════════════════════════════ -->
+<div class="phases">
+  <div class="container">
+    <div class="section-label">How it works</div>
+    <h2 class="section-title">6 phases, <strong>one command</strong></h2>
+    <p class="section-sub">State persists in an XML file — resume automatically after every reboot.</p>
+    <div class="phase-list">
+      <div class="phase-item">
+        <div class="phase-num">0</div>
+        <div class="phase-body">
+          <h4>Preflight &amp; HTML Report</h4>
+          <p>Admin rights, domain membership, OS version, AD Forest/Domain level, static IP, Exchange version, free disk space. Pre-flight HTML report generated.</p>
+        </div>
+      </div>
+      <div class="phase-item">
+        <div class="phase-num">1</div>
+        <div class="phase-body">
+          <h4>Windows Features &amp; Updates</h4>
+          <p>All required Windows Server roles and features installed in a single batch. Optional Windows security updates. Source server config exported.</p>
+        </div>
+      </div>
+      <div class="phase-item">
+        <div class="phase-num">2</div>
+        <div class="phase-body">
+          <h4>Prerequisites</h4>
+          <p>.NET Framework 4.8 / 4.8.1, OS-specific hotfixes, Visual C++ 2012 / 2013 Redistributables, URL Rewrite Module 2.1.</p>
+        </div>
+      </div>
+      <div class="phase-item">
+        <div class="phase-num">3</div>
+        <div class="phase-body">
+          <h4>UCMA &amp; Active Directory Preparation</h4>
+          <p>Unified Communications Managed API 4.0. PrepareAD / PrepareSchema / PrepareAllDomains with optional AD replication wait.</p>
+        </div>
+      </div>
+      <div class="phase-item">
+        <div class="phase-num">4</div>
+        <div class="phase-body">
+          <h4>Exchange Setup</h4>
+          <p>Runs setup.exe with the correct role switches. Autodiscover SCP pre-configured. Transport services set to Manual for safe startup. SetupAssist on failure.</p>
+        </div>
+      </div>
+      <div class="phase-item">
+        <div class="phase-num">5</div>
+        <div class="phase-body">
+          <h4>Post-Configuration</h4>
+          <p>28 security and performance tasks: TLS, Schannel, Defender exclusions, power plan, pagefile, NIC RSS, LSA Protection, certificate import, HSTS, Exchange SU, virtual directory URLs.</p>
+        </div>
+      </div>
+      <div class="phase-item">
+        <div class="phase-num">6</div>
+        <div class="phase-body">
+          <h4>Finalization</h4>
+          <p>Start services, IIS health check, DAG join, RBAC report, anti-spam agents, send connector integration, log cleanup task, HealthChecker, HTML + PDF installation report.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ QUICK START ════════════════════════════════════════════════════════ -->
+<div class="quickstart">
+  <div class="container">
+    <div class="section-label">Quick Start</div>
+    <h2 class="section-title">Up and running <strong>in minutes</strong></h2>
+    <p class="section-sub">Interactive menu or fully unattended — your choice.</p>
+
+    <div class="code-block">
+<span class="comment"># Interactive menu (recommended for first run)</span>
+<span class="cmd">.\Install-Exchange15.ps1</span>
+
+<span class="comment"># Fully unattended — AutoPilot handles reboots automatically</span>
+<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span> <span class="param">-AutoPilot</span>
+
+<span class="comment"># Load all parameters from a config file</span>
+<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-ConfigFile</span> <span class="val">.\deploy-mbx01.psd1</span>
+
+<span class="comment"># Swing migration: copy config, import certificate, join DAG</span>
+<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span> <span class="param">-AutoPilot</span> `
+    <span class="param">-CopyServerConfig</span> <span class="val">EX01</span> <span class="param">-CertificatePath</span> <span class="val">D:\certs\mail.pfx</span> <span class="param">-DAGName</span> <span class="val">DAG01</span>
+
+<span class="comment"># Run all post-install optimizations on an existing Exchange server</span>
+<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-StandaloneOptimize</span> <span class="param">-Namespace</span> <span class="val">mail.contoso.com</span> `
+    <span class="param">-CertificatePath</span> <span class="val">C:\certs\mail.pfx</span> <span class="param">-LogRetentionDays</span> <span class="val">30</span>
+
+<span class="comment"># Compile to self-contained .exe</span>
+<span class="cmd">.\Build.ps1</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ REPORT PREVIEW ════════════════════════════════════════════════════ -->
+<div class="report-preview">
+  <div class="container">
+    <div class="section-label">Installation Report</div>
+    <h2 class="section-title">Detailed HTML report <strong>generated automatically</strong></h2>
+    <p class="section-sub">7 sections, status badges, Exchange recommendations, HealthChecker results — PDF export via Edge headless.</p>
+
+    <div class="report-mockup">
+      <div class="mockup-bar">
+        <div class="mockup-dot" style="background:#ff5f57"></div>
+        <div class="mockup-dot" style="background:#febc2e"></div>
+        <div class="mockup-dot" style="background:#28c840"></div>
+        <div style="flex:1;text-align:center;font-size:12px;color:#666">SERVER_InstallationReport_20260419.html</div>
+      </div>
+      <div class="mockup-header">
+        <div class="mockup-logo">Ex</div>
+        <div>
+          <div class="mockup-title">Exchange Server Installation Report</div>
+          <small>Generated by Install-Exchange15.ps1 v5.5</small>
+        </div>
+      </div>
+      <div class="mockup-summary">
+        <span><strong>SERVER</strong></span>
+        <span><strong>Exchange Server SE RTM</strong></span>
+        <span><strong>promiseIT</strong></span>
+        <span>2026-04-19 10:44:51</span>
+      </div>
+      <div class="mockup-body">
+        <nav class="mockup-nav">
+          <div class="mockup-nav-item">Installation Parameters</div>
+          <div class="mockup-nav-item">System Information</div>
+          <div class="mockup-nav-item">Active Directory</div>
+          <div class="mockup-nav-item active">Security Settings</div>
+          <div class="mockup-nav-item">Performance &amp; Tuning</div>
+          <div class="mockup-nav-item">HealthChecker Results</div>
+        </nav>
+        <div class="mockup-content">
+          <div class="mockup-section">
+            <div class="mockup-section-title">Security Settings</div>
+            <div class="mockup-row">
+              <span class="label">TLS 1.0</span>
+              <span class="value">Srv=0 / Cli=0 <span class="mockup-badge ok">Disabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">TLS 1.2</span>
+              <span class="value">Srv=1 / Cli=1 <span class="mockup-badge ok">Enabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">SMBv1</span>
+              <span class="value">False <span class="mockup-badge ok">Disabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">LSA Protection</span>
+              <span class="value">RunAsPPL = 1 <span class="mockup-badge ok">Enabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">WDigest Caching</span>
+              <span class="value">UseLogonCredential = 0 <span class="mockup-badge ok">Disabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">Serialized Data Signing</span>
+              <span class="value">1 <span class="mockup-badge ok">Enabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">LM Compatibility</span>
+              <span class="value">Level 5 <span class="mockup-badge ok">NTLMv2 only ✓</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ FOOTER ════════════════════════════════════════════════════════════ -->
+<footer>
+  <div class="footer-links">
+    <a href="https://github.com/st03ps/Install-Exchange15">GitHub Repository</a>
+    <a href="https://github.com/st03ps/Install-Exchange15/blob/master/README.md">Documentation</a>
+    <a href="https://github.com/st03ps/Install-Exchange15/raw/master/deploy-example.psd1">Config Template</a>
+    <a href="https://github.com/microsoft/CSS-Exchange">CSS-Exchange</a>
+  </div>
+  <p>
+    Install-Exchange15.ps1 &bull; Maintainer: <strong style="color:#c8c6c4">st03ps</strong> (promiseIT) &bull;
+    Based on original work by <a href="http://eightwone.com">Michel de Rooij</a> &bull;
+    AS-IS, without warranty
+  </p>
+</footer>
+
+</body>
+</html>

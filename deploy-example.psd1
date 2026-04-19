@@ -94,4 +94,36 @@
     # NoNet481      = $false   # $true to skip .NET 4.8.1 installation
     # SkipRolesCheck = $false  # $true to skip Schema/Enterprise Admin membership check
     # Lock          = $false   # $true to lock screen during installation
+
+    # -------------------------------------------------------------------------
+    # v5.2 — Security & relay connectors
+    # -------------------------------------------------------------------------
+
+    # Run CSS-Exchange Emergency Mitigation Tool (EOMT) in Phase 5
+    # RunEOMT = $false
+
+    # Wait for AD replication to be error-free after PrepareAD (max 6 min)
+    # WaitForADSync = $false
+
+    # Anonymous internal relay: accepted domains only (no external relay right)
+    # Source IPs resolved via SID S-1-5-7 — language-independent (DE/EN/FR/...)
+    # RelaySubnets = @('192.168.10.0/24', '10.0.0.5')
+
+    # Anonymous external relay: any recipient (Ms-Exch-SMTP-Accept-Any-Recipient)
+    # SECURITY: restrict to trusted send systems (scanners, printers) only
+    # ExternalRelaySubnets = @('10.0.1.100')
+
+    # -------------------------------------------------------------------------
+    # v5.2 — Log cleanup & namespace
+    # -------------------------------------------------------------------------
+
+    # Register daily scheduled task (02:00, SYSTEM) to delete logs older than N days
+    # Cleans: IIS logs, Exchange transport logs, message tracking logs
+    # LogRetentionDays = 30
+
+    # External namespace for Virtual Directory URL configuration (Phase 6)
+    # Namespace = 'mail.contoso.com'
+
+    # Path to PFX certificate — also enables HSTS on OWA/ECP when set
+    # CertificatePath = 'C:\Certs\exchange.pfx'
 }

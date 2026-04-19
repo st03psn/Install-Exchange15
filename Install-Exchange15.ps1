@@ -11,7 +11,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 5.4, April 18, 2026
+    Version 5.5, April 19, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -465,6 +465,57 @@
               instead of hardcoded integer 20348
             - Write-Host in MSExchangeAutodiscoverAppPool ScriptBlock replaced with
               Write-MyVerbose (logging pattern consistency)
+    5.5     Bugfixes and Phase 6 improvements (2026-04-19):
+            Bugfixes:
+            - New-InstallationReport: fixed FormatError crash — all multi-arg -f expressions
+              inside .Add() method calls are now parenthesized to prevent PowerShell from
+              splitting the -f arguments as method arguments
+            - Invoke-HealthChecker: output suppressed in console; all lines written to
+              transcript as verbose; brief message with report file path shown
+            - Install-ExchangeSecurityUpdate / ExchangeSUMap: KB5074992 (Exchange SE RTM
+              Feb26SU) corrected to .cab extension; Invoke-Process CAB handler extracts
+              and installs the embedded .msp via MSIEXEC /update
+            - ISO only remounted for phases 1-3; dismounted at end of Phase 4 (consistent)
+            - Test-Preflight: heavy checks (setup path, AD, FFL, roles) now correctly
+              skipped for Phase >= 5 (no Exchange session available before Phase 5)
+            - Set-VirtualDirectoryURLs: MAPI -InternalAuthenticationMethods wrapped in
+              separate try/catch (not all builds support the parameter); OWA now sets
+              -LogonFormat UPN
+            - Get-RBACReport: format string crash fixed — catch block uses string
+              interpolation instead of -f operator to avoid argument ambiguity
+            - Import-ExchangeModule: no longer emits WARNING when module already loaded;
+              uses Get-ExchangeServer instead of Connect-ExchangeServer to detect session;
+              Phase 6 loads module exactly once
+            New features:
+            - Install-AntispamAgents: runs Install-AntispamAgents.ps1 from Exchange
+              bin folder, restarts transport service, then disables all anti-spam agents
+              except RecipientFilter Agent; called in Phase 6
+            - Add-ServerToSendConnectors: interactive Y/N prompt to add the newly
+              installed server to all existing Send Connectors; Phase 6
+            - Register-ExchangeLogCleanup: interactive prompt for script folder
+              (default C:\#service, 2-min timeout); generated cleanup script logs to
+              logs\ subfolder, cleans own logs > 30 days, covers IIS + Exchange
+              transport + Monitoring logs
+            - New-AnonymousRelayConnector: relay connectors now use -AuthMechanism Tls
+              (STARTTLS offered) and -ProtocolLoggingLevel Verbose
+            - Import-ExchangeCertificateFromPFX: wildcard detection (CN=* or SAN *.);
+              non-wildcard certs additionally enable IMAP and POP services
+            Report and installation fixes (2026-04-19 session 2):
+            - New-InstallationReport: Serialized Data Signing registry value name corrected
+              (EnableSerializationDataSigning, was EnableSigningVerification — never matched)
+            - New-InstallationReport: Autodiscover SCP moved from Virtual Directory table
+              to Exchange Server info section (CAS property, not a virtual directory)
+            - New-InstallationReport: Mailbox Database query tries -Status first, falls back
+              without -Status; distinguishes "not found" from query error
+            - New-InstallationReport: volumes now exclude DVD-ROM and removable drives;
+              DNS server addresses shown per NIC
+            - New-InstallationReport: Security and Performance tables gain "Exchange
+              Recommendation" column with best-practice values; UAC state row added
+            - New-InstallationReport: HealthChecker HTML embedded as iframe in new section 7
+            - New-InstallationReport: Edge headless stderr redirected to suppress
+              Chrome DevTools renderer noise; --log-level=3 flag added
+            - VC++ 2013 URL updated to stable Microsoft CDN URL (KB3138367)
+            - VC++ 2012 now also installed for Exchange 2016 CU23 (was Edge-only)
     5.4     Installation Report + Verbose Logging (2026-04-18):
             - New-InstallationReport: comprehensive HTML report at Phase 6 completion;
               6 sections: Installation Parameters, System Info, Active Directory,
@@ -977,7 +1028,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.4'
+    $ScriptVersion = '5.5'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -1245,6 +1296,8 @@ process {
                 Write-MyVerbose "Source: $URL"
                 $destPath = Join-Path $InstallPath $Filename
                 $downloaded = $false
+                $savedPP = $ProgressPreference
+                $ProgressPreference = 'SilentlyContinue'
                 for ($attempt = 1; $attempt -le 3; $attempt++) {
                     try {
                         Start-BitsTransfer -Source $URL -Destination $destPath -ErrorAction Stop
@@ -1252,6 +1305,8 @@ process {
                         break
                     }
                     catch {
+                        Get-BitsTransfer -ErrorAction SilentlyContinue | Where-Object { $_.JobState -notin 'Transferred','Acknowledged' } | Remove-BitsTransfer -ErrorAction SilentlyContinue
+                        Remove-Item -Path $destPath -ErrorAction SilentlyContinue
                         if ($attempt -lt 3) {
                             Write-MyWarning ('Download attempt {0}/3 failed, retrying in {1} seconds: {2}' -f $attempt, ($attempt * 5), $_.Exception.Message)
                             Start-Sleep -Seconds ($attempt * 5)
@@ -1264,11 +1319,13 @@ process {
                                 $downloaded = $true
                             }
                             catch {
-                                Write-MyError ('Problem downloading package from URL after 3 attempts: {0}' -f $_.Exception.Message)
+                                Write-MyWarning ('Problem downloading package from URL after 3 attempts: {0}' -f $_.Exception.Message)
+                                Remove-Item -Path $destPath -ErrorAction SilentlyContinue
                             }
                         }
                     }
                 }
+                $ProgressPreference = $savedPP
                 if (-not $downloaded) { $res = $false }
             }
             else {
@@ -1550,6 +1607,7 @@ process {
 
     function Invoke-Process ( $FilePath, $FileName, $ArgumentList) {
         $rval = 0
+        $mspTempDir = $null
         $FullName = Join-Path $FilePath $FileName
         if ( Test-Path $FullName) {
             switch ( ([io.fileinfo]$Filename).extension.ToUpper()) {
@@ -1568,6 +1626,33 @@ process {
                     $ArgumentList += @( $FullName)
                     $Cmd = 'MSIEXEC.EXE'
                 }
+                '.CAB' {
+                    $mspTempDir = Join-Path $env:TEMP ('ExSU_' + [IO.Path]::GetFileNameWithoutExtension($FileName))
+                    New-Item -ItemType Directory -Path $mspTempDir -Force | Out-Null
+                    $expandOut = & "$env:SystemRoot\System32\expand.exe" -F:* $FullName $mspTempDir 2>&1
+                    Write-MyVerbose ('expand.exe output: {0}' -f ($expandOut -join ' | '))
+                    $extractedFiles = Get-ChildItem -Path $mspTempDir -Recurse -File
+                    if ($extractedFiles) {
+                        Write-MyVerbose ('CAB contents: {0}' -f ($extractedFiles.Name -join ', '))
+                    } else {
+                        Write-MyVerbose 'CAB extraction produced no files'
+                    }
+                    $mspFile = $extractedFiles | Where-Object { $_.Extension -eq '.msp' } | Select-Object -First 1
+                    $exeFile = $extractedFiles | Where-Object { $_.Extension -eq '.exe' } | Select-Object -First 1
+                    if ($mspFile) {
+                        $ArgumentList += @('/update')
+                        $ArgumentList += @($mspFile.FullName)
+                        $Cmd = 'MSIEXEC.EXE'
+                    }
+                    elseif ($exeFile) {
+                        $Cmd = $exeFile.FullName
+                    }
+                    else {
+                        Write-MyWarning "No MSP or EXE found in CAB $FileName"
+                        Remove-Item -Path $mspTempDir -Recurse -Force -ErrorAction SilentlyContinue
+                        return -1
+                    }
+                }
                 default {
                     $Cmd = $FullName
                 }
@@ -1575,6 +1660,7 @@ process {
             Write-MyVerbose "Executing $Cmd $($ArgumentList -Join ' ')"
             $rval = ( Start-Process -FilePath $Cmd -ArgumentList $ArgumentList -NoNewWindow -PassThru -Wait).Exitcode
             Write-MyVerbose "Process exited with code $rval"
+            if ($mspTempDir) { Remove-Item -Path $mspTempDir -Recurse -Force -ErrorAction SilentlyContinue }
         }
         else {
             Write-MyWarning "$FullName not found"
@@ -1838,8 +1924,8 @@ process {
     }
 
     function Import-ExchangeModule {
-        Write-MyVerbose 'Loading Exchange PowerShell module'
-        if ( -not ( Get-Command Connect-ExchangeServer -ErrorAction SilentlyContinue)) {
+        if ( -not ( Get-Command Get-ExchangeServer -ErrorAction SilentlyContinue)) {
+            Write-MyVerbose 'Loading Exchange PowerShell module'
             $SetupPath = (Get-ItemProperty -Path $EXCHANGEINSTALLKEY -Name MsiInstallPath -ErrorAction SilentlyContinue).MsiInstallPath
             if (-not $SetupPath) {
                 Write-MyWarning "Exchange installation path not found in registry ($EXCHANGEINSTALLKEY)"
@@ -1851,11 +1937,15 @@ process {
                     . "$SetupPath\bin\Exchange.ps1" | Out-Null
                 }
                 else {
-                    . "$SetupPath\bin\RemoteExchange.ps1" | Out-Null
+                    . "$SetupPath\bin\RemoteExchange.ps1" 6>&1 | Out-Null
                     try {
-                        Connect-ExchangeServer (Get-LocalFQDNHostname)
+                        $savedVP = $VerbosePreference
+                        $VerbosePreference = 'SilentlyContinue'
+                        Connect-ExchangeServer (Get-LocalFQDNHostname) -NoShellBanner 6>&1 | Out-Null
+                        $VerbosePreference = $savedVP
                     }
                     catch {
+                        $VerbosePreference = $savedVP
                         Write-MyError 'Problem loading Exchange module'
                     }
                 }
@@ -1872,7 +1962,7 @@ process {
             }
         }
         else {
-            Write-MyWarning 'Exchange module already loaded'
+            Write-MyVerbose 'Exchange module already loaded'
         }
     }
 
@@ -1880,6 +1970,11 @@ process {
         $ver = $State['MajorSetupVersion']
         Write-MyOutput "Installing Microsoft Exchange Server ($ver)"
         $PresenceKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{CD981244-E9B8-405A-9026-6AEB9DCEF1F1}'
+
+        if (Get-ItemProperty -Path $PresenceKey -Name InstallDate -ErrorAction SilentlyContinue) {
+            Write-MyOutput 'Exchange is already installed, skipping setup'
+            return
+        }
 
         if ( $State['Recover']) {
             Write-MyOutput 'Will run Setup in recover mode'
@@ -2093,7 +2188,7 @@ process {
     }
 
     function Install-MyPackage {
-        param ( [String]$PackageID, [string]$Package, [String]$FileName, [String]$OnlineURL, [array]$Arguments, [switch]$NoDownload)
+        param ( [String]$PackageID, [string]$Package, [String]$FileName, [String]$OnlineURL, [array]$Arguments, [switch]$NoDownload, [switch]$ContinueOnError)
 
         if ( $PackageID) {
             Write-MyOutput "Processing $Package ($PackageID)"
@@ -2114,15 +2209,13 @@ process {
                 if ( !( Get-MyPackage $Package '' $FileName $RunFrom)) {
                     # Download & Extract
                     if ( !( Get-MyPackage $Package $OnlineURL $PackageFile $RunFrom)) {
-                        Write-MyError "Problem downloading/accessing $Package"
-                        exit $ERR_PROBLEMPACKAGEDL
+                        if ($ContinueOnError) { Write-MyWarning "Could not download $Package — skipping"; return } else { Write-MyError "Problem downloading/accessing $Package"; exit $ERR_PROBLEMPACKAGEDL }
                     }
                     Write-MyOutput "Extracting Hotfix Package $Package"
                     Invoke-Extract $RunFrom $PackageFile
 
                     if ( !( Get-MyPackage $Package $OnlineURL $PackageFile $RunFrom)) {
-                        Write-MyError "Problem downloading/accessing $Package"
-                        exit $ERR_PROBLEMPACKAGEEXTRACT
+                        if ($ContinueOnError) { Write-MyWarning "Could not download $Package — skipping"; return } else { Write-MyError "Problem downloading/accessing $Package"; exit $ERR_PROBLEMPACKAGEEXTRACT }
                     }
                 }
             }
@@ -2132,8 +2225,7 @@ process {
                     Write-MyVerbose "Will run $FileName straight from $RunFrom"
                 }
                 if ( !( Get-MyPackage $Package $OnlineURL $FileName $RunFrom)) {
-                    Write-MyError "Problem downloading/accessing $Package"
-                    exit $ERR_PROBLEMPACKAGEDL
+                    if ($ContinueOnError) { Write-MyWarning "Could not download $Package — skipping"; return } else { Write-MyError "Problem downloading/accessing $Package"; exit $ERR_PROBLEMPACKAGEDL }
                 }
             }
 
@@ -2161,8 +2253,7 @@ process {
                 }
             }
             else {
-                Write-MyError "Problem installing $Package - For fixes, check $($ENV:WINDIR)\WindowsUpdate.log; For .NET Framework issues, check 'Microsoft .NET Framework 4 Setup' HTML document in $($ENV:TEMP)"
-                exit $ERR_PROBLEMPACKAGESETUP
+                if ($ContinueOnError) { Write-MyWarning "Could not install $Package — skipping"; return } else { Write-MyError "Problem installing $Package - For fixes, check $($ENV:WINDIR)\WindowsUpdate.log; For .NET Framework issues, check 'Microsoft .NET Framework 4 Setup' HTML document in $($ENV:TEMP)"; exit $ERR_PROBLEMPACKAGESETUP }
             }
         }
         else {
@@ -2315,6 +2406,9 @@ process {
                 }
             }
         }
+
+        # Checks below are only relevant before/during setup (phases 0-4); skip after Exchange is installed
+        if ($State['InstallPhase'] -le 4) {
 
         if ( $State["SkipRolesCheck"] -or $State['InstallEdge']) {
             Write-MyOutput 'SkipRolesCheck: Skipping validation of Schema & Enterprise Administrators membership'
@@ -2638,6 +2732,8 @@ process {
             Write-MyWarning 'PowerShell Execution Policy is configured through GPO and may prohibit Exchange Setup. Clearing entry.'
             Remove-ItemProperty -Path HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell -Name ExecutionPolicy -Force
         }
+
+        } # end if ($State['InstallPhase'] -le 4)
     }
 
     function New-PreflightReport {
@@ -2786,7 +2882,7 @@ $($htmlRows -join "`n")
 
             Write-MyVerbose 'Exporting Transport Service configuration'
             $config['TransportService'] = Invoke-Command -Session $session -ScriptBlock {
-                Get-TransportService -Identity $using:SourceServer | Select-Object MaxConcurrentMailboxDeliveries, MaxConcurrentMailboxSubmissions, MaxConnectionRatePerMinute, MaxOutboundConnections, MaxPerDomainOutboundConnections, ReceiveProtocolLogPath, SendProtocolLogPath, ConnectivityLogPath, MessageTrackingLogPath
+                Get-TransportService -Identity $using:SourceServer | Select-Object MaxConcurrentMailboxDeliveries, MaxConcurrentMailboxSubmissions, MaxConnectionRatePerMinute, MaxOutboundConnections, MaxPerDomainOutboundConnections, MessageExpirationTimeout, ReceiveProtocolLogPath, SendProtocolLogPath, ConnectivityLogPath, MessageTrackingLogPath
             }
 
             Write-MyVerbose 'Exporting Virtual Directory URLs'
@@ -2912,7 +3008,16 @@ $($htmlRows -join "`n")
         if ($config['TransportService']) {
             try {
                 $ts = $config['TransportService']
-                Set-TransportService -Identity $localServer -MaxConcurrentMailboxDeliveries $ts.MaxConcurrentMailboxDeliveries -MaxConcurrentMailboxSubmissions $ts.MaxConcurrentMailboxSubmissions -MaxOutboundConnections $ts.MaxOutboundConnections -MaxPerDomainOutboundConnections $ts.MaxPerDomainOutboundConnections -ErrorAction Stop
+                $tsParams = @{
+                    Identity                        = $localServer
+                    MaxConcurrentMailboxDeliveries  = $ts.MaxConcurrentMailboxDeliveries
+                    MaxConcurrentMailboxSubmissions = $ts.MaxConcurrentMailboxSubmissions
+                    MaxOutboundConnections          = $ts.MaxOutboundConnections
+                    MaxPerDomainOutboundConnections = $ts.MaxPerDomainOutboundConnections
+                    ErrorAction                     = 'Stop'
+                }
+                if ($ts.MessageExpirationTimeout) { $tsParams['MessageExpirationTimeout'] = $ts.MessageExpirationTimeout }
+                Set-TransportService @tsParams
                 Write-MyVerbose 'Configured Transport Service settings'
             }
             catch {
@@ -2991,21 +3096,20 @@ $($htmlRows -join "`n")
         $healthy     = $false
         for ($i = 1; $i -le $maxAttempts; $i++) {
             try {
-                # repadmin /showrepl /errorsonly also outputs DC header lines even when no
-                # errors exist: "SITE\SERVER", "DSA Options:", "DSA object GUID:", etc.
-                # Exclude all known header patterns — only actual error lines remain.
-                $errors = & repadmin /showrepl /errorsonly 2>&1 |
-                    Where-Object { $_ -and $_ -notmatch '^\s*$' -and
-                        $_ -notmatch '^Repadmin' -and
-                        $_ -notmatch '^DSA ' -and
-                        $_ -notmatch '^Site Options:' -and
-                        $_ -notmatch '^\S+\\\S+' }
-                if (-not $errors) {
+                # repadmin /showrepl /errorsonly always outputs DC header lines (site\name,
+                # DSA Options, object GUID, etc.) even when there are no errors. A single-DC
+                # environment with no replication partners produces only these header lines.
+                # Match only lines that indicate actual replication failures:
+                #   "N consecutive failure(s)" — failure counter line
+                #   "Last attempt @ <date> FAILED" — failure detail line
+                $replErrors = & repadmin /showrepl /errorsonly 2>&1 |
+                    Where-Object { $_ -match 'consecutive failure|Last attempt .* FAILED' }
+                if (-not $replErrors) {
                     Write-MyOutput ('AD replication healthy (attempt {0}/{1})' -f $i, $maxAttempts)
                     $healthy = $true
                     break
                 }
-                Write-MyVerbose ('Replication not yet clean ({0}/{1}): {2}' -f $i, $maxAttempts, ($errors -join ' | '))
+                Write-MyVerbose ('Replication errors ({0}/{1}): {2}' -f $i, $maxAttempts, ($replErrors -join ' | '))
                 Write-MyOutput ('Waiting for AD replication... ({0}/{1})' -f $i, $maxAttempts)
             }
             catch {
@@ -3020,57 +3124,255 @@ $($htmlRows -join "`n")
     }
 
     function Register-ExchangeLogCleanup {
-        if (-not $State['LogRetentionDays'] -or $State['LogRetentionDays'] -le 0) {
-            Write-MyVerbose 'LogRetentionDays not set, skipping log cleanup task registration'
-            return
-        }
-        $days = [int]$State['LogRetentionDays']
-        Write-MyOutput ('Registering Exchange log cleanup scheduled task (retention: {0} days)' -f $days)
+        $days = if ($State['LogRetentionDays'] -and [int]$State['LogRetentionDays'] -gt 0) { [int]$State['LogRetentionDays'] } else { 30 }
+        Write-MyOutput 'Registering Exchange log cleanup scheduled task'
 
-        $scriptPath = Join-Path $State['InstallPath'] 'Invoke-ExchangeLogCleanup.ps1'
+        # Ask for script destination folder with 2-minute timeout via RawUI (same pattern as Show-InstallationMenu)
+        $defaultScriptFolder = 'C:\#service'
+        $scriptFolder = $defaultScriptFolder
+        if ([Environment]::UserInteractive) {
+            Write-MyOutput ('Enter folder for log cleanup script [{0}] (ENTER = default, auto-accept in 2 min):' -f $defaultScriptFolder)
+            $inputBuffer = ''
+            try {
+                $host.UI.RawUI.FlushInputBuffer()
+                $deadline = [DateTime]::Now.AddSeconds(120)
+                while ([DateTime]::Now -lt $deadline) {
+                    if ($host.UI.RawUI.KeyAvailable) {
+                        $key = $host.UI.RawUI.ReadKey('IncludeKeyDown,NoEcho')
+                        if ($key.VirtualKeyCode -eq 13) {           # Enter
+                            Write-Host ''
+                            break
+                        }
+                        elseif ($key.VirtualKeyCode -eq 27) {       # Escape — use default
+                            $inputBuffer = ''
+                            Write-Host ''
+                            break
+                        }
+                        elseif ($key.VirtualKeyCode -eq 8) {        # Backspace
+                            if ($inputBuffer.Length -gt 0) {
+                                $inputBuffer = $inputBuffer.Substring(0, $inputBuffer.Length - 1)
+                                Write-Host "`b `b" -NoNewline
+                            }
+                        }
+                        elseif ($key.Character -ge ' ') {
+                            $inputBuffer += $key.Character
+                            Write-Host $key.Character -NoNewline
+                        }
+                    }
+                    Start-Sleep -Milliseconds 100
+                }
+                if ($inputBuffer.Trim() -ne '') { $scriptFolder = $inputBuffer.Trim() }
+            }
+            catch {
+                # Console not available (RDP/Hyper-V terminal/PS2Exe) — fall back to Read-Host without timeout
+                try {
+                    $userInput = (Read-Host).Trim()
+                    if ($userInput -ne '') { $scriptFolder = $userInput }
+                }
+                catch { }
+            }
+        }
+
+        if (-not (Test-Path $scriptFolder)) {
+            New-Item -Path $scriptFolder -ItemType Directory -Force | Out-Null
+            Write-MyVerbose ('Created script folder: {0}' -f $scriptFolder)
+        }
+
+        $scriptPath = Join-Path $scriptFolder 'Invoke-ExchangeLogCleanup.ps1'
+        $logFolder  = Join-Path $scriptFolder 'logs'
+
         $cleanupScript = @"
-`$cutoff = (Get-Date).AddDays(-$days)
+# Exchange Log Cleanup Script — generated by Install-Exchange15.ps1
+# Runs daily via Scheduled Task; retention: $days days for Exchange/IIS logs, 30 days for own logs
+
+param([int]`$DaysToKeep = $days)
+
+`$ScriptDir  = Split-Path -Path `$MyInvocation.MyCommand.Path
+`$LogFolder  = Join-Path `$ScriptDir 'logs'
+`$LogFile    = Join-Path `$LogFolder ('ExchangeLogCleanup-{0}.log' -f (Get-Date -Format 'yyyyMM'))
+`$cutoff     = (Get-Date).AddDays(-`$DaysToKeep)
+
+if (-not (Test-Path `$LogFolder)) { New-Item -Path `$LogFolder -ItemType Directory | Out-Null }
+
+function Write-Log {
+    param([string]`$Message, [string]`$Level = 'Info')
+    `$line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), `$Level, `$Message
+    Add-Content -Path `$LogFile -Value `$line
+}
+
+Write-Log 'Exchange log cleanup started'
+Write-Log ('Removing files older than {0} days' -f `$DaysToKeep)
 
 # IIS logs
 `$iisRoot = Join-Path `$env:SystemDrive 'inetpub\logs\LogFiles'
 if (Test-Path `$iisRoot) {
-    Get-ChildItem -Path `$iisRoot -Recurse -File -Filter '*.log' |
-        Where-Object { `$_.LastWriteTime -lt `$cutoff } |
-        Remove-Item -Force -ErrorAction SilentlyContinue
+    `$files = Get-ChildItem -Path `$iisRoot -Recurse -File -Filter '*.log' | Where-Object { `$_.LastWriteTime -lt `$cutoff }
+    `$files | Remove-Item -Force -ErrorAction SilentlyContinue
+    Write-Log ('IIS: removed {0} log file(s) from {1}' -f `$files.Count, `$iisRoot)
 }
 
-# Exchange transport + tracking logs
+# Exchange logs
 `$exSetup = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Setup' -ErrorAction SilentlyContinue).MsiInstallPath
 if (`$exSetup) {
-    @(
+    `$exchangeLogPaths = @(
         (Join-Path `$exSetup 'TransportRoles\Logs\Hub\Send'),
         (Join-Path `$exSetup 'TransportRoles\Logs\Hub\Receive'),
         (Join-Path `$exSetup 'TransportRoles\Logs\MessageTracking'),
         (Join-Path `$exSetup 'TransportRoles\Logs\FrontEnd\ProtocolLog\SmtpSend'),
-        (Join-Path `$exSetup 'TransportRoles\Logs\FrontEnd\ProtocolLog\SmtpReceive')
-    ) | Where-Object { Test-Path `$_ } | ForEach-Object {
-        Get-ChildItem -Path `$_ -Recurse -File |
-            Where-Object { `$_.LastWriteTime -lt `$cutoff } |
-            Remove-Item -Force -ErrorAction SilentlyContinue
+        (Join-Path `$exSetup 'TransportRoles\Logs\FrontEnd\ProtocolLog\SmtpReceive'),
+        (Join-Path `$exSetup 'Logging\Monitoring\Monitoring')
+    )
+    foreach (`$path in `$exchangeLogPaths) {
+        if (Test-Path `$path) {
+            `$files = Get-ChildItem -Path `$path -Recurse -File | Where-Object { `$_.LastWriteTime -lt `$cutoff }
+            `$files | Remove-Item -Force -ErrorAction SilentlyContinue
+            if (`$files.Count -gt 0) { Write-Log ('Exchange: removed {0} file(s) from {1}' -f `$files.Count, `$path) }
+        }
     }
 }
+
+# Self-cleanup: purge own log files older than 30 days
+`$ownCutoff = (Get-Date).AddDays(-30)
+Get-ChildItem -Path `$LogFolder -File -Filter '*.log' |
+    Where-Object { `$_.LastWriteTime -lt `$ownCutoff } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+Write-Log 'Exchange log cleanup finished'
 "@
         try {
             $cleanupScript | Out-File -FilePath $scriptPath -Encoding utf8 -Force
-            $action    = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NonInteractive -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath)
+            Write-MyOutput ('Log cleanup script saved to: {0}' -f $scriptPath)
+
+            $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                             -Argument ('-NonInteractive -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath)
             $trigger   = New-ScheduledTaskTrigger -Daily -At '02:00'
-            $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+            $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
             $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
             $taskName  = 'Exchange Log Cleanup'
             $taskPath  = '\Exchange\'
             Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue |
                 Unregister-ScheduledTask -Confirm:$false
-            Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action -Trigger $trigger -Settings $settings -Principal $principal -ErrorAction Stop | Out-Null
+            Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action `
+                -Trigger $trigger -Settings $settings -Principal $principal -ErrorAction Stop | Out-Null
             Write-MyOutput ('Scheduled task "{0}" registered — runs daily at 02:00, retention {1} days' -f $taskName, $days)
         }
         catch {
             Write-MyWarning ('Failed to register log cleanup task: {0}' -f $_.Exception.Message)
         }
+    }
+
+    function Add-ServerToSendConnectors {
+        if ($State['InstallEdge']) {
+            Write-MyVerbose 'Edge role — skipping Send Connector update'
+            return
+        }
+        try {
+            $sendConnectors = Get-SendConnector -ErrorAction Stop | Where-Object {
+                $srvList = @($_.SourceTransportServers | ForEach-Object { $_.Name })
+                $srvList -notcontains $env:COMPUTERNAME
+            }
+            if (-not $sendConnectors -or $sendConnectors.Count -eq 0) {
+                Write-MyVerbose 'All Send Connectors already include this server'
+                return
+            }
+            Write-MyOutput ('{0} Send Connector(s) do not include this server:' -f $sendConnectors.Count)
+            foreach ($sc in $sendConnectors) {
+                Write-MyOutput ('  - {0}' -f $sc.Name)
+            }
+            $answer = 'Y'
+            if ([Environment]::UserInteractive) {
+                Write-MyOutput 'Add this server as source transport server? [Y/N] (default: Y):'
+                try {
+                    $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                    $answer = $key.Character.ToString().ToUpper()
+                }
+                catch { $answer = 'Y' }
+                Write-MyOutput $answer
+            }
+            if ($answer -ne 'N') {
+                foreach ($sc in $sendConnectors) {
+                    $sources = [System.Collections.Generic.List[object]]($sc.SourceTransportServers)
+                    $sources.Add($env:COMPUTERNAME) | Out-Null
+                    Set-SendConnector -Identity $sc.Identity -SourceTransportServers $sources -ErrorAction Stop
+                    Write-MyOutput ('Added {0} to Send Connector: {1}' -f $env:COMPUTERNAME, $sc.Name)
+                }
+            }
+            else {
+                Write-MyVerbose 'Send Connector update skipped by user'
+            }
+        }
+        catch {
+            Write-MyWarning ('Failed to update Send Connectors: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Install-AntispamAgents {
+        if ($State['InstallEdge']) {
+            Write-MyVerbose 'Edge role has antispam agents built-in, skipping'
+            return
+        }
+        $exSetup = (Get-ItemProperty -Path $EXCHANGEINSTALLKEY -ErrorAction SilentlyContinue).MsiInstallPath
+        if (-not $exSetup) {
+            Write-MyWarning 'Exchange install path not found — cannot install antispam agents'
+            return
+        }
+        $installScript = Join-Path $exSetup 'Scripts\Install-AntispamAgents.ps1'
+        if (-not (Test-Path $installScript)) {
+            Write-MyWarning ('Install-AntispamAgents.ps1 not found at: {0}' -f $installScript)
+            return
+        }
+
+        # Check if antispam agents are already installed by looking for a known agent
+        $existingAgents = Get-TransportAgent -ErrorAction SilentlyContinue |
+                          Where-Object { $_.Identity -like '*Filter*' -or $_.Identity -like '*Antispam*' }
+        if (-not $existingAgents) {
+            Write-MyOutput 'Installing Exchange antispam agents'
+            try {
+                & $installScript -ErrorAction Stop
+                Restart-Service MSExchangeTransport -Force -ErrorAction SilentlyContinue
+                Write-MyVerbose 'MSExchangeTransport restarted after antispam agent install'
+            }
+            catch {
+                Write-MyWarning ('Failed to install antispam agents: {0}' -f $_.Exception.Message)
+                return
+            }
+        }
+        else {
+            Write-MyVerbose ('Antispam agents already installed ({0} found), skipping install script' -f $existingAgents.Count)
+        }
+
+        # Configure agents: only Recipient Filter enabled, all others disabled
+        $needsTransportRestart = $false
+        $allAgents = Get-TransportAgent -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Identity -like '*Filter*' -or $_.Identity -like '*Antispam*' -or $_.Identity -like '*Reputation*' }
+        foreach ($agent in $allAgents) {
+            $isRecipientFilter = $agent.Identity -like '*Recipient Filter*'
+            if ($isRecipientFilter) {
+                if (-not $agent.Enabled) {
+                    Enable-TransportAgent -Identity $agent.Identity -Confirm:$false -ErrorAction SilentlyContinue
+                    Write-MyOutput ('Enabled: {0}' -f $agent.Identity)
+                    $needsTransportRestart = $true
+                }
+                else {
+                    Write-MyVerbose ('Already enabled: {0}' -f $agent.Identity)
+                }
+            }
+            else {
+                if ($agent.Enabled) {
+                    Disable-TransportAgent -Identity $agent.Identity -Confirm:$false -ErrorAction SilentlyContinue
+                    Write-MyOutput ('Disabled: {0}' -f $agent.Identity)
+                    $needsTransportRestart = $true
+                }
+                else {
+                    Write-MyVerbose ('Already disabled: {0}' -f $agent.Identity)
+                }
+            }
+        }
+        if ($needsTransportRestart) {
+            Restart-Service MSExchangeTransport -Force -ErrorAction SilentlyContinue
+            Write-MyVerbose 'MSExchangeTransport restarted after agent configuration change'
+        }
+        Write-MyOutput 'Antispam agents configured: only Recipient Filter Agent is enabled'
     }
 
     function New-AnonymousRelayConnector {
@@ -3097,14 +3399,16 @@ if (`$exSetup) {
             try {
                 $existing = Get-ReceiveConnector -Identity "$server\$intName" -ErrorAction SilentlyContinue
                 if ($existing) {
-                    Set-ReceiveConnector -Identity "$server\$intName" -RemoteIPRanges $State['RelaySubnets'] -ErrorAction Stop
-                    Write-MyVerbose 'Internal relay connector already exists — RemoteIPRanges updated'
+                    Set-ReceiveConnector -Identity "$server\$intName" -RemoteIPRanges $State['RelaySubnets'] `
+                        -AuthMechanism Tls -ProtocolLoggingLevel Verbose -ErrorAction Stop
+                    Write-MyVerbose 'Internal relay connector already exists — RemoteIPRanges, TLS and logging updated'
                 }
                 else {
                     New-ReceiveConnector -Name $intName -Server $server -TransportRole FrontendTransport `
                         -RemoteIPRanges $State['RelaySubnets'] -Bindings '0.0.0.0:25' `
-                        -PermissionGroups AnonymousUsers -AuthMechanism None -ErrorAction Stop | Out-Null
-                    Write-MyOutput 'Internal relay connector created (accepted domains only, no external relay right)'
+                        -PermissionGroups AnonymousUsers -AuthMechanism Tls `
+                        -ProtocolLoggingLevel Verbose -ErrorAction Stop | Out-Null
+                    Write-MyOutput 'Internal relay connector created (TLS offered, accepted domains only, no external relay right)'
                 }
             }
             catch {
@@ -3127,13 +3431,15 @@ if (`$exSetup) {
 
                 $existing = Get-ReceiveConnector -Identity "$server\$extName" -ErrorAction SilentlyContinue
                 if ($existing) {
-                    Set-ReceiveConnector -Identity "$server\$extName" -RemoteIPRanges $State['ExternalRelaySubnets'] -ErrorAction Stop
-                    Write-MyVerbose 'External relay connector already exists — RemoteIPRanges updated'
+                    Set-ReceiveConnector -Identity "$server\$extName" -RemoteIPRanges $State['ExternalRelaySubnets'] `
+                        -AuthMechanism Tls -ProtocolLoggingLevel Verbose -ErrorAction Stop
+                    Write-MyVerbose 'External relay connector already exists — RemoteIPRanges, TLS and logging updated'
                 }
                 else {
                     New-ReceiveConnector -Name $extName -Server $server -TransportRole FrontendTransport `
                         -RemoteIPRanges $State['ExternalRelaySubnets'] -Bindings '0.0.0.0:25' `
-                        -PermissionGroups AnonymousUsers -AuthMechanism None -ErrorAction Stop | Out-Null
+                        -PermissionGroups AnonymousUsers -AuthMechanism Tls `
+                        -ProtocolLoggingLevel Verbose -ErrorAction Stop | Out-Null
                 }
                 Get-ReceiveConnector -Identity "$server\$extName" |
                     Add-ADPermission -User $anonLogon `
@@ -3183,6 +3489,8 @@ if (`$exSetup) {
 
         if (-not (Test-Path $eomtPath)) {
             $downloaded = $false
+            $savedPP = $ProgressPreference
+            $ProgressPreference = 'SilentlyContinue'
             for ($attempt = 1; $attempt -le 3; $attempt++) {
                 try {
                     Write-MyVerbose ('Downloading EOMT from {0} (attempt {1}/3)' -f $eomtUrl, $attempt)
@@ -3191,6 +3499,8 @@ if (`$exSetup) {
                     break
                 }
                 catch {
+                    Get-BitsTransfer -ErrorAction SilentlyContinue | Where-Object { $_.JobState -notin 'Transferred','Acknowledged' } | Remove-BitsTransfer -ErrorAction SilentlyContinue
+                    Remove-Item -Path $eomtPath -ErrorAction SilentlyContinue
                     if ($attempt -eq 3) {
                         try {
                             Invoke-WebDownload -Uri $eomtUrl -OutFile $eomtPath
@@ -3205,6 +3515,7 @@ if (`$exSetup) {
                     }
                 }
             }
+            $ProgressPreference = $savedPP
             if (-not $downloaded) { return }
         }
 
@@ -3269,8 +3580,18 @@ if (`$exSetup) {
             $cert = Import-ExchangeCertificate -FileData ([System.IO.File]::ReadAllBytes($pfxPath)) -Password $secPwd -PrivateKeyExportable $true -ErrorAction Stop
             Write-MyOutput ('Certificate imported: {0} (Thumbprint: {1})' -f $cert.Subject, $cert.Thumbprint)
 
-            Enable-ExchangeCertificate -Thumbprint $cert.Thumbprint -Services IIS, SMTP -Force -ErrorAction Stop
-            Write-MyOutput ('Certificate enabled for IIS and SMTP services')
+            # Detect wildcard certificate (CN=* or SAN with *.domain)
+            $isWildcard = ($cert.Subject -match 'CN=\*') -or ($cert.SubjectAlternativeNames -match '^\*\.')
+            if ($isWildcard) {
+                # Wildcard: enable for IIS and SMTP only (IMAP/POP use specific SANs)
+                Enable-ExchangeCertificate -Thumbprint $cert.Thumbprint -Services IIS,SMTP -Force -ErrorAction Stop
+                Write-MyOutput ('Wildcard certificate enabled for IIS and SMTP services')
+            }
+            else {
+                # Named certificate: also enable for IMAP and POP
+                Enable-ExchangeCertificate -Thumbprint $cert.Thumbprint -Services IIS,SMTP,IMAP,POP -Force -ErrorAction Stop
+                Write-MyOutput ('Certificate enabled for IIS, SMTP, IMAP and POP services')
+            }
         }
         catch {
             Write-MyError ('Failed to import/enable certificate: {0}' -f $_.Exception.Message)
@@ -3283,26 +3604,146 @@ if (`$exSetup) {
             return
         }
 
-        $ns = $State['Namespace']
+        $ns     = $State['Namespace']
+        $server = $env:COMPUTERNAME
+        $errors = 0
+        $changed = 0
+
         Write-MyOutput ('Configuring Virtual Directory URLs for namespace: {0}' -f $ns)
 
-        try {
-            $server = $env:COMPUTERNAME
-
-            Set-OwaVirtualDirectory    -Identity "$server\owa (Default Web Site)"          -InternalUrl "https://$ns/owa"                        -ExternalUrl "https://$ns/owa"                        -ErrorAction Stop
-            Set-EcpVirtualDirectory    -Identity "$server\ecp (Default Web Site)"          -InternalUrl "https://$ns/ecp"                        -ExternalUrl "https://$ns/ecp"                        -ErrorAction Stop
-            Set-WebServicesVirtualDirectory -Identity "$server\EWS (Default Web Site)"     -InternalUrl "https://$ns/EWS/Exchange.asmx"          -ExternalUrl "https://$ns/EWS/Exchange.asmx"          -ErrorAction Stop
-            Set-OabVirtualDirectory    -Identity "$server\OAB (Default Web Site)"          -InternalUrl "https://$ns/OAB"                        -ExternalUrl "https://$ns/OAB"                        -ErrorAction Stop
-            Set-ActiveSyncVirtualDirectory -Identity "$server\Microsoft-Server-ActiveSync (Default Web Site)" -InternalUrl "https://$ns/Microsoft-Server-ActiveSync" -ExternalUrl "https://$ns/Microsoft-Server-ActiveSync" -ErrorAction Stop
-            Set-MapiVirtualDirectory   -Identity "$server\mapi (Default Web Site)"         -InternalUrl "https://$ns/mapi"                       -ExternalUrl "https://$ns/mapi"                       -InternalAuthenticationMethods NTLM,Negotiate,OAuth -ExternalAuthenticationMethods NTLM,Negotiate,OAuth -ErrorAction Stop
-
-            # Autodiscover SCP
-            Set-ClientAccessService -Identity $server -AutoDiscoverServiceInternalUri "https://$ns/Autodiscover/Autodiscover.xml" -ErrorAction Stop
-
-            Write-MyOutput ('Virtual Directory URLs configured for https://{0}' -f $ns)
+        # Helper: compare a vdir URL property (Uri object or string) to a target string
+        function Test-VdirUrl($current, $target) {
+            if (-not $current) { return $false }
+            return ([string]$current -eq $target)
         }
-        catch {
-            Write-MyWarning ('Failed to configure Virtual Directory URLs: {0}' -f $_.Exception.Message)
+
+        # OWA — set URL and UPN logon format
+        try {
+            $vd = Get-OwaVirtualDirectory -Identity "$server\owa (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            $urlOk    = (Test-VdirUrl $vd.InternalUrl "https://$ns/owa") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/owa")
+            $formatOk = ([string]$vd.LogonFormat -eq 'PrincipalName')
+            if ($urlOk -and $formatOk) {
+                Write-MyVerbose 'OWA: URLs and logon format already set, skipping'
+            } else {
+                Set-OwaVirtualDirectory -Identity "$server\owa (Default Web Site)" `
+                    -InternalUrl "https://$ns/owa" -ExternalUrl "https://$ns/owa" `
+                    -LogonFormat PrincipalName -DefaultDomain '' `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'OWA virtual directory configured (UPN logon)'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('OWA: {0}' -f $_.Exception.Message); $errors++ }
+
+        # ECP
+        try {
+            $vd = Get-EcpVirtualDirectory -Identity "$server\ecp (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/ecp") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/ecp")) {
+                Write-MyVerbose 'ECP: URLs already set, skipping'
+            } else {
+                Set-EcpVirtualDirectory -Identity "$server\ecp (Default Web Site)" `
+                    -InternalUrl "https://$ns/ecp" -ExternalUrl "https://$ns/ecp" `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'ECP virtual directory configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('ECP: {0}' -f $_.Exception.Message); $errors++ }
+
+        # EWS
+        try {
+            $vd = Get-WebServicesVirtualDirectory -Identity "$server\EWS (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/EWS/Exchange.asmx") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/EWS/Exchange.asmx")) {
+                Write-MyVerbose 'EWS: URLs already set, skipping'
+            } else {
+                Set-WebServicesVirtualDirectory -Identity "$server\EWS (Default Web Site)" `
+                    -InternalUrl "https://$ns/EWS/Exchange.asmx" -ExternalUrl "https://$ns/EWS/Exchange.asmx" `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'EWS virtual directory configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('EWS: {0}' -f $_.Exception.Message); $errors++ }
+
+        # OAB
+        try {
+            $vd = Get-OabVirtualDirectory -Identity "$server\OAB (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/OAB") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/OAB")) {
+                Write-MyVerbose 'OAB: URLs already set, skipping'
+            } else {
+                Set-OabVirtualDirectory -Identity "$server\OAB (Default Web Site)" `
+                    -InternalUrl "https://$ns/OAB" -ExternalUrl "https://$ns/OAB" `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'OAB virtual directory configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('OAB: {0}' -f $_.Exception.Message); $errors++ }
+
+        # ActiveSync
+        try {
+            $vd = Get-ActiveSyncVirtualDirectory -Identity "$server\Microsoft-Server-ActiveSync (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/Microsoft-Server-ActiveSync") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/Microsoft-Server-ActiveSync")) {
+                Write-MyVerbose 'ActiveSync: URLs already set, skipping'
+            } else {
+                Set-ActiveSyncVirtualDirectory -Identity "$server\Microsoft-Server-ActiveSync (Default Web Site)" `
+                    -InternalUrl "https://$ns/Microsoft-Server-ActiveSync" -ExternalUrl "https://$ns/Microsoft-Server-ActiveSync" `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'ActiveSync virtual directory configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('ActiveSync: {0}' -f $_.Exception.Message); $errors++ }
+
+        # MAPI — URL first, auth methods in a separate try (not available on all builds)
+        try {
+            $vd = Get-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/mapi") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/mapi")) {
+                Write-MyVerbose 'MAPI: URLs already set, skipping'
+            } else {
+                Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
+                    -InternalUrl "https://$ns/mapi" -ExternalUrl "https://$ns/mapi" `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'MAPI virtual directory URL configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('MAPI URL: {0}' -f $_.Exception.Message); $errors++ }
+
+        try {
+            Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
+                -InternalAuthenticationMethods NTLM,Negotiate,OAuth `
+                -ExternalAuthenticationMethods NTLM,Negotiate,OAuth `
+                -ErrorAction Stop -WarningAction SilentlyContinue
+            Write-MyVerbose 'MAPI authentication methods configured'
+        }
+        catch { Write-MyVerbose ('MAPI auth methods not supported on this build: {0}' -f $_.Exception.Message) }
+
+        # Autodiscover SCP
+        try {
+            $cas = Get-ClientAccessService -Identity $server -ErrorAction Stop
+            $scpTarget = "https://$ns/Autodiscover/Autodiscover.xml"
+            if ([string]$cas.AutoDiscoverServiceInternalUri -eq $scpTarget) {
+                Write-MyVerbose 'Autodiscover SCP: already set, skipping'
+            } else {
+                Set-ClientAccessService -Identity $server `
+                    -AutoDiscoverServiceInternalUri $scpTarget `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'Autodiscover SCP configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('Autodiscover SCP: {0}' -f $_.Exception.Message); $errors++ }
+
+        if ($errors -eq 0) {
+            if ($changed -gt 0) {
+                Write-MyOutput ('Virtual Directory URLs configured for https://{0} (OWA logon: UPN)' -f $ns)
+            } else {
+                Write-MyOutput ('Virtual Directory URLs already correct for https://{0} — no changes made' -f $ns)
+            }
+        }
+        else {
+            Write-MyWarning ('{0} virtual directory(s) could not be configured — check warnings above' -f $errors)
         }
     }
 
@@ -3382,8 +3823,18 @@ if (`$exSetup) {
 
         if (Test-Path $hcPath) {
             try {
-                & $hcPath -OutputFilePath $State['InstallPath'] -SkipVersionCheck
-                Write-MyOutput ('HealthChecker output saved to {0}' -f $State['InstallPath'])
+                # Suppress all HealthChecker console output — it writes hundreds of verbose lines.
+                # The HTML report is what matters; capture all streams and redirect to transcript only.
+                $hcOutput = & $hcPath -OutputFilePath $State['InstallPath'] -SkipVersionCheck *>&1
+                foreach ($line in $hcOutput) { Write-MyVerbose ('[HealthChecker] {0}' -f [string]$line) }
+                # Find the report file HealthChecker just created
+                $hcReport = Get-ChildItem -Path $State['InstallPath'] -Filter 'HealthChecker*.htm*' |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if ($hcReport) {
+                    Write-MyOutput ('HealthChecker report saved to {0}' -f $hcReport.FullName)
+                } else {
+                    Write-MyOutput ('HealthChecker completed — report in {0}' -f $State['InstallPath'])
+                }
             }
             catch {
                 Write-MyWarning ('HealthChecker execution failed: {0}' -f $_.Exception.Message)
@@ -3464,7 +3915,7 @@ if (`$exSetup) {
         $instRows.Add('<tr><td>Server</td><td>{0}</td></tr>' -f $env:COMPUTERNAME)
         $instRows.Add('<tr><td>Installation Mode</td><td>{0}</td></tr>' -f $instMode)
         $instRows.Add('<tr><td>Organization</td><td>{0}</td></tr>' -f $State['OrganizationName'])
-        $instRows.Add('<tr><td>Setup Version</td><td>{0} ({1})</td></tr>' -f $State['SetupVersion'], (Get-SetupTextVersion $State['SetupVersion']))
+        $instRows.Add(('<tr><td>Setup Version</td><td>{0} ({1})</td></tr>' -f $State['SetupVersion'], (Get-SetupTextVersion $State['SetupVersion'])))
         $instRows.Add('<tr><td>Install Path</td><td>{0}</td></tr>' -f $State['InstallPath'])
         if ($State['Namespace'])        { $instRows.Add('<tr><td>Namespace</td><td>{0}</td></tr>' -f $State['Namespace']) }
         if ($State['DAGName'])          { $instRows.Add('<tr><td>DAG</td><td>{0}</td></tr>' -f $State['DAGName']) }
@@ -3482,7 +3933,7 @@ if (`$exSetup) {
         $sysRows = [System.Collections.Generic.List[string]]::new()
         try {
             $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-            $sysRows.Add('<tr><td>Operating System</td><td>{0}</td><td>{1}</td></tr>' -f $os.Caption, (Format-Badge 'OK' 'ok'))
+            $sysRows.Add(('<tr><td>Operating System</td><td>{0}</td><td>{1}</td></tr>' -f $os.Caption, (Format-Badge 'OK' 'ok')))
             $sysRows.Add('<tr><td>OS Build</td><td>{0}</td><td></td></tr>' -f $os.Version)
             $sysRows.Add('<tr><td>Last Boot</td><td>{0}</td><td></td></tr>' -f $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss'))
             $totalRAM = [math]::Round($os.TotalVisibleMemorySize / 1MB, 0)
@@ -3490,28 +3941,41 @@ if (`$exSetup) {
         } catch { $sysRows.Add('<tr><td colspan="3">OS info unavailable</td></tr>') }
         try {
             $cpu = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
-            $sysRows.Add('<tr><td>CPU</td><td>{0}</td><td>{1} cores / {2} logical</td></tr>' -f $cpu.Name.Trim(), $cpu.NumberOfCores, $cpu.NumberOfLogicalProcessors)
+            $sysRows.Add(('<tr><td>CPU</td><td>{0}</td><td>{1} cores / {2} logical</td></tr>' -f $cpu.Name.Trim(), $cpu.NumberOfCores, $cpu.NumberOfLogicalProcessors))
         } catch { }
         try {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
-            $sysRows.Add('<tr><td>Computer Name (FQDN)</td><td>{0}.{1}</td><td></td></tr>' -f $cs.DNSHostName, $cs.Domain)
+            $sysRows.Add(('<tr><td>Computer Name (FQDN)</td><td>{0}.{1}</td><td></td></tr>' -f $cs.DNSHostName, $cs.Domain))
         } catch { }
+        # Volumes — exclude DVD-ROM and removable drives
         try {
-            Get-Volume | Where-Object { $_.DriveLetter } | ForEach-Object {
-                $freeGB     = [math]::Round($_.SizeRemaining / 1GB, 1)
-                $totalGB    = [math]::Round($_.Size / 1GB, 1)
-                $freePct    = if ($_.Size -gt 0) { [math]::Round($_.SizeRemaining / $_.Size * 100, 0) } else { 0 }
-                $auBadge    = if ($_.AllocationUnitSize -eq 65536) { Format-Badge '64 KB ✓' 'ok' } elseif ($_.AllocationUnitSize) { Format-Badge ('{0} KB !' -f ($_.AllocationUnitSize / 1KB)) 'warn' } else { '' }
-                $diskBadge  = if ($freePct -lt 10) { Format-Badge ('Free {0}%' -f $freePct) 'fail' } elseif ($freePct -lt 20) { Format-Badge ('Free {0}%' -f $freePct) 'warn' } else { Format-Badge ('Free {0}%' -f $freePct) 'ok' }
-                $sysRows.Add('<tr><td>Volume {0}:</td><td>{1} GB free of {2} GB &nbsp; {3}</td><td>{4} &nbsp; Alloc: {5}</td></tr>' -f $_.DriveLetter, $freeGB, $totalGB, $diskBadge, $_.FileSystem, $auBadge)
+            Get-Volume -ErrorAction SilentlyContinue | Where-Object {
+                $_.DriveLetter -and $_.DriveType -notin 'CD-ROM','Removable' -and $_.Size -gt 0
+            } | ForEach-Object {
+                $freeGB    = [math]::Round($_.SizeRemaining / 1GB, 1)
+                $totalGB   = [math]::Round($_.Size / 1GB, 1)
+                $freePct   = [math]::Round($_.SizeRemaining / $_.Size * 100, 0)
+                $auBadge   = if ($_.AllocationUnitSize -eq 65536) { Format-Badge '64 KB ✓' 'ok' } elseif ($_.AllocationUnitSize) { Format-Badge ('{0} KB !' -f ($_.AllocationUnitSize / 1KB)) 'warn' } else { '' }
+                $diskBadge = if ($freePct -lt 10) { Format-Badge ('Free {0}%' -f $freePct) 'fail' } elseif ($freePct -lt 20) { Format-Badge ('Free {0}%' -f $freePct) 'warn' } else { Format-Badge ('Free {0}%' -f $freePct) 'ok' }
+                $sysRows.Add(('<tr><td>Volume {0}:</td><td>{1} GB free of {2} GB &nbsp; {3}</td><td>{4} &nbsp; Alloc: {5}</td></tr>' -f $_.DriveLetter, $freeGB, $totalGB, $diskBadge, $_.FileSystem, $auBadge))
             }
         } catch { }
+        # Network adapters — IP address + DNS servers
         try {
-            Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notlike '*Loopback*' } | ForEach-Object {
-                $sysRows.Add('<tr><td>NIC: {0}</td><td>{1}/{2}</td><td></td></tr>' -f $_.InterfaceAlias, $_.IPAddress, $_.PrefixLength)
+            $nicIPs  = @{}
+            $nicDNS  = @{}
+            Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.InterfaceAlias -notlike '*Loopback*' } |
+                ForEach-Object { $nicIPs[$_.InterfaceAlias] = ('{0}/{1}' -f $_.IPAddress, $_.PrefixLength) }
+            Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.InterfaceAlias -notlike '*Loopback*' -and $_.ServerAddresses } |
+                ForEach-Object { $nicDNS[$_.InterfaceAlias] = ($_.ServerAddresses -join ', ') }
+            foreach ($nic in ($nicIPs.Keys | Sort-Object)) {
+                $dns = if ($nicDNS[$nic]) { $nicDNS[$nic] } else { '<em>not set</em>' }
+                $sysRows.Add(('<tr><td>NIC: {0}</td><td>{1}</td><td>DNS: {2}</td></tr>' -f $nic, $nicIPs[$nic], $dns))
             }
         } catch { }
-        $sysContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Status</th></tr>{0}</table>' -f ($sysRows -join '')
+        $sysContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Detail / Status</th></tr>{0}</table>' -f ($sysRows -join '')
 
         # ── 3. ACTIVE DIRECTORY ───────────────────────────────────────────────
         $adRows = [System.Collections.Generic.List[string]]::new()
@@ -3521,7 +3985,8 @@ if (`$exSetup) {
         } catch { }
         try {
             $ffl = Get-ForestFunctionalLevel
-            $adRows.Add('<tr><td>Forest Functional Level</td><td>{0} ({1})</td><td>{2}</td></tr>' -f $ffl, (Get-FFLText $ffl), (Format-Badge (if ($ffl -ge $FOREST_LEVEL2012R2) { 'OK' } else { 'WARN' }) (if ($ffl -ge $FOREST_LEVEL2012R2) { 'ok' } else { 'warn' })))
+            $fflBadge = if ($ffl -ge $FOREST_LEVEL2012R2) { Format-Badge 'OK' 'ok' } else { Format-Badge 'WARN' 'warn' }
+            $adRows.Add(('<tr><td>Forest Functional Level</td><td>{0} ({1})</td><td>{2}</td></tr>' -f $ffl, (Get-FFLText $ffl), $fflBadge))
         } catch { }
         try {
             $exOrg = Get-ExchangeOrganization
@@ -3549,19 +4014,26 @@ if (`$exSetup) {
             $exRows.Add('<tr><td>Edition</td><td>{0}</td><td></td></tr>' -f $exSrv.Edition)
             $exRows.Add('<tr><td>AD Site</td><td>{0}</td><td></td></tr>' -f $exSrv.Site)
         } catch { $exRows.Add('<tr><td colspan="3">Exchange server query unavailable</td></tr>') }
+        # Autodiscover SCP (Client Access Service, not a virtual directory)
+        try {
+            $cas = Get-ClientAccessService -Identity $env:COMPUTERNAME -ErrorAction SilentlyContinue
+            if ($cas) { $exRows.Add('<tr><td>Autodiscover SCP</td><td>{0}</td><td></td></tr>' -f $cas.AutoDiscoverServiceInternalUri) }
+        } catch { }
         try {
             $orgCfg = Get-OrganizationConfig -ErrorAction Stop
             $exRows.Add('<tr><td>Organization Name</td><td>{0}</td><td></td></tr>' -f $orgCfg.Name)
-            $exRows.Add('<tr><td>Modern Auth (OAuth2)</td><td>{0}</td><td>{1}</td></tr>' -f $orgCfg.OAuth2ClientProfileEnabled, (Format-Badge (if ($orgCfg.OAuth2ClientProfileEnabled) { 'Enabled' } else { 'Disabled' }) (if ($orgCfg.OAuth2ClientProfileEnabled) { 'ok' } else { 'warn' })))
-            $exRows.Add('<tr><td>MAPI/HTTP</td><td>{0}</td><td>{1}</td></tr>' -f $orgCfg.MapiHttpEnabled, (Format-Badge (if ($orgCfg.MapiHttpEnabled) { 'Enabled' } else { 'Disabled' }) (if ($orgCfg.MapiHttpEnabled) { 'ok' } else { 'warn' })))
+            $oauthBadge = if ($orgCfg.OAuth2ClientProfileEnabled) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Disabled' 'warn' }
+            $exRows.Add(('<tr><td>Modern Auth (OAuth2)</td><td>{0}</td><td>{1}</td></tr>' -f $orgCfg.OAuth2ClientProfileEnabled, $oauthBadge))
+            $mapiBadge = if ($orgCfg.MapiHttpEnabled) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Disabled' 'warn' }
+            $exRows.Add(('<tr><td>MAPI/HTTP</td><td>{0}</td><td>{1}</td></tr>' -f $orgCfg.MapiHttpEnabled, $mapiBadge))
         } catch { }
         try {
             Get-AcceptedDomain -ErrorAction Stop | ForEach-Object {
-                $exRows.Add('<tr><td>Accepted Domain</td><td>{0}</td><td>{1}</td></tr>' -f $_.DomainName, (Format-Badge $_.DomainType 'info'))
+                $exRows.Add(('<tr><td>Accepted Domain</td><td>{0}</td><td>{1}</td></tr>' -f $_.DomainName, (Format-Badge $_.DomainType 'info')))
             }
         } catch { }
 
-        # Virtual directories
+        # Virtual directories — OWA, ECP, EWS, OAB, ActiveSync, MAPI
         $vdirRows.Add('<tr><th>Service</th><th>Internal URL</th><th>External URL</th></tr>')
         @(
             @{ Name='OWA';         Cmd={ Get-OwaVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
@@ -3576,28 +4048,35 @@ if (`$exSetup) {
                 if ($vd) {
                     $int = if ($vd.InternalUrl) { $vd.InternalUrl.AbsoluteUri } else { '<em>not set</em>' }
                     $ext = if ($vd.ExternalUrl) { $vd.ExternalUrl.AbsoluteUri } else { '<em>not set</em>' }
-                    $vdirRows.Add('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f $_.Name, $int, $ext)
+                    $vdirRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f $_.Name, $int, $ext))
                 }
             } catch { }
         }
-        try {
-            $cas = Get-ClientAccessService -Identity $env:COMPUTERNAME -ErrorAction SilentlyContinue
-            if ($cas) { $vdirRows.Add('<tr><td>Autodiscover SCP</td><td colspan="2">{0}</td></tr>' -f $cas.AutoDiscoverServiceInternalUri) }
-        } catch { }
 
-        # Mailbox databases
+        # Mailbox databases — try with status, fall back without
         $dbRows.Add('<tr><th>Database</th><th>DB Path</th><th>Log Path</th><th>Status</th></tr>')
         try {
-            Get-MailboxDatabase -Server $env:COMPUTERNAME -Status -ErrorAction Stop | ForEach-Object {
-                $dbRows.Add('<tr><td>{0}</td><td><code>{1}</code></td><td><code>{2}</code></td><td>{3}</td></tr>' -f $_.Name, $_.EdbFilePath, $_.LogFolderPath, (Format-Badge (if ($_.Mounted) { 'Mounted' } else { 'Dismounted' }) (if ($_.Mounted) { 'ok' } else { 'warn' })))
+            $dbs = Get-MailboxDatabase -Server $env:COMPUTERNAME -Status -ErrorAction SilentlyContinue
+            if (-not $dbs) {
+                $dbs = Get-MailboxDatabase -Server $env:COMPUTERNAME -ErrorAction Stop
             }
-        } catch { $dbRows.Add('<tr><td colspan="4">No mailbox databases or query failed</td></tr>') }
+            if ($dbs) {
+                $dbs | ForEach-Object {
+                    $mounted = if ($null -ne $_.Mounted) { $_.Mounted } else { $null }
+                    $mountedText  = if ($null -eq $mounted) { 'Unknown' } elseif ($mounted) { 'Mounted' } else { 'Dismounted' }
+                    $mountedBadge = if ($null -eq $mounted) { Format-Badge 'Unknown' 'na' } elseif ($mounted) { Format-Badge 'Mounted' 'ok' } else { Format-Badge 'Dismounted' 'warn' }
+                    $dbRows.Add(('<tr><td>{0}</td><td><code>{1}</code></td><td><code>{2}</code></td><td>{3}</td></tr>' -f $_.Name, $_.EdbFilePath, $_.LogFolderPath, $mountedBadge))
+                }
+            } else {
+                $dbRows.Add('<tr><td colspan="4"><em>No mailbox databases found on this server</em></td></tr>')
+            }
+        } catch { $dbRows.Add(('<tr><td colspan="4">Query failed: {0}</td></tr>' -f $_.Exception.Message)) }
 
         # Receive connectors
         $connRows.Add('<tr><th>Connector</th><th>Bindings</th><th>Auth Mechanisms</th><th>Permission Groups</th></tr>')
         try {
             Get-ReceiveConnector -Server $env:COMPUTERNAME -ErrorAction Stop | ForEach-Object {
-                $connRows.Add('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>' -f $_.Name, ($_.Bindings -join '<br>'), $_.AuthMechanism, $_.PermissionGroups)
+                $connRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>' -f $_.Name, ($_.Bindings -join '<br>'), $_.AuthMechanism, $_.PermissionGroups))
             }
         } catch { $connRows.Add('<tr><td colspan="4">Receive connector query failed</td></tr>') }
 
@@ -3607,7 +4086,7 @@ if (`$exSetup) {
             Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | ForEach-Object {
                 $daysLeft = ($_.NotAfter - (Get-Date)).Days
                 $expiryBadge = if ($daysLeft -lt 30) { Format-Badge ('Expires {0}d!' -f $daysLeft) 'fail' } elseif ($daysLeft -lt 90) { Format-Badge ('Expires {0}d' -f $daysLeft) 'warn' } else { Format-Badge ('{0} ({1}d)' -f $_.NotAfter.ToString('yyyy-MM-dd'), $daysLeft) 'ok' }
-                $certRows.Add('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td><code>{3}</code></td></tr>' -f $_.Subject, $expiryBadge, $_.Services, $_.Thumbprint)
+                $certRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td><code>{3}</code></td></tr>' -f $_.Subject, $expiryBadge, $_.Services, $_.Thumbprint))
             }
         } catch { $certRows.Add('<tr><td colspan="4">Certificate query failed</td></tr>') }
 
@@ -3623,64 +4102,111 @@ if (`$exSetup) {
 <table class="data-table">{4}</table>
 "@ -f ($exRows -join ''), ($vdirRows -join ''), ($dbRows -join ''), ($connRows -join ''), ($certRows -join '')
 
-        # ── 5. SECURITY SETTINGS ──────────────────────────────────────────────
+        # ── 5. SECURITY SETTINGS (with Exchange best-practice column) ─────────
         $secRows = [System.Collections.Generic.List[string]]::new()
         function Get-SecRegVal($path, $name) { try { (Get-ItemProperty -Path $path -Name $name -ErrorAction Stop).$name } catch { $null } }
 
-        @('1.0','1.1','1.2','1.3') | ForEach-Object {
-            $proto = $_
+        # TLS protocols — show current value + Exchange recommendation
+        @(
+            @{ Proto='1.0'; Rec='Disabled'; LegacyRisk=$true  }
+            @{ Proto='1.1'; Rec='Disabled'; LegacyRisk=$true  }
+            @{ Proto='1.2'; Rec='Enabled';  LegacyRisk=$false }
+            @{ Proto='1.3'; Rec='Enabled (Exchange SE / 2019 CU15+ on WS2022+)'; LegacyRisk=$false }
+        ) | ForEach-Object {
+            $proto      = $_.Proto
             $srvEnabled = Get-SecRegVal "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS $proto\Server" 'Enabled'
             $cliEnabled = Get-SecRegVal "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS $proto\Client" 'Enabled'
-            $isLegacy   = $proto -in '1.0','1.1'
             $isEnabled  = -not ($srvEnabled -eq 0 -or $cliEnabled -eq 0)
-            $valText    = if ($null -eq $srvEnabled -and $null -eq $cliEnabled) { 'OS Default' } else { "Server=$srvEnabled, Client=$cliEnabled" }
+            $valText    = if ($null -eq $srvEnabled -and $null -eq $cliEnabled) { 'OS Default' } else { "Srv=$srvEnabled / Cli=$cliEnabled" }
             $label      = if ($isEnabled) { 'Enabled' } else { 'Disabled' }
-            $badgeType  = if ($isLegacy) { if ($isEnabled) { 'warn' } else { 'ok' } } else { if ($isEnabled) { 'ok' } else { 'warn' } }
-            $secRows.Add('<tr><td>TLS {0}</td><td>{1}</td><td>{2}</td></tr>' -f $proto, $valText, (Format-Badge $label $badgeType))
+            $badgeType  = if ($_.LegacyRisk) { if ($isEnabled) { 'warn' } else { 'ok' } } else { if ($isEnabled) { 'ok' } else { 'warn' } }
+            $secRows.Add(('<tr><td>TLS {0}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>' -f $proto, $valText, $_.Rec, (Format-Badge $label $badgeType)))
         }
         $strongCrypto = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319' 'SchUseStrongCrypto'
-        $secRows.Add('<tr><td>.NET Strong Crypto</td><td>SchUseStrongCrypto = {0}</td><td>{1}</td></tr>' -f $strongCrypto, (Format-Badge (if ($strongCrypto -eq 1) { 'Enabled' } else { 'Not set' }) (if ($strongCrypto -eq 1) { 'ok' } else { 'warn' })))
+        $strongBadge  = if ($strongCrypto -eq 1) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Not set' 'warn' }
+        $secRows.Add(('<tr><td>.NET Strong Crypto</td><td>SchUseStrongCrypto = {0}</td><td>1 (required)</td><td>{1}</td></tr>' -f $strongCrypto, $strongBadge))
         try {
             $smb1 = (Get-SmbServerConfiguration -ErrorAction Stop).EnableSMB1Protocol
-            $secRows.Add('<tr><td>SMBv1</td><td>{0}</td><td>{1}</td></tr>' -f $smb1, (Format-Badge (if ($smb1) { 'Enabled (risk)' } else { 'Disabled' }) (if ($smb1) { 'warn' } else { 'ok' })))
+            $smb1Badge = if ($smb1) { Format-Badge 'Enabled (risk)' 'warn' } else { Format-Badge 'Disabled' 'ok' }
+            $secRows.Add(('<tr><td>SMBv1</td><td>{0}</td><td>Disabled</td><td>{1}</td></tr>' -f $smb1, $smb1Badge))
         } catch { }
         $wdigest = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' 'UseLogonCredential'
-        $secRows.Add('<tr><td>WDigest Credential Caching</td><td>UseLogonCredential = {0}</td><td>{1}</td></tr>' -f $wdigest, (Format-Badge (if ($wdigest -eq 0) { 'Disabled' } else { 'Enabled (risk)' }) (if ($wdigest -eq 0) { 'ok' } else { 'warn' })))
+        $wdigestBadge = if ($wdigest -eq 0) { Format-Badge 'Disabled' 'ok' } else { Format-Badge 'Enabled (risk)' 'warn' }
+        $secRows.Add(('<tr><td>WDigest Caching</td><td>UseLogonCredential = {0}</td><td>0 = Disabled</td><td>{1}</td></tr>' -f $wdigest, $wdigestBadge))
         $lsaPPL = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RunAsPPL'
-        $secRows.Add('<tr><td>LSA Protection (RunAsPPL)</td><td>{0}</td><td>{1}</td></tr>' -f $lsaPPL, (Format-Badge (if ($lsaPPL -eq 1) { 'Enabled' } else { 'Not set' }) (if ($lsaPPL -eq 1) { 'ok' } else { 'warn' })))
+        $lsaBadge = if ($lsaPPL -eq 1) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Not set' 'warn' }
+        $secRows.Add(('<tr><td>LSA Protection (RunAsPPL)</td><td>{0}</td><td>1 = Enabled (Ex2019 CU12+/SE)</td><td>{1}</td></tr>' -f $lsaPPL, $lsaBadge))
         $lmLevel = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LmCompatibilityLevel'
-        $secRows.Add('<tr><td>LM Compatibility Level</td><td>{0}</td><td>{1}</td></tr>' -f $lmLevel, (Format-Badge (if ($lmLevel -ge 5) { "Level $lmLevel — NTLMv2 only" } else { "Level $lmLevel" }) (if ($lmLevel -ge 5) { 'ok' } else { 'warn' })))
+        $lmBadge = if ($lmLevel -ge 5) { Format-Badge "Level $lmLevel ✓" 'ok' } else { Format-Badge "Level $lmLevel" 'warn' }
+        $secRows.Add(('<tr><td>LM Compatibility Level</td><td>{0}</td><td>5 = NTLMv2 only</td><td>{1}</td></tr>' -f $lmLevel, $lmBadge))
         $credGuard = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity'
-        $secRows.Add('<tr><td>Credential Guard</td><td>EnableVBS = {0}</td><td>{1}</td></tr>' -f $credGuard, (Format-Badge (if ($credGuard -eq 0) { 'Disabled' } else { 'Enabled (review)' }) (if ($credGuard -eq 0) { 'ok' } else { 'warn' })))
+        $cgBadge = if ($credGuard -eq 0) { Format-Badge 'Disabled' 'ok' } else { Format-Badge 'Enabled (review)' 'warn' }
+        $secRows.Add(('<tr><td>Credential Guard</td><td>EnableVBS = {0}</td><td>0 = Disabled (Exchange servers)</td><td>{1}</td></tr>' -f $credGuard, $cgBadge))
         $http2 = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\HTTP\Parameters' 'EnableHttp2Tls'
-        $secRows.Add('<tr><td>HTTP/2 over TLS</td><td>EnableHttp2Tls = {0}</td><td>{1}</td></tr>' -f $http2, (Format-Badge (if ($http2 -eq 0) { 'Disabled' } else { 'Enabled' }) (if ($http2 -eq 0) { 'ok' } else { 'info' })))
-        $serialSign = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Diagnostics' 'EnableSigningVerification'
-        $secRows.Add('<tr><td>Serialized Data Signing</td><td>{0}</td><td>{1}</td></tr>' -f $serialSign, (Format-Badge (if ($serialSign) { 'Enabled' } else { 'Not set' }) (if ($serialSign) { 'ok' } else { 'warn' })))
-        $secContent = '<table class="data-table"><tr><th>Setting</th><th>Value</th><th>Status</th></tr>{0}</table>' -f ($secRows -join '')
+        $http2Badge = if ($http2 -eq 0) { Format-Badge 'Disabled' 'ok' } else { Format-Badge 'Enabled' 'warn' }
+        $secRows.Add(('<tr><td>HTTP/2 over TLS</td><td>EnableHttp2Tls = {0}</td><td>0 = Disabled (MAPI/RPC compat)</td><td>{1}</td></tr>' -f $http2, $http2Badge))
+        # Serialized Data Signing — registry value name: EnableSerializationDataSigning
+        $serialSign = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Diagnostics' 'EnableSerializationDataSigning'
+        $serialBadge = if ($serialSign -eq 1) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Not set' 'warn' }
+        $secRows.Add(('<tr><td>Serialized Data Signing</td><td>{0}</td><td>1 = Enabled</td><td>{1}</td></tr>' -f $serialSign, $serialBadge))
+        $uacVal = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
+        $uacBadge = if ($uacVal -eq 1 -or $null -eq $uacVal) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Disabled!' 'fail' }
+        $secRows.Add(('<tr><td>UAC (EnableLUA)</td><td>{0}</td><td>1 = Enabled (re-enabled after setup)</td><td>{1}</td></tr>' -f $uacVal, $uacBadge))
+        $secContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th></tr>{0}</table>' -f ($secRows -join '')
 
-        # ── 6. PERFORMANCE SETTINGS ───────────────────────────────────────────
+        # ── 6. PERFORMANCE SETTINGS (with best-practice column) ───────────────
         $perfRows = [System.Collections.Generic.List[string]]::new()
         try {
             $plan = Get-CimInstance -Namespace 'root\cimv2\power' -ClassName Win32_PowerPlan -Filter 'IsActive=True' -ErrorAction Stop
             $isHighPerf = $plan.InstanceID -like "*$POWERPLAN_HIGH_PERFORMANCE*"
-            $perfRows.Add('<tr><td>Power Plan</td><td>{0}</td><td>{1}</td></tr>' -f $plan.ElementName, (Format-Badge (if ($isHighPerf) { 'High Performance ✓' } else { 'Not High Performance' }) (if ($isHighPerf) { 'ok' } else { 'warn' })))
+            $planBadge  = if ($isHighPerf) { Format-Badge 'High Performance ✓' 'ok' } else { Format-Badge 'Not High Performance' 'warn' }
+            $perfRows.Add(('<tr><td>Power Plan</td><td>{0}</td><td>High Performance</td><td>{1}</td></tr>' -f $plan.ElementName, $planBadge))
         } catch { }
         try {
             $pf = Get-CimInstance Win32_PageFileSetting -ErrorAction Stop | Select-Object -First 1
-            if ($pf) { $perfRows.Add('<tr><td>Pagefile</td><td>{0} — Init: {1} MB, Max: {2} MB</td><td></td></tr>' -f $pf.Name, $pf.InitialSize, $pf.MaximumSize) }
+            if ($pf) { $perfRows.Add(('<tr><td>Pagefile</td><td>{0} — Init: {1} MB / Max: {2} MB</td><td>RAM+10 MB (Ex2016) or 25% RAM (Ex2019+)</td><td></td></tr>' -f $pf.Name, $pf.InitialSize, $pf.MaximumSize)) }
         } catch { }
         $keepAlive = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'KeepAliveTime'
-        if ($keepAlive) { $perfRows.Add('<tr><td>TCP KeepAliveTime</td><td>{0} ms ({1} min)</td><td></td></tr>' -f $keepAlive, [math]::Round($keepAlive / 60000, 0)) }
+        if ($keepAlive) {
+            $kaBadge = if ($keepAlive -le 900000) { Format-Badge '✓' 'ok' } else { Format-Badge 'High' 'warn' }
+            $perfRows.Add(('<tr><td>TCP KeepAliveTime</td><td>{0} ms ({1} min)</td><td>900000 ms (15 min)</td><td>{2}</td></tr>' -f $keepAlive, [math]::Round($keepAlive / 60000, 0), $kaBadge))
+        }
         try {
             Get-NetAdapterRss -ErrorAction SilentlyContinue | Where-Object { $_.Enabled } | ForEach-Object {
-                $perfRows.Add('<tr><td>RSS: {0}</td><td>Enabled — Receive Queues: {1}</td><td>{2}</td></tr>' -f $_.Name, $_.NumberOfReceiveQueues, (Format-Badge 'Enabled' 'ok'))
+                $perfRows.Add(('<tr><td>RSS: {0}</td><td>Enabled — Queues: {1}</td><td>Enabled; Queues = physical cores</td><td>{2}</td></tr>' -f $_.Name, $_.NumberOfReceiveQueues, (Format-Badge 'Enabled ✓' 'ok')))
             }
         } catch { }
         $maxConcAPI = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' 'MaxConcurrentApi'
-        if ($maxConcAPI) { $perfRows.Add('<tr><td>Netlogon MaxConcurrentApi</td><td>{0}</td><td></td></tr>' -f $maxConcAPI) }
+        if ($maxConcAPI) {
+            $mcaBadge = if ($maxConcAPI -ge 10) { Format-Badge '✓' 'ok' } else { Format-Badge 'Low' 'warn' }
+            $perfRows.Add(('<tr><td>Netlogon MaxConcurrentApi</td><td>{0}</td><td>&ge; logical cores (min 10)</td><td>{1}</td></tr>' -f $maxConcAPI, $mcaBadge))
+        }
         $ctsPct = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Search\SystemParameters' 'CtsProcessorAffinityPercentage'
-        if ($null -ne $ctsPct) { $perfRows.Add('<tr><td>CTS Processor Affinity %</td><td>{0}</td><td>{1}</td></tr>' -f $ctsPct, (Format-Badge (if ($ctsPct -eq 0) { 'Optimal (0%)' } else { "$ctsPct%" }) (if ($ctsPct -eq 0) { 'ok' } else { 'warn' }))) }
-        $perfContent = '<table class="data-table"><tr><th>Setting</th><th>Value</th><th>Status</th></tr>{0}</table>' -f ($perfRows -join '')
+        if ($null -ne $ctsPct) {
+            $ctsBadge = if ($ctsPct -eq 0) { Format-Badge '0% ✓' 'ok' } else { Format-Badge "$ctsPct%" 'warn' }
+            $perfRows.Add(('<tr><td>CTS Processor Affinity %</td><td>{0}</td><td>0 (Exchange Search best practice)</td><td>{1}</td></tr>' -f $ctsPct, $ctsBadge))
+        }
+        $tcpOffload = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'DisableTaskOffload'
+        if ($null -ne $tcpOffload) {
+            $toBadge = if ($tcpOffload -eq 1) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge 'Enabled' 'warn' }
+            $perfRows.Add(('<tr><td>TCP Task Offload</td><td>DisableTaskOffload = {0}</td><td>1 = Disabled</td><td>{1}</td></tr>' -f $tcpOffload, $toBadge))
+        }
+        $wSearch = (Get-Service -Name WSearch -ErrorAction SilentlyContinue)
+        if ($wSearch) {
+            $wsBadge = if ($wSearch.StartType -eq 'Disabled') { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge $wSearch.StartType 'warn' }
+            $perfRows.Add(('<tr><td>Windows Search Service</td><td>{0}</td><td>Disabled (Exchange uses own indexing)</td><td>{1}</td></tr>' -f $wSearch.StartType, $wsBadge))
+        }
+        $perfContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th></tr>{0}</table>' -f ($perfRows -join '')
+
+        # ── 7. HEALTHCHECKER RESULTS ──────────────────────────────────────────
+        $hcReport = Get-ChildItem -Path $State['InstallPath'] -Filter 'HealthChecker*.htm*' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $hcContent = if ($hcReport) {
+            $hcRelPath = $hcReport.Name
+            '<p style="margin-bottom:12px">HealthChecker report: <a href="{0}" target="_blank"><code>{1}</code></a></p><iframe src="{0}" style="width:100%;height:700px;border:1px solid #e1dfdd;border-radius:4px" title="HealthChecker Report"></iframe>' -f $hcRelPath, $hcReport.FullName
+        } else {
+            '<p style="color:#8a8886"><em>HealthChecker report not found in {0}. Run HealthChecker.ps1 manually or re-run Phase 6 without -SkipHealthCheck.</em></p>' -f $State['InstallPath']
+        }
 
         # ── BUILD HTML ────────────────────────────────────────────────────────
         $css = @'
@@ -3697,7 +4223,7 @@ header h1{font-size:22px;font-weight:300;letter-spacing:.5px}
 .toc-title{color:#888;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;padding:16px 20px 6px}
 .toc a{display:block;padding:9px 20px;color:#c8c8c8;text-decoration:none;font-size:13px;border-left:3px solid transparent;transition:all .15s}
 .toc a:hover{color:#fff;background:rgba(255,255,255,.08);border-left-color:var(--accent)}
-main{flex:1;padding:32px 36px;max-width:1100px;overflow-x:auto}
+main{flex:1;padding:32px 36px;max-width:1200px;overflow-x:auto}
 .section{background:var(--card);border-radius:8px;margin-bottom:24px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden}
 .section-title{background:var(--primary);color:#fff;padding:12px 20px;font-size:15px;font-weight:400;letter-spacing:.3px}
 .section-body{padding:20px}
@@ -3712,19 +4238,20 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 @media print{
   .toc{display:none!important}
   body{background:#fff}
-  header,. section-title{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  header,.section-title{-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .section{box-shadow:none;border:1px solid #ddd;page-break-inside:avoid}
   main{padding:0}
 }
 '@
 
         $sections = @(
-            (New-HtmlSection 'params'      'Installation Parameters'   ('<table class="data-table">{0}</table>' -f ($instRows -join '')))
-            (New-HtmlSection 'system'      'System Information'        $sysContent)
-            (New-HtmlSection 'ad'          'Active Directory'          $adContent)
-            (New-HtmlSection 'exchange'    'Exchange Configuration'    $exContent)
-            (New-HtmlSection 'security'    'Security Settings'         $secContent)
-            (New-HtmlSection 'performance' 'Performance &amp; Tuning'  $perfContent)
+            (New-HtmlSection 'params'       'Installation Parameters'   ('<table class="data-table">{0}</table>' -f ($instRows -join '')))
+            (New-HtmlSection 'system'       'System Information'        $sysContent)
+            (New-HtmlSection 'ad'           'Active Directory'          $adContent)
+            (New-HtmlSection 'exchange'     'Exchange Configuration'    $exContent)
+            (New-HtmlSection 'security'     'Security Settings'         $secContent)
+            (New-HtmlSection 'performance'  'Performance &amp; Tuning'  $perfContent)
+            (New-HtmlSection 'healthchecker' 'HealthChecker Results'    $hcContent)
         )
 
         $toc = @(
@@ -3735,6 +4262,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             '<a href="#exchange">Exchange Configuration</a>'
             '<a href="#security">Security Settings</a>'
             '<a href="#performance">Performance &amp; Tuning</a>'
+            '<a href="#healthchecker">HealthChecker Results</a>'
         )
 
         $html = @"
@@ -3785,12 +4313,17 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
         if ($edgeExe) {
-            $pdfPath = $reportPath -replace '\.html$', '.pdf'
+            $pdfPath    = $reportPath -replace '\.html$', '.pdf'
+            $edgeStdErr = Join-Path $env:TEMP 'edge_headless_stderr.txt'
             Write-MyVerbose ('Generating PDF via Edge headless: {0}' -f $pdfPath)
             try {
                 $fileUri  = 'file:///{0}' -f ($reportPath -replace '\\', '/')
-                $edgeArgs = '--headless', '--disable-gpu', '--run-all-compositor-stages-before-draw', "--print-to-pdf=`"$pdfPath`"", "`"$fileUri`""
-                $proc = Start-Process -FilePath $edgeExe -ArgumentList $edgeArgs -NoNewWindow -Wait -PassThru -ErrorAction Stop
+                $edgeArgs = '--headless', '--disable-gpu', '--run-all-compositor-stages-before-draw',
+                            '--log-level=3',   # suppress DevTools/renderer noise
+                            "--print-to-pdf=`"$pdfPath`"", "`"$fileUri`""
+                $proc = Start-Process -FilePath $edgeExe -ArgumentList $edgeArgs -NoNewWindow -Wait -PassThru `
+                            -RedirectStandardError $edgeStdErr -ErrorAction Stop
+                Remove-Item $edgeStdErr -ErrorAction SilentlyContinue
                 if ($proc.ExitCode -eq 0 -and (Test-Path $pdfPath)) {
                     Write-MyOutput ('Installation Report PDF saved to {0}' -f $pdfPath)
                 }
@@ -3809,7 +4342,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
     function Get-RBACReport {
         Write-MyOutput 'Generating RBAC role group membership report'
-        $reportPath = Join-Path $State['InstallPath'] ('{0}_RBACReport_{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMddHHmmss'))
+        $ts = Get-Date -Format 'yyyyMMddHHmmss'
+        $reportPath = Join-Path $State['InstallPath'] "${env:COMPUTERNAME}_RBACReport_${ts}.txt"
 
         $roleGroups = @(
             'Organization Management',
@@ -3826,34 +4360,44 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         $lines = [System.Collections.Generic.List[string]]::new()
         $lines.Add('Exchange RBAC Role Group Membership Report')
-        $lines.Add('Generated: {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-        $lines.Add('Server: {0}' -f $env:COMPUTERNAME)
-        $lines.Add(('-' * 60))
+        $lines.Add("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+        $lines.Add("Server: $env:COMPUTERNAME")
+        $lines.Add('-' * 60)
 
         foreach ($group in $roleGroups) {
             try {
-                $members = Get-RoleGroupMember -Identity $group -ErrorAction Stop
+                $members = @(Get-RoleGroupMember -Identity $group -ErrorAction Stop)
                 $lines.Add('')
-                $lines.Add('[{0}]' -f $group)
-                if ($members) {
-                    $members | ForEach-Object { $lines.Add('  {0} ({1})' -f $_.Name, $_.RecipientType) }
+                $lines.Add("[$group]")
+                if ($members.Count -gt 0) {
+                    foreach ($member in $members) {
+                        try {
+                            $memberName = [string]$member.Name
+                            $memberType = [string]$member.RecipientType
+                            $lines.Add("  $memberName ($memberType)")
+                        }
+                        catch {
+                            $lines.Add('  (could not display member)')
+                        }
+                    }
                 }
                 else {
                     $lines.Add('  (no members)')
                 }
             }
             catch {
+                $errMsg = if ($null -ne $_.Exception -and $_.Exception.Message) { $_.Exception.Message } else { $_.ToString() }
                 $lines.Add('')
-                $lines.Add('[{0}] — could not retrieve: {1}' -f $group, $_.Exception.Message)
+                $lines.Add("[$group] - could not retrieve: $errMsg")
             }
         }
 
         try {
             $lines | Set-Content -Path $reportPath -Encoding UTF8 -ErrorAction Stop
-            Write-MyOutput ('RBAC report saved to {0}' -f $reportPath)
+            Write-MyOutput "RBAC report saved to $reportPath"
         }
         catch {
-            Write-MyWarning ('Could not save RBAC report: {0}' -f $_.Exception.Message)
+            Write-MyWarning "Could not save RBAC report: $($_.Exception.Message)"
             $lines | ForEach-Object { Write-MyOutput $_ }
         }
     }
@@ -3883,7 +4427,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Default     = $true
                 Action      = {
                     Write-MyOutput 'Enabling Modern Authentication (OAuth2)'
-                    Set-OrganizationConfig -OAuth2ClientProfileEnabled $true -ErrorAction Stop
+                    Set-OrganizationConfig -OAuth2ClientProfileEnabled $true -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
             @{
@@ -3895,7 +4439,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Default     = $true
                 Action      = {
                     Write-MyOutput 'Configuring OWA/ECP session timeout (6 hours inactivity)'
-                    Set-OrganizationConfig -ActivityBasedAuthenticationTimeoutEnabled $true -ActivityBasedAuthenticationTimeoutInterval '06:00:00' -ErrorAction Stop
+                    Set-OrganizationConfig -ActivityBasedAuthenticationTimeoutEnabled $true -ActivityBasedAuthenticationTimeoutInterval '06:00:00' -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
             @{
@@ -3907,7 +4451,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Default     = $true
                 Action      = {
                     Write-MyOutput 'Disabling CEIP / telemetry'
-                    Set-OrganizationConfig -CustomerFeedbackEnabled $false -ErrorAction Stop
+                    Set-OrganizationConfig -CustomerFeedbackEnabled $false -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
             @{
@@ -3919,7 +4463,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Default     = $true
                 Action      = {
                     Write-MyOutput 'Enabling MAPI over HTTP'
-                    Set-OrganizationConfig -MapiHttpEnabled $true -ErrorAction Stop
+                    Set-OrganizationConfig -MapiHttpEnabled $true -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
             @{
@@ -3931,23 +4475,29 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Default     = $true
                 Action      = {
                     Write-MyOutput 'Setting org-wide max message size to 150MB'
-                    Set-TransportConfig -MaxSendSize 150MB -MaxReceiveSize 150MB -MaxRecipientEnvelopeLimit 500 -ErrorAction Stop
+                    Set-TransportConfig -MaxSendSize 150MB -MaxReceiveSize 150MB -MaxRecipientEnvelopeLimit 500 -ErrorAction Stop -WarningAction SilentlyContinue
                     Get-ReceiveConnector | Where-Object { $_.TransportRole -eq 'FrontendTransport' } | ForEach-Object {
-                        Set-ReceiveConnector -Identity $_.Identity -MaxMessageSize 150MB -ErrorAction SilentlyContinue
+                        Set-ReceiveConnector -Identity $_.Identity -MaxMessageSize 150MB -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
                     }
                 }
             }
             @{
                 Key         = 'F'
-                Name        = 'DisableSmtpAuth'
-                Label       = 'Disable SMTP AUTH org-wide'
-                Hint        = 'Block legacy auth, port 587'
-                Description = 'Disables SMTP client authentication (port 587) org-wide (Set-TransportConfig -SmtpClientAuthenticationDisabled $true). Prevents brute-force credential attacks on SMTP submission. Individual mailboxes can be re-enabled per-mailbox via Set-CASMailbox if needed. Important: do NOT enable if any application or device relies on SMTP AUTH without OAuth2. Requires Exchange 2019 CU12 or later / Exchange SE.'
+                Name        = 'MessageExpiration'
+                Label       = 'Message expiration 7 days'
+                Hint        = 'Delay NDRs on outage (default: 2d)'
+                Description = 'Extends message expiration timeout from the default 2 days to 7 days (Set-TransportService -MessageExpirationTimeout 7.00:00:00). During an outage or connectivity loss, messages remain in the queue for up to 7 days before an NDR is generated. Recommended for environments where short outages should not immediately result in delivery failure notifications. Skipped when CopyServerConfig is active (value is imported from source server).'
                 Default     = $true
-                Condition   = { [System.Version]$State['SetupVersion'] -ge [System.Version]'15.02.1118.007' }
+                Condition   = { -not $State['CopyServerConfig'] }
                 Action      = {
-                    Write-MyOutput 'Disabling SMTP AUTH org-wide'
-                    Set-TransportConfig -SmtpClientAuthenticationDisabled $true -ErrorAction Stop
+                    $current = (Get-TransportService -Identity $env:COMPUTERNAME).MessageExpirationTimeout
+                    if ($current -ne [TimeSpan]'7.00:00:00') {
+                        Write-MyOutput 'Setting message expiration timeout to 7 days'
+                        Set-TransportService -Identity $env:COMPUTERNAME -MessageExpirationTimeout 7.00:00:00 -ErrorAction Stop -WarningAction SilentlyContinue
+                    }
+                    else {
+                        Write-MyVerbose 'Message expiration timeout already set to 7 days'
+                    }
                 }
             }
             @{
@@ -3960,7 +4510,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Action      = {
                     Write-MyOutput 'Hardening SMTP banner on Frontend Receive Connectors'
                     Get-ReceiveConnector | Where-Object { $_.TransportRole -eq 'FrontendTransport' } | ForEach-Object {
-                        Set-ReceiveConnector -Identity $_.Identity -Banner '220 Mail Service' -ErrorAction SilentlyContinue
+                        Set-ReceiveConnector -Identity $_.Identity -Banner '220 Mail Service' -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
                     }
                 }
             }
@@ -3973,7 +4523,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Default     = $true
                 Action      = {
                     Write-MyOutput 'Enabling HTML-formatted Non-Delivery Reports'
-                    Set-TransportConfig -InternalDsnSendHtml $true -ExternalDsnSendHtml $true -ErrorAction Stop
+                    Set-TransportConfig -InternalDsnSendHtml $true -ExternalDsnSendHtml $true -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
             @{
@@ -3986,7 +4536,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Condition   = { $State['DAGName'] }
                 Action      = {
                     Write-MyOutput 'Configuring Shadow Redundancy to prefer remote DAG member'
-                    Set-TransportConfig -ShadowMessagePreferenceSetting PreferRemote -ErrorAction Stop
+                    Set-TransportConfig -ShadowMessagePreferenceSetting PreferRemote -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
             @{
@@ -3998,7 +4548,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Default     = $true
                 Action      = {
                     Write-MyOutput 'Setting Safety Net hold time to 2 days'
-                    Set-TransportConfig -SafetyNetHoldTime '2.00:00:00' -ErrorAction Stop
+                    Set-TransportConfig -SafetyNetHoldTime '2.00:00:00' -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
         )
@@ -4391,11 +4941,13 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     # Update this table whenever Microsoft releases a new Exchange Security Update.
     $ExchangeSUMap = @{
         # Exchange SE RTM (15.02.2562.017) -> Feb 2026 SU (KB5074992)
+        # No direct download URL available; place EXE manually in InstallPath to enable auto-install
+        # Download page: https://www.microsoft.com/en-us/download/details.aspx?id=108556
         '15.02.2562.017' = @{
             KB            = 'KB5074992'
-            FileName      = 'ExchangeSE-KB5074992-x64-en.exe'
-            URL           = 'https://download.microsoft.com/download/f/0/3/f03a5dab-40cd-44c4-97d4-2cee29064561/ExchangeSE-KB5074992-x64-en.exe'
-            TargetVersion = '15.02.2562.024'
+            FileName      = 'ExchangeSubscriptionEdition-KB5074992-x64-en.cab'
+            URL           = ''
+            TargetVersion = '15.02.2562.037'
         }
         # Exchange 2019 CU15 (15.02.1748.008) -> Jan 2025 SU (KB5049233 SU3 V2)
         '15.02.1748.008' = @{
@@ -4438,7 +4990,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     }
 
     function Install-ExchangeSecurityUpdate {
-        # Downloads and installs an Exchange Security Update .msp patch.
+        # Downloads and installs an Exchange Security Update (.exe, .cab, or .msp).
         if (-not $State['InstallWindowsUpdates']) {
             Write-MyVerbose 'InstallWindowsUpdates not set, skipping Exchange SU check'
             return
@@ -4451,12 +5003,12 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         Write-MyOutput ('Exchange Security Update {0} available for build {1} -> {2}' -f $su.KB, $State['SetupVersion'], $su.TargetVersion)
         $suPath = Join-Path $State['InstallPath'] $su.FileName
         if (-not (Test-Path $suPath)) {
-            Write-MyOutput ('Downloading {0}' -f $su.KB)
-            try {
-                Get-MyPackage -Package $su.KB -URL $su.URL -FileName $su.FileName -InstallPath $State['InstallPath']
+            if ($su.URL) {
+                Write-MyOutput ('Downloading {0}' -f $su.KB)
+                $null = Get-MyPackage -Package $su.KB -URL $su.URL -FileName $su.FileName -InstallPath $State['InstallPath']
             }
-            catch {
-                Write-MyWarning ('Could not download Exchange SU {0}: {1}. Skipping.' -f $su.KB, $_.Exception.Message)
+            if (-not (Test-Path $suPath)) {
+                Write-MyWarning ('Exchange SU {0} not found and no download URL available. Place {1} in {2} to install.' -f $su.KB, $su.FileName, $State['InstallPath'])
                 return
             }
         }
@@ -4848,11 +5400,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         # Microsoft recommends disabling TCP offload features on Exchange servers
         Write-MyOutput 'Disabling TCP Chimney and Task Offload settings'
         try {
-            $p1 = Start-Process -FilePath 'netsh.exe' -ArgumentList 'int', 'tcp', 'set', 'global', 'chimney=disabled' -NoNewWindow -PassThru -Wait
-            if ($p1.ExitCode -ne 0) { Write-MyWarning ('netsh chimney=disabled exited with code {0}' -f $p1.ExitCode) }
-            $p2 = Start-Process -FilePath 'netsh.exe' -ArgumentList 'int', 'tcp', 'set', 'global', 'autotuninglevel=restricted' -NoNewWindow -PassThru -Wait
-            if ($p2.ExitCode -ne 0) { Write-MyWarning ('netsh autotuninglevel=restricted exited with code {0}' -f $p2.ExitCode) }
-            Set-NetOffloadGlobalSetting -TaskOffload Disabled -ErrorAction SilentlyContinue
+            $null = netsh.exe int tcp set global chimney=disabled 2>&1
+            if ($LASTEXITCODE -ne 0) { Write-MyWarning ('netsh chimney=disabled exited with code {0}' -f $LASTEXITCODE) }
+            $null = netsh.exe int tcp set global autotuninglevel=restricted 2>&1
+            if ($LASTEXITCODE -ne 0) { Write-MyWarning ('netsh autotuninglevel=restricted exited with code {0}' -f $LASTEXITCODE) }
+            Set-NetOffloadGlobalSetting -TaskOffload Disabled -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
             Write-MyVerbose 'TCP offload settings configured'
         }
         catch {
@@ -4979,10 +5531,15 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             Get-NetAdapterRss -ErrorAction SilentlyContinue | ForEach-Object {
                 if (-not $_.Enabled) {
                     Write-MyVerbose ('Enabling RSS on adapter: {0}' -f $_.Name)
-                    Enable-NetAdapterRss -Name $_.Name -ErrorAction SilentlyContinue
+                    Enable-NetAdapterRss -Name $_.Name -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
                 }
-                Set-NetAdapterRss -Name $_.Name -NumberOfReceiveQueues $physicalCores -ErrorAction SilentlyContinue
-                Write-MyVerbose ('Set RSS queues to {0} on adapter: {1}' -f $physicalCores, $_.Name)
+                if ($_.NumberOfReceiveQueues -ne $physicalCores) {
+                    Set-NetAdapterRss -Name $_.Name -NumberOfReceiveQueues $physicalCores -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
+                    Write-MyVerbose ('Set RSS queues to {0} on adapter: {1}' -f $physicalCores, $_.Name)
+                }
+                else {
+                    Write-MyVerbose ('RSS queues already at {0} on adapter: {1}' -f $physicalCores, $_.Name)
+                }
             }
         }
         catch {
@@ -5139,7 +5696,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         if ( -not( Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue)) {
             Write-MyVerbose ('Setting {0}\{1} to 1' -f $RegKey, $RegName)
-            New-ItemProperty -Path $RegKey -Name $RegName -Value 1 -Type String -Force -ErrorAction SilentlyContinue
+            New-ItemProperty -Path $RegKey -Name $RegName -Value 1 -Type String -Force -ErrorAction SilentlyContinue | Out-Null
         }
 
         # If overrides were configured, disable these (obsolete and not fully supporting ECC)
@@ -5147,7 +5704,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         if ( $Override) {
             Write-MyVerbose ('Override for ECC found, removing (obsolete)')
             $Override | Remove-SettingOverride
-            Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh
+            Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh | Out-Null
             Restart-Service -Name W3SVC, WAS -Force
         }
         else {
@@ -5164,8 +5721,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             Write-MyVerbose ('Configuration for CBC already configured')
         }
         else {
-            New-SettingOverride -Name "EnableEncryptionAlgorithmCBC" -Parameters @("Enabled=True") -Component Encryption -Reason "Enable CBC encryption" -Section EnableEncryptionAlgorithmCBC
-            Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh
+            New-SettingOverride -Name "EnableEncryptionAlgorithmCBC" -Parameters @("Enabled=True") -Component Encryption -Reason "Enable CBC encryption" -Section EnableEncryptionAlgorithmCBC | Out-Null
+            Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh | Out-Null
             Restart-Service -Name W3SVC, WAS -Force
         }
     }
@@ -5225,7 +5782,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             Set-SchannelProtocol -Protocol 'TLS 1.2' -Enable $false
         }
 
-        if ( [System.Version]$FullOSVersion -ge [System.Version]$WS2022_PREFULL -and [System.Version]$SetupVersion -ge [System.Version]$EX2019SETUPEXE_CU15) {
+        if ( [System.Version]$FullOSVersion -ge [System.Version]$WS2022_PREFULL -and [System.Version]$State['ExSetupVersion'] -ge [System.Version]$EX2019SETUPEXE_CU15) {
             if ( $TLS13) {
                 Write-MyVerbose 'Enabling TLS 1.3 and configuring .NET Framework strong crypto'
                 Set-NetFrameworkStrongCrypto
@@ -5858,6 +6415,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         break
     }
 
+    if ($State.Count -gt 0 -and -not $ParameterString) {
+        $ParameterString = '[resuming from phase {0}]' -f $State['InstallPhase']
+    }
     Write-Output "Script $ScriptFullName v$ScriptVersion called using $ParameterString"
     Write-Verbose "Using parameterSet $($PsCmdlet.ParameterSetName)"
     Write-Output ('Running on OS build {0}' -f $FullOSVersion)
@@ -6111,7 +6671,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     }
     else {
         # Run from saved parameters
-        if ( $State['SourceImage']) {
+        # ISO is only needed for phases 1-4 (setup); skip remount for phase 5+ to allow dismount after phase 4
+        if ( $State['SourceImage'] -and $State['InstallPhase'] -lt 4) {
             # Mount ISO image, and set SourcePath to actual mounted location to anticipate drive letter changes
             $State["SourcePath"] = Resolve-SourcePath -SourceImage $State['SourceImage']
         }
@@ -6403,14 +6964,16 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
                 # Check if need to install VC++ Runtimes
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Visual C++ Runtimes' -PercentComplete 50
-                if ( ($State['InstallEdge'])) {
-                    if ( -not (Get-VCRuntime -version '11.0') -and $State["VCRedist2012"] ) {
-                        Install-MyPackage "" "Visual C++ 2012 Redistributable" "vcredist_x64_2012.exe" "https://download.microsoft.com/download/1/6/B/16B06F60-3B20-4FF2-B699-5E9B7962F9AE/VSU_4/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
-                    }
+                # VC++ 2012 (v11.0): required for Exchange 2016 CU23 and Edge Transport role
+                if ( ($State['InstallEdge'] -or ($State['MajorSetupVersion'] -eq $EX2016_MAJOR)) -and
+                     -not (Get-VCRuntime -version '11.0') -and $State["VCRedist2012"] ) {
+                    Install-MyPackage "" "Visual C++ 2012 Redistributable" "vcredist_x64_2012.exe" "https://download.microsoft.com/download/1/6/B/16B06F60-3B20-4FF2-B699-5E9B7962F9AE/VSU_4/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
                 }
 
+                # VC++ 2013 (v12.0): required for Exchange 2016 CU23, 2019 and SE
                 if ( -not (Get-VCRuntime -version '12.0') -and $State["VCRedist2013"] ) {
-                    Install-MyPackage "" "Visual C++ 2013 Redistributable" "vcredist_x64_2013.exe" "https://download.visualstudio.microsoft.com/download/pr/10912041/cee5d6bca2ddbcd039da727bf4acb48a/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
+                    # Stable Microsoft CDN URL for VC++ 2013 Update 5 x64 (KB3138367)
+                    Install-MyPackage "" "Visual C++ 2013 Redistributable" "vcredist_x64_2013.exe" "https://download.microsoft.com/download/0/5/6/056dcda9-d667-4e27-8001-8a0c6971d6b1/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
                 }
 
                 # URL Rewrite module
@@ -6476,6 +7039,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 if ( Get-Service MSExchangeFrontEndTransport -ErrorAction SilentlyContinue) {
                     Write-MyOutput "Configuring MSExchangeFrontEndTransport startup to Manual"
                     Set-Service MSExchangeFrontEndTransport -StartupType Manual
+                }
+                # Dismount ISO after Exchange setup — no longer needed for phases 5+
+                if ($State['SourceImage']) {
+                    Dismount-DiskImage -ImagePath $State['SourceImage'] | Out-Null
+                    Write-MyVerbose ('Exchange setup complete — dismounted ISO: {0}' -f $State['SourceImage'])
                 }
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
@@ -6565,7 +7133,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
                     switch ( $State['ExSetupVersion']) {
                         $EXSESETUPEXE_RTM {
-                            Install-MyPackage 'KB5074992' 'Security Update For Exchange Server SE RTM Feb26SU' 'ExchangeSE-KB5074992-x64-en.exe' 'https://download.microsoft.com/download/f/0/3/f03a5dab-40cd-44c4-97d4-2cee29064561/ExchangeSE-KB5074992-x64-en.exe' ('/passive')
+                            # Download page: https://www.microsoft.com/en-us/download/details.aspx?id=108556
+                            Install-MyPackage 'KB5074992' 'Security Update For Exchange Server SE RTM Feb26SU' 'ExchangeSubscriptionEdition-KB5074992-x64-en.cab' '' ('/passive /norestart') -ContinueOnError
                         }
                         $EX2019SETUPEXE_CU14 {
                             Install-MyPackage 'KB5049233' 'Security Update For Exchange Server 2019 CU14 SU3 V2' 'Exchange2019-KB5049233-x64-en.exe' 'https://download.microsoft.com/download/8/0/b/80b356e4-f7b1-4e11-9586-d3132a7a2fc3/Exchange2019-KB5049233-x64-en.exe' ('/passive')
@@ -6626,20 +7195,35 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     Set-Service MSExchangeFrontEndTransport -StartupType Automatic
                 }
 
-                Enable-MSExchangeAutodiscoverAppPool
+                $null = Enable-MSExchangeAutodiscoverAppPool
+
+                # Load Exchange PS module once for all Phase 6 operations
+                if (-not $State['InstallEdge']) {
+                    Import-ExchangeModule
+                }
+
+                # Install antispam agents (Mailbox role only)
+                if ($State['InstallMailbox'] -and -not $State['InstallEdge']) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Antispam agents' -PercentComplete 8
+                    Install-AntispamAgents
+                }
 
                 # Set Virtual Directory URLs
                 if ($State['Namespace'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Virtual Directory URLs' -PercentComplete 15
-                    Import-ExchangeModule
                     Set-VirtualDirectoryURLs
                 }
 
                 # Join Database Availability Group
                 if ($State['DAGName']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Joining DAG' -PercentComplete 30
-                    Import-ExchangeModule
                     Join-DAG
+                }
+
+                # Add server to existing Send Connectors
+                if (-not $State['InstallEdge']) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Send Connectors' -PercentComplete 35
+                    Add-ServerToSendConnectors
                 }
 
                 # Server Manager stays disabled permanently on Exchange servers (set machine-wide in Phase 5)
@@ -6693,20 +7277,16 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 # Anonymous relay connector
                 if (($State['RelaySubnets'] -or $State['ExternalRelaySubnets']) -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Anonymous relay connector' -PercentComplete 74
-                    Import-ExchangeModule
                     New-AnonymousRelayConnector
                 }
 
                 # Exchange log cleanup scheduled task
-                if ($State['LogRetentionDays']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Log cleanup task' -PercentComplete 76
-                    Register-ExchangeLogCleanup
-                }
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Log cleanup task' -PercentComplete 76
+                Register-ExchangeLogCleanup
 
                 # RBAC role group membership report
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: RBAC report' -PercentComplete 75
-                    Import-ExchangeModule
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: RBAC report' -PercentComplete 78
                     Get-RBACReport
                 }
 
@@ -6719,7 +7299,6 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 # Installation Report
                 if (-not $State['SkipInstallReport'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Installation Report' -PercentComplete 92
-                    Import-ExchangeModule
                     New-InstallationReport
                 }
 

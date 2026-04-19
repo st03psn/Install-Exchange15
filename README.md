@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.4 (April 2026, last updated 2026-04-18)
+**Version:** 5.5 (April 2026, last updated 2026-04-19)
 **License:** As-Is, without warranty
 
 ---
@@ -148,13 +148,13 @@ The script runs through 7 phases (0–6) and saves state in an XML file to
 automatically resume after reboots:
 
 ```
-Phase 0 → Preflight checks, AD preparation, pre-flight HTML report
-Phase 1 → Windows features, .NET Framework, Windows Updates (optional)
-Phase 2 → Visual C++ Redistributables, URL Rewrite, other prerequisites
-Phase 3 → Hotfixes, additional packages
+Phase 0 → Preflight checks, pre-flight HTML report
+Phase 1 → Windows features, Windows Updates (optional)
+Phase 2 → .NET Framework 4.8/4.8.1, OS hotfixes, Visual C++ Runtimes, URL Rewrite
+Phase 3 → UCMA Runtime, Active Directory preparation (PrepareAD/PrepareSchema), AD replication check
 Phase 4 → Run Exchange Setup
-Phase 5 → Post-configuration (security hardening, performance tuning, Exchange SU)
-Phase 6 → Start services, IIS health check, DAG join, HealthChecker, cleanup
+Phase 5 → Post-configuration (security hardening, performance tuning, certificate import, Exchange SU)
+Phase 6 → Start services, IIS health check, Virtual Directory URLs, DAG join, HealthChecker, Installation Report, cleanup
 ```
 
 Recipient Management / Management Tools modes use phases 0–2 only.
@@ -203,7 +203,20 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
-### v5.4 — April 2026 (latest: 2026-04-18)
+### v5.5 — April 2026 (latest: 2026-04-19)
+
+- **Anti-spam agents** (`Install-AntispamAgents`) — runs `Install-AntispamAgents.ps1`, restarts transport, disables all agents except RecipientFilter Agent (Phase 6)
+- **Send Connector integration** (`Add-ServerToSendConnectors`) — interactive prompt `[Y/N]` to add the new server to existing Send Connectors (Phase 6)
+- **Log cleanup script** — interactive prompt for script folder (default `C:\#service`, 2-min timeout); generated script logs to `logs\` subfolder and cleans its own logs older than 30 days; covers IIS, Exchange transport, and Monitoring logs
+- **Relay connector hardening** — relay connectors now use `-AuthMechanism Tls` (STARTTLS offered) and `-ProtocolLoggingLevel Verbose`
+- **Certificate wildcard detection** — `Import-ExchangeCertificateFromPFX` detects wildcard vs. non-wildcard certs; non-wildcard certs additionally enable IMAP and POP services
+- **Bugfix** — ISO was only remounted for phases 1–3 and dismounted at end of Phase 4; path is now consistent
+- **Bugfix** — `Test-Preflight`: heavy checks (setup path, AD, FFL, roles) now correctly skipped for Phase ≥ 5
+- **Bugfix** — `Set-VirtualDirectoryURLs`: MAPI `-InternalAuthenticationMethods` wrapped in separate `try/catch` (not all builds support it); OWA now sets `-LogonFormat UPN`
+- **Bugfix** — `Get-RBACReport`: format string crash fixed (catch block uses string interpolation instead of `-f` operator)
+- **Bugfix** — `Import-ExchangeModule`: no longer emits WARNING when module is already loaded; uses `Get-ExchangeServer` instead of `Connect-ExchangeServer`; Phase 6 loads module only once
+
+### v5.4 — April 2026 (2026-04-18)
 
 - **Installation Report** (`New-InstallationReport`) — comprehensive HTML report generated automatically at the end of Phase 6; 6 sections: Installation Parameters, System Information, Active Directory, Exchange Configuration (virtual directory URLs, mailbox databases, receive connectors, certificates), Security Settings, Performance & Tuning; status badges (green/orange/red) for every setting; sidebar navigation; print-friendly CSS
 - **PDF export** — automatic via Microsoft Edge headless (`--print-to-pdf`) when Edge is installed on the server; graceful fallback message if not found
