@@ -11,7 +11,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 5.66, April 20, 2026
+    Version 5.74, April 21, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -1179,7 +1179,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.70'
+    $ScriptVersion = '5.74'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -3556,8 +3556,15 @@ Write-Log 'Exchange log cleanup finished'
         if (-not $existingAgents) {
             Write-MyOutput 'Installing Exchange antispam agents'
             try {
-                $savedWP = $WarningPreference; $WarningPreference = 'SilentlyContinue'
+                # $PSDefaultParameterValues['*:WarningAction'] has higher precedence than $WarningPreference
+                # and overrides any internal $WarningPreference reset inside Install-AntispamAgents.ps1
+                $savedWP  = $WarningPreference;  $WarningPreference = 'Ignore'
+                $waKey    = '*:WarningAction'
+                $savedWA  = $PSDefaultParameterValues[$waKey]
+                $PSDefaultParameterValues[$waKey] = 'Ignore'
                 & $installScript *>&1 | Out-Null
+                $PSDefaultParameterValues[$waKey] = $savedWA
+                if ($null -eq $savedWA) { $null = $PSDefaultParameterValues.Remove($waKey) }
                 $WarningPreference = $savedWP
                 Write-MyVerbose 'Restarting MSExchangeTransport after antispam agent install'
                 Restart-Service MSExchangeTransport -Force -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
@@ -3573,16 +3580,14 @@ Write-Log 'Exchange log cleanup finished'
         }
 
         # Configure agents: only Recipient Filter enabled, all others disabled
-        # $WarningPreference suppresses implicit-remoting warnings that bypass -WarningAction
         $needsTransportRestart = $false
-        $savedWP = $WarningPreference; $WarningPreference = 'SilentlyContinue'
         $allAgents = Get-TransportAgent -ErrorAction SilentlyContinue |
                      Where-Object { $_.Identity -like '*Filter*' -or $_.Identity -like '*Antispam*' -or $_.Identity -like '*Reputation*' }
         foreach ($agent in $allAgents) {
             $isRecipientFilter = $agent.Identity -like '*Recipient Filter*'
             if ($isRecipientFilter) {
                 if (-not $agent.Enabled) {
-                    $null = Enable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                    Enable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction Ignore -ErrorAction SilentlyContinue *>&1 | Out-Null
                     Write-MyOutput ('Enabled: {0}' -f $agent.Identity)
                     $needsTransportRestart = $true
                 }
@@ -3592,7 +3597,7 @@ Write-Log 'Exchange log cleanup finished'
             }
             else {
                 if ($agent.Enabled) {
-                    $null = Disable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                    Disable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction Ignore -ErrorAction SilentlyContinue *>&1 | Out-Null
                     Write-MyOutput ('Disabled: {0}' -f $agent.Identity)
                     $needsTransportRestart = $true
                 }
@@ -3601,7 +3606,6 @@ Write-Log 'Exchange log cleanup finished'
                 }
             }
         }
-        $WarningPreference = $savedWP
         if ($needsTransportRestart) {
             Write-MyVerbose 'Restarting MSExchangeTransport after agent configuration change'
             Restart-Service MSExchangeTransport -Force -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
@@ -4134,6 +4138,7 @@ Write-Log 'Exchange log cleanup finished'
                 Push-Location $State['ReportsPath']
                 $hcBefore = [datetime]::Now
                 & $hcPath -OutputFilePath $State['ReportsPath'] -SkipVersionCheck *>&1 | Out-Null
+                & $hcPath -BuildHtmlServersReport -SkipVersionCheck *>&1 | Out-Null
                 Pop-Location
                 $hcReport = Get-ChildItem -Path $State['ReportsPath'] -ErrorAction SilentlyContinue |
                     Where-Object { $_.LastWriteTime -ge $hcBefore -and $_.Extension -match '\.html?' -and $_.Name -match '^(ExchangeAllServersReport|HealthChecker)' } |
@@ -4144,6 +4149,7 @@ Write-Log 'Exchange log cleanup finished'
                 } else {
                     Write-MyOutput ('HealthChecker completed — report in {0}' -f $State['ReportsPath'])
                 }
+                Write-MyOutput 'NOTE: HealthChecker "Exchange Server Membership" may show blank/failed results in this run — the current process token was created before Exchange setup added the computer account to "Exchange Servers". Re-run HealthChecker after the next reboot for accurate membership results.'
             }
             catch {
                 Pop-Location -ErrorAction SilentlyContinue
@@ -4902,6 +4908,17 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 }
 '@
 
+        # ── 9. HEALTHCHECKER ──────────────────────────────────────────────────────
+        $hcContent = if ($State['SkipHealthCheck']) {
+            '<p style="color:#666;font-size:13px;">HealthChecker was skipped (<code>-SkipHealthCheck</code> specified).</p>'
+        } elseif ($State['HCReportPath'] -and (Test-Path $State['HCReportPath'])) {
+            $hcRelPath = Split-Path $State['HCReportPath'] -Leaf
+            ('<p style="font-size:13px;margin-bottom:12px;">Report: <a href="{0}" target="_blank">{0}</a></p>' +
+             '<iframe src="{0}" style="width:100%;height:820px;border:1px solid #e1dfdd;border-radius:4px;" title="HealthChecker Report"></iframe>') -f $hcRelPath
+        } else {
+            '<p style="color:#d83b01;font-size:13px;">HealthChecker report not found — HC may have failed to run. Check the installation log for details.</p>'
+        }
+
         $sections = @(
             (New-HtmlSection 'params'       'Installation Parameters'   ('<table class="data-table">{0}</table>' -f ($instRows -join '')))
             (New-HtmlSection 'system'       'System Information'        $sysContent)
@@ -4911,6 +4928,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             (New-HtmlSection 'performance'  'Performance &amp; Tuning'  $perfContent)
             (New-HtmlSection 'rbac'         'RBAC Role Group Membership' $rbacContent)
             (New-HtmlSection 'installlog'   'Installation Log'          $logContent)
+            (New-HtmlSection 'healthchecker' 'HealthChecker'            $hcContent)
         )
 
         $toc = @(
@@ -4923,6 +4941,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             '<a href="#performance">Performance &amp; Tuning</a>'
             '<a href="#rbac">RBAC Role Groups</a>'
             '<a href="#installlog">Installation Log</a>'
+            '<a href="#healthchecker">HealthChecker</a>'
         )
 
         $html = @"
@@ -5740,7 +5759,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
                         # Interactive countdown — user has 5 min to place the file, then ENTER to install.
                         # Autopilot / non-interactive: skip silently (no file available, no reboot loop).
-                        if ([Environment]::UserInteractive -and -not $State['Autopilot']) {
+                        if ([Environment]::UserInteractive -and -not $State['ConfigDriven']) {
                             Write-MyOutput 'Place the installer and press ENTER to continue, or wait 5 min to skip:'
                             $suTotalSecs = 300
                             $suDeadline  = [DateTime]::Now.AddSeconds($suTotalSecs)
@@ -8200,13 +8219,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     Enable-CBC
                 }
                 if ( $State["EnableAMSI"]) {
-                    # AMSI body scanning is enabled by default in Exchange SE (released post-Aug 2025 SU).
-                    # Applying the SettingOverride on SE would be redundant and may conflict.
-                    if ([System.Version]$State['ExSetupVersion'] -ge [System.Version]$EXSESETUPEXE_RTM) {
-                        Write-MyVerbose 'AMSI body scanning is enabled by default in Exchange SE — skipping SettingOverride'
-                    } else {
-                        Enable-AMSI
-                    }
+                    # HealthChecker always checks for the SettingOverride (Get-SettingOverride on
+                    # AmsiRequestBodyScanning), regardless of Exchange version defaults.
+                    # Apply the override for all versions so HC reports the correct state.
+                    Enable-AMSI
                 }
 
                 if ( $State["InstallMailbox"] ) {

@@ -4,6 +4,33 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.74 (2026-04-21)
+
+- `Enable-AMSI`: removed Exchange SE exception — HealthChecker always checks for the `AmsiRequestBodyScanning` SettingOverride regardless of version defaults; SettingOverride is now applied for all Exchange versions when `-EnableAMSI` is used
+- `Invoke-HealthChecker`: added NOTE output after HC run explaining that "Exchange Server Membership" may show blank/failed results in the same-session run due to Kerberos token not yet including the new "Exchange Servers" group membership — accurate after next reboot
+
+---
+
+## v5.73 (2026-04-21)
+
+- `Install-AntispamAgents`: replace `$WarningPreference = 'SilentlyContinue'` with `$PSDefaultParameterValues['*:WarningAction'] = 'Ignore'` for the install-script call — this has higher precedence than `$WarningPreference` and cannot be overridden by the called script's own preference reset; also upgrade to `'Ignore'`
+- `Install-AntispamAgents`: `Enable/Disable-TransportAgent` calls changed from `$null = ...` (Stream 1 only) to `*>&1 | Out-Null` with `-WarningAction Ignore` — properly suppresses Stream 3 warnings
+
+---
+
+## v5.72 (2026-04-20)
+
+- `Invoke-HealthChecker`: added `-BuildHtmlServersReport` call after data collection so `ExchangeAllServersReport-*.html` is generated in `ReportsPath`
+- `New-InstallationReport`: HealthChecker section re-added (iframe + direct link to HC HTML; shows "skipped" or "not found" messages when appropriate); TOC entry added
+
+---
+
+## v5.71 (2026-04-20)
+
+- `Install-ExchangeSecurityUpdate`: SU file-placement countdown now checks `ConfigDriven` instead of `Autopilot`; countdown was incorrectly skipped when the auto-reboot toggle was on in an interactive (Copilot) session — user is present and needs to place the EXE
+
+---
+
 ## v5.70 (2026-04-20)
 
 Broken / stale link fixes in README.md and `New-InstallationReport` HTML output:

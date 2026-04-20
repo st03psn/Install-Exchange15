@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.66 (April 2026, last updated 2026-04-20)
+**Version:** 5.74 (April 2026, last updated 2026-04-21)
 **License:** As-Is, without warranty
 
 ---
@@ -224,6 +224,20 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.74 — April 2026
+- **AMSI body scanning** — Exchange SE exception removed; HealthChecker always checks for the `AmsiRequestBodyScanning` SettingOverride, so the override is now applied for all Exchange versions when `-EnableAMSI` is used
+- **HealthChecker server membership note** — post-run note explains why "Exchange Server Membership" may show blank/failed in the same-session run (Kerberos token refresh requires reboot)
+
+### v5.73 — April 2026
+- **Antispam agent warnings** — `$PSDefaultParameterValues['*:WarningAction'] = 'Ignore'` applied before `Install-AntispamAgents.ps1` to defeat internal `$WarningPreference` resets; `Enable/Disable-TransportAgent` calls switched from `$null =` (Stream 1 only) to `*>&1 | Out-Null` with `-WarningAction Ignore`
+
+### v5.72 — April 2026
+- **HealthChecker HTML report** — `Invoke-HealthChecker` now calls `-BuildHtmlServersReport` after data collection so `ExchangeAllServersReport-*.html` is generated in `ReportsPath`
+- **Installation report** — HealthChecker section re-added (Section 9) with iframe embed, direct link, and "skipped/not found" fallback messages; TOC entry added
+
+### v5.71 — April 2026
+- **SU install countdown** — checks `ConfigDriven` flag instead of `Autopilot`; countdown was incorrectly skipped in interactive (Copilot) sessions with auto-reboot enabled
 
 ### v5.70 — April 2026
 - **Link fixes** — 6 broken/wrong-content URLs corrected in README and installation report: Extended Protection (404), SSL Offloading (404), 2022 H1 CU blog (wrong ba-p), TLS 1.2 Part 2 (wrong ba-p), TLS 1.3 (wrong ba-p), IPv6 (wrong ba-p); `docs.microsoft.com` → `learn.microsoft.com`
