@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.6 (April 2026, last updated 2026-04-19)
+**Version:** 5.61 (April 2026, last updated 2026-04-20)
 **License:** As-Is, without warranty
 
 ---
@@ -47,11 +47,11 @@ If a `config.psd1` file is found in the same folder as the script or `.exe`, you
 ### Command-line / unattended
 
 ```powershell
-# Install Mailbox role — interactive (prompts for credentials if -AutoPilot)
+# Install Mailbox role — interactive (Copilot mode)
 .\Install-Exchange15.ps1 -SourcePath D:\Exchange
 
-# Fully unattended with AutoPilot (automatic reboots through all phases)
-.\Install-Exchange15.ps1 -SourcePath D:\Exchange -AutoPilot
+# Fully unattended with Autopilot (automatic reboots through all phases)
+.\Install-Exchange15.ps1 -SourcePath D:\Exchange -Autopilot
 
 # Load all parameters from a .psd1 config file (skips interactive menu)
 .\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1
@@ -69,7 +69,7 @@ If a `config.psd1` file is found in the same folder as the script or `.exe`, you
 .\Install-Exchange15.ps1 -SourcePath D:\Exchange -PreflightOnly
 
 # Swing migration: copy config from source server, import PFX, join DAG
-.\Install-Exchange15.ps1 -SourcePath D:\Exchange -AutoPilot `
+.\Install-Exchange15.ps1 -SourcePath D:\Exchange -Autopilot `
     -CopyServerConfig EX01 -CertificatePath D:\certs\mail.pfx -DAGName DAG01
 
 # Install Recipient Management Tools on an admin workstation
@@ -102,7 +102,7 @@ Use `Build.ps1` to compile the script into a self-contained Windows executable v
 | `-SourcePath` | Path to Exchange setup files or ISO |
 | `-TargetPath` | Target folder for Exchange binaries (default: `C:\Program Files\Microsoft\Exchange Server\V15`) |
 | `-InstallPath` | Working directory for state file, logs, and downloaded packages (default: `C:\Install`) |
-| `-AutoPilot` | Fully unattended mode — reboots and resumes automatically |
+| `-Autopilot` | Fully unattended mode — reboots and resumes automatically |
 | `-Credentials` | Credentials for AutoPilot (prompted interactively if omitted) |
 | `-Organization` | Exchange organization name (required for new deployments) |
 | `-MDBName` | Name of the first mailbox database |
@@ -202,6 +202,16 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.61 — April 2026 (2026-04-20) — Bugfixes
+
+- **Virtual directory `-Force` removed** — `@forceParam` removed from all six `Set-*VirtualDirectory` calls; OWA's `-Force` was ambiguous (matched `ForceSave*`/`ForceWac*` parameters) causing `ParameterBindingException` in Autopilot mode; all cmdlets now use `-Confirm:$false` only
+- **External relay placeholder text** — warning message corrected to show `192.0.2.2/32` (was incorrectly showing `192.0.2.1/32`, the internal connector's address)
+- **`Add-ADPermission` warning suppressed** — "access control entry already present" warning no longer shown when re-running Phase 6 on an existing external relay connector
+- **Log cleanup prompt hang fixed** — when RawUI is unavailable, default folder is now accepted silently instead of blocking on `Read-Host`; prevented indefinite hang after 2-minute countdown
+- **Countdown progress bars** — all timed prompts now show a `Write-Progress` countdown bar (Id 2): log cleanup folder (2 min), Windows Update per-update prompt (2 min), Autopilot resume (10 s), reboot countdown (10 s)
+- **Installation report `if` syntax** — `-f (if ...)` caused `CommandNotFoundException` for `if` in PS 5.1; replaced with intermediate variable
+- **HealthChecker report detection** — updated to match current HC output filename pattern (`ExchangeAllServersReport-*.html`); detected path stored in `$State['HCReportPath']` for reliable embedding in the Installation Report
 
 ### v5.6 — April 2026 (latest: 2026-04-19)
 
@@ -320,7 +330,7 @@ Code quality and robustness improvements; no new parameters.
 - Log file: `<InstallPath>\reports\<ComputerName>_Install-Exchange15_<timestamp>.log` — always verbose; `[INFO]`, `[WARNING]`, `[ERROR]`, `[VERBOSE]` entries
 - Installation report: `<InstallPath>\reports\<ComputerName>_InstallationReport_<timestamp>.html` (+ `.pdf` if Edge available)
 - All reports (Preflight, Installation, RBAC, HealthChecker) written to `<InstallPath>\reports\`
-- With `-AutoPilot`: AutoLogon is temporarily enabled and removed after next login
+- With `-Autopilot`: AutoLogon is temporarily enabled and removed after next login
 - All downloads use BITS with `Invoke-WebDownload` fallback (PS 5.1-compatible, handles certificate bypass)
 - Pester tests (54 total): `Invoke-Pester .\Install-Exchange15.Tests.ps1 -Output Detailed` (requires Pester 5.x)
 

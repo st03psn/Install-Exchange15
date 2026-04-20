@@ -538,6 +538,24 @@
             - Reconnect-ExchangeSession: new helper reconnects Exchange implicit-remoting PS session
               after W3SVC restarts caused by Enable-ECC/CBC/AMSI; waits up to 90s for endpoint;
               called before Invoke-ExchangeOptimizations when any of ECC/CBC/AMSI were enabled
+    5.61    Bugfixes (2026-04-20):
+            - Set-VirtualDirectoryURLs: @forceParam removed from all six Set-*VirtualDirectory
+              cmdlets; OWA -Force was ambiguous (matched ForceSave*/ForceWac* parameters) and
+              threw ParameterBindingException; all cmdlets now use -Confirm:$false only
+            - New-AnonymousRelayConnector: external relay placeholder warning corrected —
+              192.0.2.1/32 → 192.0.2.2/32 (internal and external use different RFC 5737 addresses)
+            - New-AnonymousRelayConnector: Add-ADPermission -WarningAction SilentlyContinue added;
+              "access control entry already present" warning suppressed on re-run
+            - Register-ExchangeLogCleanup: RawUI unavailable catch block simplified — default
+              folder now accepted silently instead of blocking Read-Host fallback
+            - Countdown progress bars (Write-Progress -Id 2) added to all timed prompts:
+              log cleanup folder (2 min auto-accept), Windows Update per-update (2 min auto-No),
+              Autopilot resume (10 s), reboot countdown (10 s)
+            - New-InstallationReport: '-f (if ...)' expression caused CommandNotFoundException
+              for 'if' in PS 5.1; replaced with intermediate variable
+            - Invoke-HealthChecker / New-InstallationReport: HC report detection updated to
+              match current filename (ExchangeAllServersReport-*.html, was HealthChecker*.html);
+              detected path stored in $State['HCReportPath'] for reliable report embedding
     5.6     Report improvements and relay connector enhancements (2026-04-19):
             - New-InstallationReport: RBAC Role Group Membership section added (10 groups, queried
               live via Get-RoleGroupMember; members shown with RecipientType)
@@ -1069,7 +1087,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.6'
+    $ScriptVersion = '5.61'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -3228,8 +3246,13 @@ $($htmlRows -join "`n")
             $inputBuffer = ''
             try {
                 try { $host.UI.RawUI.FlushInputBuffer() } catch { }
-                $deadline = [DateTime]::Now.AddSeconds(120)
+                $totalSecs = 120
+                $deadline = [DateTime]::Now.AddSeconds($totalSecs)
                 while ([DateTime]::Now -lt $deadline) {
+                    $secsLeft = [int]($deadline - [DateTime]::Now).TotalSeconds
+                    Write-Progress -Id 2 -Activity 'Log cleanup folder' `
+                        -Status ('Auto-accept in {0}s  |  ENTER = accept  |  S = skip' -f $secsLeft) `
+                        -PercentComplete (($totalSecs - $secsLeft) * 100 / $totalSecs)
                     if ($host.UI.RawUI.KeyAvailable) {
                         $key = $host.UI.RawUI.ReadKey('IncludeKeyDown,NoEcho')
                         if ($key.VirtualKeyCode -eq 13) {           # Enter
@@ -3254,6 +3277,7 @@ $($htmlRows -join "`n")
                     }
                     Start-Sleep -Milliseconds 100
                 }
+                Write-Progress -Id 2 -Activity 'Log cleanup folder' -Completed
                 if ($inputBuffer.Trim().ToUpper() -eq 'S') {
                     Write-MyVerbose 'Log cleanup task registration skipped by user'
                     return
@@ -3261,13 +3285,8 @@ $($htmlRows -join "`n")
                 if ($inputBuffer.Trim() -ne '') { $scriptFolder = $inputBuffer.Trim() }
             }
             catch {
-                # Console not available (RDP/Hyper-V terminal/PS2Exe) — fall back to Read-Host without timeout
-                try {
-                    $userInput = (Read-Host).Trim()
-                    if ($userInput.ToUpper() -eq 'S') { Write-MyVerbose 'Log cleanup task registration skipped by user'; return }
-                    if ($userInput -ne '') { $scriptFolder = $userInput }
-                }
-                catch { }
+                # Console does not support RawUI — accept default silently (non-interactive environment)
+                Write-MyVerbose ('Log cleanup folder auto-accepted (no interactive console): {0}' -f $scriptFolder)
             }
         }
 
@@ -3535,7 +3554,7 @@ Write-Log 'Exchange log cleanup finished'
             $extName = ('Anonymous External Relay - {0}' -f $server)
             Write-MyWarning 'SECURITY: External relay connector allows anonymous relay to ANY recipient.'
             if ($externalIsPlaceholder) {
-                Write-MyWarning 'External relay connector: no subnets specified — using placeholder IP (192.0.2.1/32, RFC 5737).'
+                Write-MyWarning 'External relay connector: no subnets specified — using placeholder IP (192.0.2.2/32, RFC 5737).'
                 Write-MyWarning 'No real SMTP traffic will match this connector until you set RemoteIPRanges to your actual relay sources.'
             }
             Write-MyWarning ('         External relay subnets: {0}' -f ($State['ExternalRelaySubnets'] -join ', '))
@@ -3559,7 +3578,7 @@ Write-Log 'Exchange log cleanup finished'
                 }
                 Get-ReceiveConnector -Identity "$server\$extName" |
                     Add-ADPermission -User $anonLogon `
-                        -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop | Out-Null
+                        -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
                 Write-MyOutput ('External relay connector created with Ms-Exch-SMTP-Accept-Any-Recipient for {0}' -f $anonLogon)
             }
             catch {
@@ -3730,8 +3749,6 @@ Write-Log 'Exchange log cleanup finished'
         $server = $env:COMPUTERNAME
         $errors = 0
         $changed = 0
-        $forceParam = if ($State['Autopilot']) { @{ Force = $true } } else { @{} }
-
         Write-MyOutput ('Configuring Virtual Directory URLs for namespace: {0}' -f $ns)
 
         # Helper: compare a vdir URL property (Uri object or string) to a target string
@@ -3751,7 +3768,7 @@ Write-Log 'Exchange log cleanup finished'
                 Set-OwaVirtualDirectory -Identity "$server\owa (Default Web Site)" `
                     -InternalUrl "https://$ns/owa" -ExternalUrl "https://$ns/owa" `
                     -LogonFormat PrincipalName -DefaultDomain '' `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'OWA virtual directory configured (UPN logon)'
                 $changed++
             }
@@ -3766,7 +3783,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-EcpVirtualDirectory -Identity "$server\ecp (Default Web Site)" `
                     -InternalUrl "https://$ns/ecp" -ExternalUrl "https://$ns/ecp" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'ECP virtual directory configured'
                 $changed++
             }
@@ -3781,7 +3798,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-WebServicesVirtualDirectory -Identity "$server\EWS (Default Web Site)" `
                     -InternalUrl "https://$ns/EWS/Exchange.asmx" -ExternalUrl "https://$ns/EWS/Exchange.asmx" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'EWS virtual directory configured'
                 $changed++
             }
@@ -3796,7 +3813,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-OabVirtualDirectory -Identity "$server\OAB (Default Web Site)" `
                     -InternalUrl "https://$ns/OAB" -ExternalUrl "https://$ns/OAB" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'OAB virtual directory configured'
                 $changed++
             }
@@ -3811,7 +3828,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-ActiveSyncVirtualDirectory -Identity "$server\Microsoft-Server-ActiveSync (Default Web Site)" `
                     -InternalUrl "https://$ns/Microsoft-Server-ActiveSync" -ExternalUrl "https://$ns/Microsoft-Server-ActiveSync" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'ActiveSync virtual directory configured'
                 $changed++
             }
@@ -3826,7 +3843,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
                     -InternalUrl "https://$ns/mapi" -ExternalUrl "https://$ns/mapi" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
                 Write-MyVerbose 'MAPI virtual directory URL configured'
                 $changed++
             }
@@ -3949,12 +3966,14 @@ Write-Log 'Exchange log cleanup finished'
         if (Test-Path $hcPath) {
             try {
                 # HC has its own log; suppress all console output to keep the install log clean.
-                # Pass a file name prefix (not a directory) so HC writes to ReportsPath correctly.
+                $hcBefore = [datetime]::Now
                 & $hcPath -OutputFilePath $State['ReportsPath'] -SkipVersionCheck *>&1 | Out-Null
-                # Find the report file HealthChecker just created
-                $hcReport = Get-ChildItem -Path $State['ReportsPath'] -Filter 'HealthChecker*.htm*' -ErrorAction SilentlyContinue |
+                # HC (current releases) writes ExchangeAllServersReport-*.html; older versions used HealthChecker*.html
+                $hcReport = Get-ChildItem -Path $State['ReportsPath'] -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -ge $hcBefore -and $_.Extension -match '\.html?' -and $_.Name -match '^(ExchangeAllServersReport|HealthChecker)' } |
                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
                 if ($hcReport) {
+                    $State['HCReportPath'] = $hcReport.FullName
                     Write-MyOutput ('HealthChecker report saved to {0}' -f $hcReport.FullName)
                 } else {
                     Write-MyOutput ('HealthChecker completed — report in {0}' -f $State['ReportsPath'])
@@ -4046,7 +4065,8 @@ Write-Log 'Exchange log cleanup finished'
         if ($State['CertificatePath'])  { $instRows.Add('<tr><td>Certificate Path</td><td>{0}</td></tr>' -f $State['CertificatePath']) }
         if ($State['CopyServerConfig']) { $instRows.Add('<tr><td>Source Server Config</td><td>{0}</td></tr>' -f $State['CopyServerConfig']) }
         if ($State['LogRetentionDays']) { $instRows.Add('<tr><td>Log Retention</td><td>{0} days</td></tr>' -f $State['LogRetentionDays']) }
-        $instRows.Add('<tr><td>Mode</td><td>{0}</td></tr>' -f (if ($State['Autopilot']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }))
+        $modeText = if ($State['Autopilot']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
+        $instRows.Add('<tr><td>Mode</td><td>{0}</td></tr>' -f $modeText)
         $instRows.Add('<tr><td>TLS 1.2 Enforced</td><td>{0}</td></tr>' -f $State['EnableTLS12'])
         $instRows.Add('<tr><td>TLS 1.3 Enforced</td><td>{0}</td></tr>' -f $State['EnableTLS13'])
         $instRows.Add('<tr><td>SSL 3 Disabled</td><td>{0}</td></tr>' -f $State['DisableSSL3'])
@@ -4338,11 +4358,20 @@ Write-Log 'Exchange log cleanup finished'
         $perfContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th></tr>{0}</table>' -f ($perfRows -join '')
 
         # ── 7. HEALTHCHECKER RESULTS ──────────────────────────────────────────
-        $hcReport = Get-ChildItem -Path $State['ReportsPath'] -Filter 'HealthChecker*.htm*' -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        $hcContent = if ($hcReport) {
-            $hcRelPath = $hcReport.Name
-            '<p style="margin-bottom:12px">HealthChecker report: <a href="{0}" target="_blank"><code>{1}</code></a></p><iframe src="{0}" style="width:100%;height:700px;border:1px solid #e1dfdd;border-radius:4px" title="HealthChecker Report"></iframe>' -f $hcRelPath, $hcReport.FullName
+        # Prefer path stored by Invoke-HealthChecker; fall back to broad search for both
+        # naming conventions (ExchangeAllServersReport-* in newer HC, HealthChecker* in older).
+        $hcReportFile = $null
+        if ($State['HCReportPath'] -and (Test-Path $State['HCReportPath'])) {
+            $hcReportFile = Get-Item $State['HCReportPath'] -ErrorAction SilentlyContinue
+        }
+        if (-not $hcReportFile) {
+            $hcReportFile = Get-ChildItem -Path $State['ReportsPath'] -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -match '\.html?' -and $_.Name -match '^(ExchangeAllServersReport|HealthChecker)' } |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        }
+        $hcContent = if ($hcReportFile) {
+            $hcRelPath = $hcReportFile.Name
+            '<p style="margin-bottom:12px">HealthChecker report: <a href="{0}" target="_blank"><code>{1}</code></a></p><iframe src="{0}" style="width:100%;height:700px;border:1px solid #e1dfdd;border-radius:4px" title="HealthChecker Report"></iframe>' -f $hcRelPath, $hcReportFile.FullName
         } elseif ($State['SkipHealthCheck']) {
             '<p style="color:#8a8886"><em>HealthChecker was skipped (-SkipHealthCheck). Re-run Phase 6 without -SkipHealthCheck or run HealthChecker.ps1 manually from <code>{0}</code>.</em></p>' -f $State['ReportsPath']
         } else {
@@ -4984,6 +5013,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
                 Write-Host ('  Install? [Y/N/A=all/S=skip] (auto-No in {0}s) ' -f $WU_PROMPT_TIMEOUT_SEC) -NoNewline -ForegroundColor DarkCyan
                 while ($sw.Elapsed.TotalSeconds -lt $WU_PROMPT_TIMEOUT_SEC) {
+                    $secsLeft = [int]($WU_PROMPT_TIMEOUT_SEC - $sw.Elapsed.TotalSeconds)
+                    Write-Progress -Id 2 -Activity 'Windows Update' `
+                        -Status ('Auto-No in {0}s  |  Y = install  |  N = skip  |  A = all  |  S = skip remaining' -f $secsLeft) `
+                        -PercentComplete ($sw.Elapsed.TotalSeconds * 100 / $WU_PROMPT_TIMEOUT_SEC)
                     if ($host.UI.RawUI.KeyAvailable) {
                         $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
                         $ans = $key.Character.ToString().ToUpper()
@@ -4992,6 +5025,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     }
                     Start-Sleep -Milliseconds 200
                 }
+                Write-Progress -Id 2 -Activity 'Windows Update' -Completed
                 if ($ans -eq '') {
                     Write-Host 'N (timeout)'
                     $ans = 'N'
@@ -6924,7 +6958,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     if ( $Autopilot -and $State["InstallPhase"] -gt 1) {
         # Wait a little before proceeding
         Write-MyOutput "Will continue unattended installation of Exchange in $COUNTDOWN_TIMER seconds .."
-        Start-Sleep -Seconds $COUNTDOWN_TIMER
+        for ($i = $COUNTDOWN_TIMER; $i -gt 0; $i--) {
+            Write-Progress -Id 2 -Activity 'Autopilot resume' -Status ('Continuing in {0}s ...' -f $i) -PercentComplete (($COUNTDOWN_TIMER - $i) * 100 / $COUNTDOWN_TIMER)
+            Start-Sleep -Seconds 1
+        }
+        Write-Progress -Id 2 -Activity 'Autopilot resume' -Completed
     }
 
     # Generate Pre-Flight Report (only on first phase or PreflightOnly mode)
@@ -7552,7 +7590,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             Cleanup
         }
         Write-MyOutput "Rebooting in $COUNTDOWN_TIMER seconds .."
-        Start-Sleep -Seconds $COUNTDOWN_TIMER
+        for ($i = $COUNTDOWN_TIMER; $i -gt 0; $i--) {
+            Write-Progress -Id 2 -Activity 'Reboot' -Status ('Rebooting in {0}s ...' -f $i) -PercentComplete (($COUNTDOWN_TIMER - $i) * 100 / $COUNTDOWN_TIMER)
+            Start-Sleep -Seconds 1
+        }
+        Write-Progress -Id 2 -Activity 'Reboot' -Completed
         Restart-Computer -Force
     }
 
