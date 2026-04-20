@@ -171,13 +171,13 @@ The following best-practice configurations are automatically applied after Excha
 - **WDigest credential caching disabled** — prevents cleartext password storage in LSASS ([MS Learn](https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection))
 - **LAN Manager level 5** — NTLMv2 only, refuse LM and NTLM ([MS Learn](https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level))
 - **LSA Protection (RunAsPPL)** — enabled for Exchange 2019 CU12+ / Exchange SE; prevents credential theft from LSASS ([MS Learn](https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection))
-- **Serialized Data Signing** — mitigates PowerShell deserialization attacks ([Exchange Blog](https://techcommunity.microsoft.com/t5/exchange-team-blog/released-2022-h1-cumulative-updates-for-exchange-server/ba-p/3285209))
+- **Serialized Data Signing** — mitigates PowerShell deserialization attacks ([Exchange Blog](https://techcommunity.microsoft.com/blog/exchange/released-2022-h1-cumulative-updates-for-exchange-server/3285026))
 - **Credential Guard disabled** — causes performance issues on Exchange; default-on in WS2025 ([Exchange Virtualization](https://learn.microsoft.com/en-us/exchange/plan-and-deploy/virtualization))
-- **IPv4 over IPv6 preference** — `DisabledComponents = 0x20`; prefers IPv4, keeps IPv6 loopback (required by Exchange internal components) ([Exchange Blog](https://techcommunity.microsoft.com/t5/exchange-team-blog/microsoft-exchange-server-and-ipv6/ba-p/594506))
+- **IPv4 over IPv6 preference** — `DisabledComponents = 0x20`; prefers IPv4, keeps IPv6 loopback (required by Exchange internal components) ([Exchange Blog](https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/configure-ipv6-in-windows))
 - **NetBIOS over TCP/IP disabled** on all NICs — reduces LLMNR/NBT-NS attack surface; Exchange does not require NetBIOS ([MS Learn](https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/disable-netbios-tcp-ip-using-dhcp))
-- **HTTP/2 disabled** — prevents known Exchange MAPI/RPC issues ([Exchange Blog](https://techcommunity.microsoft.com/t5/exchange-team-blog/released-2022-h1-cumulative-updates-for-exchange-server/ba-p/3285209))
-- **Extended Protection** — CU14+/SE: validated via OWA VDir; pre-CU14: `ExchangeExtendedProtection.ps1` (CSS-Exchange) ([MS Learn](https://learn.microsoft.com/en-us/exchange/clients/outlook-anywhere/use-the-exchange-management-shell-to-enable-extended-protection-for-client-access-services))
-- **SSL offloading disabled** (Outlook Anywhere) — required for Extended Protection channel binding ([MS Learn](https://learn.microsoft.com/en-us/exchange/clients/outlook-anywhere/configure-ssl-offloading))
+- **HTTP/2 disabled** — prevents known Exchange MAPI/RPC issues ([Exchange Blog](https://techcommunity.microsoft.com/blog/exchange/released-2022-h1-cumulative-updates-for-exchange-server/3285026))
+- **Extended Protection** — CU14+/SE: validated via OWA VDir; pre-CU14: `ExchangeExtendedProtection.ps1` (CSS-Exchange) ([MS Learn](https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection))
+- **SSL offloading disabled** (Outlook Anywhere) — required for Extended Protection channel binding ([MS Learn](https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection))
 - **MRS Proxy disabled** (EWS VDir) — re-enable manually only for cross-forest migrations ([MS Learn](https://learn.microsoft.com/en-us/exchange/architecture/mailbox-servers/mrs-proxy-endpoint))
 - **MAPI encryption required** (Mailbox role) — forces encrypted Outlook MAPI connections ([MS Learn](https://learn.microsoft.com/en-us/exchange/clients/mapi-over-http/configure-mapi-over-http))
 - **Root certificate auto-update enabled** — required for Exchange Online / M365 hybrid connectivity; re-enables if disabled by policy ([MS Trusted Root](https://learn.microsoft.com/en-us/security/trusted-root/release-notes))
@@ -224,6 +224,9 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.70 — April 2026
+- **Link fixes** — 6 broken/wrong-content URLs corrected in README and installation report: Extended Protection (404), SSL Offloading (404), 2022 H1 CU blog (wrong ba-p), TLS 1.2 Part 2 (wrong ba-p), TLS 1.3 (wrong ba-p), IPv6 (wrong ba-p); `docs.microsoft.com` → `learn.microsoft.com`
 
 ### v5.69 — April 2026
 - **Mode label fixed** — `Mode: Copilot (interactive)` now shown correctly when starting via the interactive menu, even if the auto-reboot toggle is on; `Mode: Autopilot (fully automated)` is reserved for config-file (`-ConfigFile`) starts
@@ -395,7 +398,7 @@ Code quality and robustness improvements; no new parameters.
 
 ## References
 
-- [Exchange Server Build Numbers and Release Dates](https://docs.microsoft.com/en-us/exchange/new-features/build-numbers-and-release-dates)
-- [Exchange 2019 Prerequisites](https://docs.microsoft.com/en-us/exchange/plan-and-deploy/prerequisites)
+- [Exchange Server Build Numbers and Release Dates](https://learn.microsoft.com/en-us/exchange/new-features/build-numbers-and-release-dates)
+- [Exchange 2019 Prerequisites](https://learn.microsoft.com/en-us/exchange/plan-and-deploy/prerequisites)
 - [CSS-Exchange HealthChecker](https://github.com/microsoft/CSS-Exchange)
 - [eightwone.com Blog](http://eightwone.com)

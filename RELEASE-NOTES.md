@@ -4,6 +4,19 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.70 (2026-04-20)
+
+Broken / stale link fixes in README.md and `New-InstallationReport` HTML output:
+- Extended Protection URL (404) → `exchange-extended-protection` (MS Learn)
+- SSL Offloading URL (404) → same `exchange-extended-protection` page (topic merged)
+- 2022 H1 CU blog post `ba-p/3285209` (wrong content) → corrected `ba-p/3285026`
+- TLS 1.2 guide Part 2 `ba-p/607646` (wrong content) → corrected `ba-p/607761`
+- TLS 1.3 blog `ba-p/3777803` (wrong content) → `support.microsoft.com` KB article
+- IPv6 TechCommunity post `ba-p/594506` (wrong content) → MS Learn `configure-ipv6-in-windows`
+- `docs.microsoft.com` → `learn.microsoft.com` (redirect cleanup, README only)
+
+---
+
 ## v5.69 (2026-04-20)
 
 - `$State['ConfigDriven']` added to state: `$true` only when started via `-ConfigFile` (headless); `$false` for interactive menu start
