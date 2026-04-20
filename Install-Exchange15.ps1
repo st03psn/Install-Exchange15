@@ -3492,9 +3492,10 @@ Write-Log 'Exchange log cleanup finished'
         # Anonymous senders can deliver to accepted domains only; cannot relay externally.
         # RFC 5737 TEST-NET placeholder — never routable, used when no subnets were specified.
         # Prevents the relay connector from matching real SMTP traffic until the admin sets proper IPs.
-        $RELAY_PLACEHOLDER = '192.0.2.1/32'
+        $RELAY_PLACEHOLDER          = '192.0.2.1/32'
+        $RELAY_PLACEHOLDER_EXTERNAL = '192.0.2.2/32'   # Different RFC 5737 address — avoids Bindings+RemoteIPRanges conflict
         $internalIsPlaceholder = ($State['RelaySubnets'].Count -eq 1 -and $State['RelaySubnets'][0] -eq $RELAY_PLACEHOLDER)
-        $externalIsPlaceholder = ($State['ExternalRelaySubnets'].Count -eq 1 -and $State['ExternalRelaySubnets'][0] -eq $RELAY_PLACEHOLDER)
+        $externalIsPlaceholder = ($State['ExternalRelaySubnets'].Count -eq 1 -and $State['ExternalRelaySubnets'][0] -in @($RELAY_PLACEHOLDER, $RELAY_PLACEHOLDER_EXTERNAL))
 
         if ($hasInternal) {
             $intName    = ('Anonymous Internal Relay - {0}' -f $server)
@@ -3837,10 +3838,12 @@ Write-Log 'Exchange log cleanup finished'
         }
         catch { Write-MyVerbose ('MAPI auth methods not supported on this build: {0}' -f $_.Exception.Message) }
 
-        # Autodiscover SCP
+        # Autodiscover SCP — always use autodiscover.<parent-domain>, not the namespace hostname
         try {
             $cas = Get-ClientAccessService -Identity $server -ErrorAction Stop
-            $scpTarget = "https://$ns/Autodiscover/Autodiscover.xml"
+            $nsParts   = $ns -split '\.'
+            $scpHost   = if ($nsParts[0] -eq 'autodiscover') { $ns } else { 'autodiscover.' + ($nsParts[1..($nsParts.Length-1)] -join '.') }
+            $scpTarget = "https://$scpHost/Autodiscover/Autodiscover.xml"
             if ([string]$cas.AutoDiscoverServiceInternalUri -eq $scpTarget) {
                 Write-MyVerbose 'Autodiscover SCP: already set, skipping'
             } else {
@@ -3941,17 +3944,17 @@ Write-Log 'Exchange log cleanup finished'
 
         if (Test-Path $hcPath) {
             try {
-                # Suppress all HealthChecker console output — it writes hundreds of verbose lines.
-                # The HTML report is what matters; capture all streams and redirect to transcript only.
-                $hcOutput = & $hcPath -OutputFilePath $State['ReportsPath'] -SkipVersionCheck *>&1
-                foreach ($line in $hcOutput) { Write-MyVerbose ('[HealthChecker] {0}' -f [string]$line) }
+                # HC has its own log; suppress all console output to keep the install log clean.
+                # Pass a file name prefix (not a directory) so HC writes to ReportsPath correctly.
+                $hcOutPrefix = Join-Path $State['ReportsPath'] 'HealthChecker'
+                & $hcPath -OutputFilePath $hcOutPrefix -SkipVersionCheck *>&1 | Out-Null
                 # Find the report file HealthChecker just created
-                $hcReport = Get-ChildItem -Path $State['ReportsPath'] -Filter 'HealthChecker*.htm*' |
+                $hcReport = Get-ChildItem -Path $State['ReportsPath'] -Filter 'HealthChecker*.htm*' -ErrorAction SilentlyContinue |
                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
                 if ($hcReport) {
                     Write-MyOutput ('HealthChecker report saved to {0}' -f $hcReport.FullName)
                 } else {
-                    Write-MyOutput ('HealthChecker completed — report in {0}' -f $State['InstallPath'])
+                    Write-MyOutput ('HealthChecker completed — report in {0}' -f $State['ReportsPath'])
                 }
             }
             catch {
@@ -4058,8 +4061,11 @@ Write-Log 'Exchange log cleanup finished'
             $sysRows.Add('<tr><td>Total RAM</td><td>{0} GB</td><td></td></tr>' -f $totalRAM)
         } catch { $sysRows.Add('<tr><td colspan="3">OS info unavailable</td></tr>') }
         try {
-            $cpu = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
-            $sysRows.Add(('<tr><td>CPU</td><td>{0}</td><td>{1} cores / {2} logical</td></tr>' -f $cpu.Name.Trim(), $cpu.NumberOfCores, $cpu.NumberOfLogicalProcessors))
+            $cpuList     = @(Get-CimInstance Win32_Processor -ErrorAction Stop)
+            $cpu         = $cpuList[0]
+            $totalCores  = ($cpuList | Measure-Object -Property NumberOfCores -Sum).Sum
+            $totalLogical= ($cpuList | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+            $sysRows.Add(('<tr><td>CPU</td><td>{0}</td><td>{1} cores / {2} logical</td></tr>' -f $cpu.Name.Trim(), $totalCores, $totalLogical))
         } catch { }
         try {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
@@ -4196,12 +4202,12 @@ Write-Log 'Exchange log cleanup finished'
         } catch { $dbRows.Add(('<tr><td colspan="4">Query failed: {0}</td></tr>' -f $_.Exception.Message)) }
 
         # Receive connectors
-        $connRows.Add('<tr><th>Connector</th><th>Bindings</th><th>Auth Mechanisms</th><th>Permission Groups</th></tr>')
+        $connRows.Add('<tr><th>Connector</th><th>Bindings</th><th>Remote IP Ranges</th><th>Auth</th><th>Permission Groups</th></tr>')
         try {
             Get-ReceiveConnector -Server $env:COMPUTERNAME -ErrorAction Stop | ForEach-Object {
-                $connRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>' -f $_.Name, ($_.Bindings -join '<br>'), $_.AuthMechanism, $_.PermissionGroups))
+                $connRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>' -f $_.Name, ($_.Bindings -join '<br>'), ($_.RemoteIPRanges -join '<br>'), $_.AuthMechanism, $_.PermissionGroups))
             }
-        } catch { $connRows.Add('<tr><td colspan="4">Receive connector query failed</td></tr>') }
+        } catch { $connRows.Add('<tr><td colspan="5">Receive connector query failed</td></tr>') }
 
         # Certificates
         $certRows.Add('<tr><th>Subject</th><th>Expiry</th><th>Services</th><th>Thumbprint</th></tr>')
@@ -4287,7 +4293,13 @@ Write-Log 'Exchange log cleanup finished'
         } catch { }
         try {
             $pf = Get-CimInstance Win32_PageFileSetting -ErrorAction Stop | Select-Object -First 1
-            if ($pf) { $perfRows.Add(('<tr><td>Pagefile</td><td>{0} — Init: {1} MB / Max: {2} MB</td><td>RAM+10 MB (Ex2016) or 25% RAM (Ex2019+)</td><td></td></tr>' -f $pf.Name, $pf.InitialSize, $pf.MaximumSize)) }
+            if ($pf) {
+                $ramMB        = [math]::Round((Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).TotalPhysicalMemory / 1MB, 0)
+                $recMB        = if ($State['MajorSetupVersion'] -ge $EX2019_MAJOR) { [int]($ramMB * 0.25) } else { [math]::Min($ramMB + 10, 32768 + 10) }
+                $pfOk         = $pf.InitialSize -ge $recMB -and $pf.MaximumSize -ge $recMB
+                $pfBadge      = if ($pfOk) { Format-Badge '✓' 'ok' } else { Format-Badge 'Below recommendation' 'warn' }
+                $perfRows.Add(('<tr><td>Pagefile</td><td>{0} — Init: {1} MB / Max: {2} MB</td><td>≥ {3} MB</td><td>{4}</td></tr>' -f $pf.Name, $pf.InitialSize, $pf.MaximumSize, $recMB, $pfBadge))
+            }
         } catch { }
         $keepAlive = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'KeepAliveTime'
         if ($keepAlive) {
@@ -4982,8 +4994,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 }
             }
             else {
-                $ans = (Read-Host '  Install? [Y=yes / N=no / A=all / S=skip remaining]').Trim().ToUpper()
-                if ($ans -eq '') { $ans = 'N' }
+                $ans = (Read-Host '  Install? [Y=yes / N=no / A=all / S=skip remaining] (default: Y)').Trim().ToUpper()
+                if ($ans -eq '') { $ans = 'Y' }
             }
             switch ($ans) {
                 'A' { $installAll = $true;  if ($u.KB) { $approvedKBs += $u.KB }; Write-MyOutput ('Approved (all): {0}' -f $u.Title) }
@@ -6206,11 +6218,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         $modes = @{
             1 = 'Exchange Server (Mailbox)'
-            2 = 'Exchange Server (Edge Transport)'
-            3 = 'Recipient Management Tools'
-            4 = 'Exchange Management Tools only'
-            5 = 'Recovery Mode'
-            6 = 'Standalone Optimize (existing server)'
+            2 = 'Exchange Server (Edge Transport)  [not tested]'
+            3 = 'Recipient Management Tools         [not tested]'
+            4 = 'Exchange Management Tools only     [not tested]'
+            5 = 'Recovery Mode                      [not tested]'
+            6 = 'Standalone Optimize                [not tested]'
         }
 
         # Toggle definitions: Key=letter, Name=parameter name, Default=initial state
@@ -6392,17 +6404,34 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         Write-Host ''
 
         function Read-MenuInput {
-            param([string]$Prompt, [string]$Default = '', [bool]$Required = $false)
+            param(
+                [string]$Prompt,
+                [string]$Default = '',
+                [bool]$Required = $false,
+                [scriptblock]$Validate = $null,
+                [string]$ValidateMessage = 'Invalid input — please try again'
+            )
             $displayDefault = if ($Default) { "[$Default]" } else { '' }
             $full = if ($displayDefault) { "  $Prompt $displayDefault" } else { "  $Prompt" }
             while ($true) {
                 $val = Read-Host $full
                 if ($val -eq '') { $val = $Default }
                 if ($Required -and -not $val) {
-                    Write-Host '  (required - cannot be empty)' -ForegroundColor Yellow
+                    Write-Host '  (required — cannot be empty)' -ForegroundColor Yellow
+                }
+                elseif ($val -and $Validate -and -not (& $Validate $val)) {
+                    Write-Host "  $ValidateMessage" -ForegroundColor Yellow
                 }
                 else { return $val }
             }
+        }
+
+        $validateFQDN = { param($v) $v -match '^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)+$' }
+        $validateCIDRList = {
+            param($v)
+            ($v -split '\s*,\s*') | Where-Object { $_ } | ForEach-Object {
+                $_ -match '^\d{1,3}(\.\d{1,3}){3}(/([0-9]|[12]\d|3[0-2]))?$'
+            } | Where-Object { -not $_ } | Measure-Object | Select-Object -ExpandProperty Count | ForEach-Object { $_ -eq 0 }
         }
 
         $cfg = @{}
@@ -6463,10 +6492,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $cfg['SCP']          = Read-MenuInput -Prompt 'Autodiscover SCP URL   (blank = let Setup set, - = remove)'
             }
             $cfg['TargetPath']       = Read-MenuInput -Prompt 'Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'
-            $cfg['DAGName']          = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
-            $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none)'
-            $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)'
-            $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)'
+            $cfg['DAGName']          = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join) [not tested]'
+            $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none) [not tested]' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. ex01.contoso.com)'
+            $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
+            $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
@@ -6474,26 +6503,26 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $cfg['LogRetentionDays'] = 0
             }
             if ((Read-MenuInput -Prompt 'Create relay connectors? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
-                $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)'
+                $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)' -Validate $validateCIDRList -ValidateMessage 'Invalid format — use e.g. 192.168.1.0/24,10.0.0.5'
                 $cfg['RelaySubnets'] = if ($relay) { $relay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.1/32') }
-                $extRelay = Read-MenuInput -Prompt 'External relay subnets  (comma-separated CIDRs, blank = placeholder)'
-                $cfg['ExternalRelaySubnets'] = if ($extRelay) { $extRelay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.1/32') }
+                $extRelay = Read-MenuInput -Prompt 'External relay subnets  (comma-separated CIDRs, blank = placeholder)' -Validate $validateCIDRList -ValidateMessage 'Invalid format — use e.g. 192.168.2.0/24,10.0.1.5'
+                $cfg['ExternalRelaySubnets'] = if ($extRelay) { $extRelay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.2/32') }
             } else {
                 $cfg['RelaySubnets'] = @()
                 $cfg['ExternalRelaySubnets'] = @()
             }
         }
         elseif ($selectedMode -eq 2) {
-            $cfg['EdgeDNSSuffix'] = Read-MenuInput -Prompt 'Edge DNS suffix (e.g. edge.contoso.com)' -Required $true
+            $cfg['EdgeDNSSuffix'] = Read-MenuInput -Prompt 'Edge DNS suffix (e.g. edge.contoso.com)' -Required $true -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. edge.contoso.com)'
             $cfg['TargetPath']    = Read-MenuInput -Prompt 'Exchange install path  (blank = Exchange default)'
         }
         elseif ($selectedMode -eq 3) {
             $cfg['RecipientMgmtCleanup'] = (Read-MenuInput -Prompt 'Run AD cleanup after install? [Y/N]' -Default 'N') -imatch '^[Yy]'
         }
         elseif ($selectedMode -eq 6) {
-            $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)'
-            $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)'
-            $cfg['DAGName']          = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+            $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
+            $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
+            $cfg['DAGName']          = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join) [not tested]'
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
@@ -6501,10 +6530,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $cfg['LogRetentionDays'] = 0
             }
             if ((Read-MenuInput -Prompt 'Create relay connectors? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
-                $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)'
+                $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)' -Validate $validateCIDRList -ValidateMessage 'Invalid format — use e.g. 192.168.1.0/24,10.0.0.5'
                 $cfg['RelaySubnets'] = if ($relay) { $relay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.1/32') }
-                $extRelay = Read-MenuInput -Prompt 'External relay subnets  (comma-separated CIDRs, blank = placeholder)'
-                $cfg['ExternalRelaySubnets'] = if ($extRelay) { $extRelay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.1/32') }
+                $extRelay = Read-MenuInput -Prompt 'External relay subnets  (comma-separated CIDRs, blank = placeholder)' -Validate $validateCIDRList -ValidateMessage 'Invalid format — use e.g. 192.168.2.0/24,10.0.1.5'
+                $cfg['ExternalRelaySubnets'] = if ($extRelay) { $extRelay -split '\s*,\s*' | Where-Object { $_ } } else { @('192.0.2.2/32') }
             } else {
                 $cfg['RelaySubnets'] = @()
                 $cfg['ExternalRelaySubnets'] = @()

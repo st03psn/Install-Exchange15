@@ -85,10 +85,12 @@
     # Behaviour flags
     # -------------------------------------------------------------------------
 
-    SkipHealthCheck = $false   # $true to skip CSS-Exchange HealthChecker at end
-    NoCheckpoint    = $false   # $true to skip System Restore checkpoints
-    PreflightOnly   = $false   # $true to generate pre-flight report and exit
-    DiagnosticData  = $false   # $true = /IAcceptExchangeServerLicenseTerms_DiagnosticDataON
+    SkipHealthCheck   = $false   # $true to skip CSS-Exchange HealthChecker at end
+    NoCheckpoint      = $false   # $true to skip System Restore checkpoints
+    PreflightOnly     = $false   # $true to generate pre-flight report and exit
+    DiagnosticData    = $false   # $true = /IAcceptExchangeServerLicenseTerms_DiagnosticDataON
+    SkipInstallReport = $false   # $true to suppress HTML/PDF installation report at Phase 6
+    SkipSetupAssist   = $false   # $true to skip CSS-Exchange SetupAssist on Phase 4 failure
 
     # DoNotEnableEP = $false   # $true to skip Extended Protection configuration
     # NoNet481      = $false   # $true to skip .NET 4.8.1 installation
