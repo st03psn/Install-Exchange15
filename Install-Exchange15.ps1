@@ -2045,19 +2045,17 @@ process {
         } while (-not $ready -and $elapsed -lt $maxWait)
 
         if (-not $ready) {
-            Write-MyWarning 'Exchange PowerShell endpoint did not become available within 90 s — optimizations may fail'
+            Write-MyVerbose 'Exchange PowerShell endpoint did not become available within 90 s — retrying'
         }
 
-        try {
-            $savedVP = $VerbosePreference
-            $VerbosePreference = 'SilentlyContinue'
-            Connect-ExchangeServer (Get-LocalFQDNHostname) -NoShellBanner 6>&1 | Out-Null
-            $VerbosePreference = $savedVP
+        # After IIS restart, implicit-remoting proxy functions are removed automatically.
+        # Import-ExchangeModule's guard (Get-ExchangeServer not found) will fire and reload.
+        Import-ExchangeModule
+        if (Get-Command Get-ExchangeServer -ErrorAction SilentlyContinue) {
             Write-MyVerbose 'Exchange PS session reconnected'
         }
-        catch {
-            $VerbosePreference = $savedVP
-            Write-MyWarning ('Failed to reconnect Exchange PS session: {0}' -f $_.Exception.Message)
+        else {
+            Write-MyWarning 'Failed to reconnect Exchange PS session — subsequent Exchange cmdlets may fail'
         }
     }
 
@@ -3445,7 +3443,7 @@ Write-Log 'Exchange log cleanup finished'
             $isRecipientFilter = $agent.Identity -like '*Recipient Filter*'
             if ($isRecipientFilter) {
                 if (-not $agent.Enabled) {
-                    Enable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                    Enable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 3>$null
                     Write-MyOutput ('Enabled: {0}' -f $agent.Identity)
                     $needsTransportRestart = $true
                 }
@@ -3455,7 +3453,7 @@ Write-Log 'Exchange log cleanup finished'
             }
             else {
                 if ($agent.Enabled) {
-                    Disable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                    Disable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue 3>$null
                     Write-MyOutput ('Disabled: {0}' -f $agent.Identity)
                     $needsTransportRestart = $true
                 }
@@ -3727,6 +3725,7 @@ Write-Log 'Exchange log cleanup finished'
         $server = $env:COMPUTERNAME
         $errors = 0
         $changed = 0
+        $forceParam = if ($State['AutoPilot']) { @{ Force = $true } } else { @{} }
 
         Write-MyOutput ('Configuring Virtual Directory URLs for namespace: {0}' -f $ns)
 
@@ -3747,7 +3746,7 @@ Write-Log 'Exchange log cleanup finished'
                 Set-OwaVirtualDirectory -Identity "$server\owa (Default Web Site)" `
                     -InternalUrl "https://$ns/owa" -ExternalUrl "https://$ns/owa" `
                     -LogonFormat PrincipalName -DefaultDomain '' `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
                 Write-MyVerbose 'OWA virtual directory configured (UPN logon)'
                 $changed++
             }
@@ -3762,7 +3761,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-EcpVirtualDirectory -Identity "$server\ecp (Default Web Site)" `
                     -InternalUrl "https://$ns/ecp" -ExternalUrl "https://$ns/ecp" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
                 Write-MyVerbose 'ECP virtual directory configured'
                 $changed++
             }
@@ -3777,7 +3776,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-WebServicesVirtualDirectory -Identity "$server\EWS (Default Web Site)" `
                     -InternalUrl "https://$ns/EWS/Exchange.asmx" -ExternalUrl "https://$ns/EWS/Exchange.asmx" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
                 Write-MyVerbose 'EWS virtual directory configured'
                 $changed++
             }
@@ -3792,7 +3791,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-OabVirtualDirectory -Identity "$server\OAB (Default Web Site)" `
                     -InternalUrl "https://$ns/OAB" -ExternalUrl "https://$ns/OAB" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
                 Write-MyVerbose 'OAB virtual directory configured'
                 $changed++
             }
@@ -3807,7 +3806,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-ActiveSyncVirtualDirectory -Identity "$server\Microsoft-Server-ActiveSync (Default Web Site)" `
                     -InternalUrl "https://$ns/Microsoft-Server-ActiveSync" -ExternalUrl "https://$ns/Microsoft-Server-ActiveSync" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
                 Write-MyVerbose 'ActiveSync virtual directory configured'
                 $changed++
             }
@@ -3822,7 +3821,7 @@ Write-Log 'Exchange log cleanup finished'
             } else {
                 Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
                     -InternalUrl "https://$ns/mapi" -ExternalUrl "https://$ns/mapi" `
-                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue @forceParam
                 Write-MyVerbose 'MAPI virtual directory URL configured'
                 $changed++
             }
