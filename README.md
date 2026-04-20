@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.61 (April 2026, last updated 2026-04-20)
+**Version:** 5.66 (April 2026, last updated 2026-04-20)
 **License:** As-Is, without warranty
 
 ---
@@ -166,42 +166,85 @@ Recipient Management / Management Tools modes use phases 0–2 only.
 The following best-practice configurations are automatically applied after Exchange setup:
 
 ### Security Hardening
-- **HSTS header** — `Strict-Transport-Security: max-age=31536000` on OWA and ECP; only applied when `-CertificatePath` is set (avoids browser lockout with self-signed certificates)
-- **Anonymous relay connectors** — dedicated internal (`-RelaySubnets`) and external (`-ExternalRelaySubnets`) relay connectors; `AnonymousUsers` removed from Default Frontend on success; account resolved via SID S-1-5-7 (language-independent)
+- **TLS 1.0 / 1.1 disabled, TLS 1.2 enforced** — SChannel + .NET Framework strong crypto; TLS 1.3 on WS2022+ with Exchange 2019 CU15+ / SE ([Exchange TLS Guide](https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-server-tls-guidance-part-1-getting-ready-for-tls-1-2/ba-p/607649))
+- **SMBv1 disabled** — removes legacy protocol attack vector ([Microsoft Blog](https://techcommunity.microsoft.com/t5/storage-at-microsoft/stop-using-smb1/ba-p/425858))
+- **WDigest credential caching disabled** — prevents cleartext password storage in LSASS ([MS Learn](https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection))
+- **LAN Manager level 5** — NTLMv2 only, refuse LM and NTLM ([MS Learn](https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level))
+- **LSA Protection (RunAsPPL)** — enabled for Exchange 2019 CU12+ / Exchange SE; prevents credential theft from LSASS ([MS Learn](https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection))
+- **Serialized Data Signing** — mitigates PowerShell deserialization attacks ([Exchange Blog](https://techcommunity.microsoft.com/t5/exchange-team-blog/released-2022-h1-cumulative-updates-for-exchange-server/ba-p/3285209))
+- **Credential Guard disabled** — causes performance issues on Exchange; default-on in WS2025 ([Exchange Virtualization](https://learn.microsoft.com/en-us/exchange/plan-and-deploy/virtualization))
+- **IPv4 over IPv6 preference** — `DisabledComponents = 0x20`; prefers IPv4, keeps IPv6 loopback (required by Exchange internal components) ([Exchange Blog](https://techcommunity.microsoft.com/t5/exchange-team-blog/microsoft-exchange-server-and-ipv6/ba-p/594506))
+- **NetBIOS over TCP/IP disabled** on all NICs — reduces LLMNR/NBT-NS attack surface; Exchange does not require NetBIOS ([MS Learn](https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/disable-netbios-tcp-ip-using-dhcp))
+- **HTTP/2 disabled** — prevents known Exchange MAPI/RPC issues ([Exchange Blog](https://techcommunity.microsoft.com/t5/exchange-team-blog/released-2022-h1-cumulative-updates-for-exchange-server/ba-p/3285209))
+- **Extended Protection** — CU14+/SE: validated via OWA VDir; pre-CU14: `ExchangeExtendedProtection.ps1` (CSS-Exchange) ([MS Learn](https://learn.microsoft.com/en-us/exchange/clients/outlook-anywhere/use-the-exchange-management-shell-to-enable-extended-protection-for-client-access-services))
+- **SSL offloading disabled** (Outlook Anywhere) — required for Extended Protection channel binding ([MS Learn](https://learn.microsoft.com/en-us/exchange/clients/outlook-anywhere/configure-ssl-offloading))
+- **MRS Proxy disabled** (EWS VDir) — re-enable manually only for cross-forest migrations ([MS Learn](https://learn.microsoft.com/en-us/exchange/architecture/mailbox-servers/mrs-proxy-endpoint))
+- **MAPI encryption required** (Mailbox role) — forces encrypted Outlook MAPI connections ([MS Learn](https://learn.microsoft.com/en-us/exchange/clients/mapi-over-http/configure-mapi-over-http))
+- **Root certificate auto-update enabled** — required for Exchange Online / M365 hybrid connectivity; re-enables if disabled by policy ([MS Trusted Root](https://learn.microsoft.com/en-us/security/trusted-root/release-notes))
 - **Windows Defender exclusions** — folder, process, and extension exclusions per Microsoft guidance
-- **SMBv1 disabled** — removes legacy protocol attack vector
-- **SSL 3.0 disabled** (optional) — POODLE mitigation
-- **RC4 disabled** (optional) — weak cipher removal
-- **TLS 1.2/1.3 configuration** — SChannel and .NET Framework strong crypto (v4.0 + v2.0 paths)
-- **ECC certificate support** (optional) — Elliptic Curve Cryptography
-- **AES256-CBC encryption** — enabled by default
-- **AMSI body scanning** (optional) — for OWA, ECP, EWS, PowerShell
-- **WDigest credential caching disabled** — prevents cleartext password storage in LSASS
-- **HTTP/2 disabled** — prevents known Exchange MAPI/RPC issues
-- **Credential Guard disabled** — causes performance issues on Exchange (default on WS2025)
-- **LAN Manager level 5** — NTLMv2 only, refuse LM and NTLM
-- **Serialized Data Signing** — mitigates PowerShell deserialization attacks
-- **LSA Protection (RunAsPPL)** — enabled for Exchange 2019 CU12+ / Exchange SE; takes effect after reboot
+- **HSTS header** — `Strict-Transport-Security: max-age=31536000` on OWA and ECP; conditional on `-CertificatePath`
+- **AMSI body scanning** — OWA, ECP, EWS, PowerShell (Exchange 2016/2019; Exchange SE: default-on since Aug 2025 SU)
 
 ### Performance Tuning
-- **High Performance power plan** — activated automatically
-- **NIC power management disabled** — prevents adapter sleep
-- **Pagefile configured** — 25% RAM (Ex2019+) or RAM+10MB (Ex2016)
-- **TCP settings** — RPC timeout 120s, Keep-Alive 15 min
-- **TCP Chimney and Task Offload disabled** — Microsoft recommendation
-- **Windows Search service disabled** — Exchange uses its own content indexing
-- **Scheduled defragmentation disabled** — not needed on Exchange servers
-- **Disk allocation unit size verification** — warns if volumes are not 64KB formatted
-- **CRL check timeout configured** — prevents Exchange startup delays
-- **RSS enabled on all NICs** — ensures network traffic uses all CPU cores; sets receive queue count to physical core count
-- **MaxConcurrentAPI configured** — Netlogon set to logical core count (min 10) to prevent 0xC000005E errors
-- **CtsProcessorAffinityPercentage = 0** — Exchange Search best practice
-- **NodeRunner memory limit = 0** — removes Search performance limiter
+- **High Performance power plan** — activated automatically; Exchange must not run on Balanced
+- **NIC power management disabled** — prevents adapter sleep / power state changes
+- **Pagefile configured** — 25% RAM (Exchange 2019+) or RAM+10 MB (Exchange 2016), minimum 32 GB
+- **TCP settings** — RPC minimum connection timeout 120 s; Keep-Alive 15 min
+- **TCP Chimney and Task Offload disabled** — Microsoft recommendation for Exchange servers
+- **HTTP/2 disabled** — see Security Hardening above
+- **Windows Search service disabled** — Exchange uses its own content indexing engine
+- **RSS enabled on all NICs** — ensures network traffic uses all CPU cores; receive queue count = physical core count
+- **MaxConcurrentAPI configured** — Netlogon set to logical core count (min 10) to prevent 0xC000005E Kerberos errors
+- **CtsProcessorAffinityPercentage = 0** — Exchange Search best practice (no CPU affinity limit)
+- **NodeRunner memory limit = 0** — removes Exchange Search performance limiter
 - **MAPI Front End Server GC** — enabled on systems with 20+ GB RAM
+- **CRL check timeout configured** — 15 seconds; prevents Exchange startup delays on networks with slow CRL endpoints
+- **Scheduled defragmentation disabled** — not needed on Exchange servers
+- **Disk allocation unit size verification** — warns if volumes are not 64 KB formatted
+
+### Exchange-Level Optimizations (interactive menu, all enabled by default)
+- **Modern Authentication (OAuth2)** — required for Outlook 2016+, Teams, mobile clients, Hybrid
+- **OWA/ECP session timeout** — 6 hours inactivity auto-logout (security compliance)
+- **CEIP / telemetry disabled** — `CustomerFeedbackEnabled $false` (GDPR / privacy)
+- **MAPI over HTTP** — explicit enablement; replaces RPC/HTTP; better failover and NAT behavior
+- **Max message size: 150 MB** — org-wide send/receive limit; Frontend Receive Connectors updated consistently
+- **Message expiration: 7 days** — delays NDR generation during multi-day outages
+- **SMTP banner hardened** — generic `220 Mail Service` banner hides Exchange version from attackers (CIS / DISA STIG)
+- **HTML Non-Delivery Reports** — improves end-user NDR readability
+- **Shadow Redundancy** — prefer remote DAG member for in-flight message redundancy (DAG only)
+- **Safety Net hold time: 2 days** — explicit redelivery hold time for post-failover message recovery
 
 ---
 
 ## What's New
+
+### v5.66 — April 2026
+- **IPv4 over IPv6 preference** (`Set-IPv4OverIPv6Preference`) — `DisabledComponents = 0x20`; Microsoft recommended setting for Exchange; keeps IPv6 loopback intact; flags `RebootRequired`
+- **NetBIOS disabled on all NICs** (`Disable-NetBIOSOnAllNICs`) — `SetTcpipNetbios(2)` via WMI; Exchange does not require NetBIOS; reduces LLMNR/NBT-NS attack surface
+
+### v5.65 — April 2026
+- **SU download hint URL fixed** — `aka.ms/ExchangeSU` was a dead link (resolved to Bing); replaced with the KB-specific `https://support.microsoft.com/help/<number>` URL derived from the KB field; applied to both the manual placement hint and the post-install failure warning
+
+### v5.64 — April 2026
+- **Log cleanup path coverage expanded** — `Invoke-ExchangeLogCleanup.ps1` now cleans `V15\Logging\` and `V15\TransportRoles\Logs\` recursively instead of 6 specific sub-paths; covers EWS, OWA, HttpProxy, ECP, RpcClientAccess, MessageTracking, DSN, Connectivity, etc.
+- **HTTPERR logs added** — `%SystemRoot%\System32\LogFiles\HTTPERR` cleaned with the same retention period
+- **IIS log path dynamic** — resolved from IIS metabase via `Get-WebConfigurationProperty`; fallback to `inetpub\logs\LogFiles`
+
+### v5.63 — April 2026 — Bugfixes
+- **Antispam agent warnings** — `3>$null` replaced by `*>&1 | Out-Null`; implicit-remoting warnings from `Enable-TransportAgent` (PS 5.1) now fully suppressed
+- **Exchange SE RTM SU (KB5074992)** — removed duplicate hardcoded install attempt; WU-catalog CAB URL cleared (not DISM-compatible); 5-minute interactive countdown prompt when EXE not found; download URL shown as `https://support.microsoft.com/help/5074992`
+
+### v5.62 — April 2026
+- **F13** `Disable-SSLOffloading` — prerequisite for Extended Protection channel binding
+- **F6** `Enable-ExtendedProtection` — CU14+/SE: native validation via OWA VDir; pre-CU14: downloads and runs `ExchangeExtendedProtection.ps1` (CSS-Exchange)
+- **F17** `Enable-RootCertificateAutoUpdate` — re-enables root cert auto-update when disabled by policy
+- **F18** `Disable-MRSProxy` — `MRSProxyEnabled $false` on EWS VDir; Mailbox role only
+- **F19** `Set-MAPIEncryptionRequired` — forces encrypted MAPI connections; Mailbox role only
+- **F8** `Test-DAGReplicationHealth` — checks database copy status after DAG join; warns on non-Mounted/Healthy
+- **F9** `Test-VSSWriters` — validates VSS writer state; broken VSS → failed Exchange backups
+- **F10** `Test-EEMSStatus` — checks MSExchangeMitigation service and org config (CU11+ / SE)
+- **F11** `Get-ModernAuthReport` — warns when OAuth2 is disabled in org config
+- **P7** Compliance mapping — CIS / BSI control-ID column added to Installation Report Security section
 
 ### v5.61 — April 2026 (2026-04-20) — Bugfixes
 
