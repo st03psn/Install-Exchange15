@@ -4574,6 +4574,44 @@ Write-Log 'Exchange log cleanup finished'
             }
         } catch { $certRows.Add('<tr><td colspan="4">Certificate query failed</td></tr>') }
 
+        # Exchange Optimizations — org/transport level settings
+        $exchOptRows = [System.Collections.Generic.List[string]]::new()
+        $exchOptRows.Add('<tr><th>Setting</th><th>Current Value</th><th>Recommendation</th><th>Status</th></tr>')
+        try {
+            $orgCfg2 = Get-OrganizationConfig -ErrorAction SilentlyContinue
+            if ($orgCfg2) {
+                $toEnabled  = $orgCfg2.ActivityBasedAuthenticationTimeoutEnabled
+                $toInterval = $orgCfg2.ActivityBasedAuthenticationTimeoutInterval
+                $toBadge    = if ($toEnabled -and $toInterval -le [TimeSpan]'06:00:00') { Format-Badge '✓' 'ok' } else { Format-Badge 'Review' 'warn' }
+                $exchOptRows.Add(('<tr><td>OWA/ECP Session Timeout</td><td>Enabled: {0} / Interval: {1}</td><td>Enabled, ≤ 6 h (security compliance)</td><td>{2}</td></tr>' -f $toEnabled, $toInterval, $toBadge))
+
+                $ceipBadge = if (-not $orgCfg2.CustomerFeedbackEnabled) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge 'Enabled' 'warn' }
+                $exchOptRows.Add(('<tr><td>CEIP / Telemetry</td><td>{0}</td><td>Disabled (privacy / GDPR)</td><td>{1}</td></tr>' -f $orgCfg2.CustomerFeedbackEnabled, $ceipBadge))
+            }
+        } catch { }
+        try {
+            $transCfg2 = Get-TransportConfig -ErrorAction SilentlyContinue
+            if ($transCfg2) {
+                $maxSendMB = [math]::Round($transCfg2.MaxSendSize.Value.ToBytes() / 1MB, 0)
+                $maxRecvMB = [math]::Round($transCfg2.MaxReceiveSize.Value.ToBytes() / 1MB, 0)
+                $sizeBadge = if ($maxSendMB -ge 50) { Format-Badge '✓' 'ok' } else { Format-Badge 'Default 25 MB' 'warn' }
+                $exchOptRows.Add(('<tr><td>Max Message Size</td><td>Send: {0} MB / Recv: {1} MB</td><td>≥ 50 MB (modern workflow files)</td><td>{2}</td></tr>' -f $maxSendMB, $maxRecvMB, $sizeBadge))
+
+                $ndrBadge = if ($transCfg2.InternalDsnSendHtml -and $transCfg2.ExternalDsnSendHtml) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge 'Plain text' 'warn' }
+                $exchOptRows.Add(('<tr><td>HTML Non-Delivery Reports</td><td>Internal: {0} / External: {1}</td><td>Enabled (improves end-user NDR readability)</td><td>{2}</td></tr>' -f $transCfg2.InternalDsnSendHtml, $transCfg2.ExternalDsnSendHtml, $ndrBadge))
+
+                $snBadge = if ($transCfg2.SafetyNetHoldTime -ge [TimeSpan]'2.00:00:00') { Format-Badge '✓' 'ok' } else { Format-Badge 'Short' 'warn' }
+                $exchOptRows.Add(('<tr><td>Safety Net Hold Time</td><td>{0}</td><td>≥ 2 days (message redelivery after DB failover)</td><td>{1}</td></tr>' -f $transCfg2.SafetyNetHoldTime, $snBadge))
+            }
+        } catch { }
+        try {
+            $transSvc2 = Get-TransportService -Identity $env:COMPUTERNAME -ErrorAction SilentlyContinue
+            if ($transSvc2) {
+                $expBadge = if ($transSvc2.MessageExpirationTimeout -ge [TimeSpan]'7.00:00:00') { Format-Badge '✓' 'ok' } else { Format-Badge 'Default 2d' 'warn' }
+                $exchOptRows.Add(('<tr><td>Message Expiration Timeout</td><td>{0}</td><td>7 days (delay NDRs during multi-day outages)</td><td>{1}</td></tr>' -f $transSvc2.MessageExpirationTimeout, $expBadge))
+            }
+        } catch { }
+
         $exContent = @"
 <table class="data-table"><tr><th>Property</th><th>Value</th><th>Status</th></tr>{0}</table>
 <h3 class="subsection">Virtual Directory URLs</h3>
@@ -4584,7 +4622,9 @@ Write-Log 'Exchange log cleanup finished'
 <table class="data-table">{3}</table>
 <h3 class="subsection">Certificates</h3>
 <table class="data-table">{4}</table>
-"@ -f ($exRows -join ''), ($vdirRows -join ''), ($dbRows -join ''), ($connRows -join ''), ($certRows -join '')
+<h3 class="subsection">Exchange Optimizations</h3>
+<table class="data-table">{5}</table>
+"@ -f ($exRows -join ''), ($vdirRows -join ''), ($dbRows -join ''), ($connRows -join ''), ($certRows -join ''), ($exchOptRows -join '')
 
         # ── 5. SECURITY SETTINGS (with Exchange best-practice + reference column) ─
         $secRows = [System.Collections.Generic.List[string]]::new()
@@ -4637,6 +4677,83 @@ Write-Log 'Exchange log cleanup finished'
         $uacVal = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
         $uacBadge = if ($uacVal -eq 1 -or $null -eq $uacVal) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Disabled!' 'fail' }
         $secRows.Add(('<tr><td>UAC (EnableLUA)</td><td>{0}</td><td>1 = Enabled (re-enabled after setup)</td><td>{1}</td><td>{2}</td><td>CIS L1 §17.2 / BSI SYS.2.1</td></tr>' -f $uacVal, $uacBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/' 'MS Learn')))
+
+        # IPv4 over IPv6 preference
+        $ipv4Comp = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents'
+        $ipv4ValText = if ($null -eq $ipv4Comp) { 'Not set (OS default)' } else { '0x{0:X}' -f [int]$ipv4Comp }
+        $ipv4Badge = if ($ipv4Comp -eq 0x20) { Format-Badge '0x20 ✓' 'ok' } else { Format-Badge 'Not configured' 'warn' }
+        $secRows.Add(('<tr><td>IPv4 over IPv6 preference</td><td>{0}</td><td>0x20 = prefer IPv4 (keep IPv6 loopback)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $ipv4ValText, $ipv4Badge, (Format-RefLink 'https://techcommunity.microsoft.com/t5/exchange-team-blog/microsoft-exchange-server-and-ipv6/ba-p/594506' 'Exchange Blog')))
+
+        # NetBIOS over TCP/IP
+        try {
+            $nbNics = @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction Stop)
+            $nbDisabled = ($nbNics | Where-Object { $_.TcpipNetbiosOptions -eq 2 }).Count
+            $nbBadge = if ($nbNics.Count -gt 0 -and $nbDisabled -eq $nbNics.Count) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge ('{0}/{1} disabled' -f $nbDisabled, $nbNics.Count) 'warn' }
+            $secRows.Add(('<tr><td>NetBIOS over TCP/IP</td><td>{0} of {1} NICs disabled</td><td>Disabled on all NICs (reduces LLMNR/NBT-NS attack surface)</td><td>{2}</td><td>{3}</td><td>CIS §18 / BSI</td></tr>' -f $nbDisabled, $nbNics.Count, $nbBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/disable-netbios-tcp-ip-using-dhcp' 'MS Learn')))
+        } catch { }
+
+        # Root CA auto-update
+        $rootAU = Get-SecRegVal 'HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\AuthRoot' 'DisableRootAutoUpdate'
+        $rootAUBadge = if ($rootAU -ne 1) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge 'Disabled by policy!' 'warn' }
+        $secRows.Add(('<tr><td>Root CA Auto-Update</td><td>DisableRootAutoUpdate = {0}</td><td>Must not be disabled (Exchange Online / M365 connectivity)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $rootAU, $rootAUBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/security/trusted-root/release-notes' 'MS Trusted Root')))
+
+        # Extended Protection (OWA VDir)
+        if (-not $State['InstallEdge']) {
+            try {
+                $owaVdir = Get-OwaVirtualDirectory -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($owaVdir) {
+                    $epVal = $owaVdir.ExtendedProtectionTokenChecking
+                    $epBadge = if ($epVal -in 'Require','Allow') { Format-Badge "$epVal ✓" 'ok' } else { Format-Badge "$epVal (risk)" 'warn' }
+                    $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0}</td><td>Require or Allow</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/clients/outlook-anywhere/use-the-exchange-management-shell-to-enable-extended-protection-for-client-access-services' 'MS Learn')))
+                }
+            } catch { }
+        }
+
+        # SSL Offloading (Outlook Anywhere) — must be off for Extended Protection
+        if (-not $State['InstallEdge']) {
+            try {
+                $oaVdir = Get-OutlookAnywhere -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue
+                if ($oaVdir) {
+                    $oaBadge = if (-not $oaVdir.SSLOffloading) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge 'Enabled (blocks EP)' 'warn' }
+                    $secRows.Add(('<tr><td>SSL Offloading (Outlook Anywhere)</td><td>{0}</td><td>False (required for Extended Protection channel binding)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $oaVdir.SSLOffloading, $oaBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/clients/outlook-anywhere/configure-ssl-offloading' 'MS Learn')))
+                }
+            } catch { }
+        }
+
+        # MRS Proxy (EWS)
+        if ($State['InstallMailbox'] -and -not $State['InstallEdge']) {
+            try {
+                $ewsVdir = Get-WebServicesVirtualDirectory -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($ewsVdir) {
+                    $mrsBadge = if (-not $ewsVdir.MRSProxyEnabled) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge 'Enabled (review)' 'warn' }
+                    $secRows.Add(('<tr><td>MRS Proxy (EWS)</td><td>{0}</td><td>False (enable only for cross-forest migrations)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $ewsVdir.MRSProxyEnabled, $mrsBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/architecture/mailbox-servers/mrs-proxy-endpoint' 'MS Learn')))
+                }
+            } catch { }
+        }
+
+        # MAPI Encryption Required
+        if ($State['InstallMailbox'] -and -not $State['InstallEdge']) {
+            try {
+                $mbxSrv = Get-MailboxServer -Identity $env:COMPUTERNAME -ErrorAction SilentlyContinue
+                if ($mbxSrv) {
+                    $mapiEncBadge = if ($mbxSrv.MAPIEncryptionRequired) { Format-Badge 'Required ✓' 'ok' } else { Format-Badge 'Not required' 'warn' }
+                    $secRows.Add(('<tr><td>MAPI Encryption Required</td><td>{0}</td><td>True (forces encrypted Outlook MAPI connections)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $mbxSrv.MAPIEncryptionRequired, $mapiEncBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/clients/mapi-over-http/configure-mapi-over-http' 'MS Learn')))
+                }
+            } catch { }
+        }
+
+        # SMTP Banner hardening
+        if (-not $State['InstallEdge']) {
+            try {
+                $feBannerConns = @(Get-ReceiveConnector -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.TransportRole -eq 'FrontendTransport' })
+                if ($feBannerConns.Count -gt 0) {
+                    $bannersHardened = ($feBannerConns | Where-Object { $_.Banner -and $_.Banner -notlike '*Microsoft ESMTP*' }).Count
+                    $bannerBadge = if ($bannersHardened -eq $feBannerConns.Count) { Format-Badge 'Hardened ✓' 'ok' } else { Format-Badge ('{0}/{1} hardened' -f $bannersHardened, $feBannerConns.Count) 'warn' }
+                    $secRows.Add(('<tr><td>SMTP Banner</td><td>{0}/{1} Frontend connectors hardened</td><td>Generic banner (hides Exchange version from attackers)</td><td>{2}</td><td>{3}</td><td>CIS / DISA STIG</td></tr>' -f $bannersHardened, $feBannerConns.Count, $bannerBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors' 'MS Learn')))
+                }
+            } catch { }
+        }
+
         $secContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th><th>Reference</th><th>CIS / BSI</th></tr>{0}</table>' -f ($secRows -join '')
 
         # ── 6. PERFORMANCE SETTINGS (with best-practice column) ───────────────
@@ -4687,6 +4804,28 @@ Write-Log 'Exchange log cleanup finished'
             $wsBadge = if ($wSearch.StartType -eq 'Disabled') { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge $wSearch.StartType 'warn' }
             $perfRows.Add(('<tr><td>Windows Search Service</td><td>{0}</td><td>Disabled (Exchange uses own indexing)</td><td>{1}</td></tr>' -f $wSearch.StartType, $wsBadge))
         }
+
+        # RPC Minimum Connection Timeout
+        $rpcTO = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\Rpc' 'MinimumConnectionTimeout'
+        if ($null -ne $rpcTO) {
+            $rpcBadge = if ($rpcTO -ge 120) { Format-Badge "✓ ${rpcTO}s" 'ok' } else { Format-Badge "${rpcTO}s (low)" 'warn' }
+            $perfRows.Add(('<tr><td>RPC Min Connection Timeout</td><td>{0} s</td><td>120 s (prevents premature RPC timeouts under load)</td><td>{1}</td></tr>' -f $rpcTO, $rpcBadge))
+        }
+
+        # TCP Chimney Offload
+        $tcpChim = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'EnableTCPChimney'
+        if ($null -ne $tcpChim) {
+            $chimBadge = if ($tcpChim -eq 0) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge 'Enabled' 'warn' }
+            $perfRows.Add(('<tr><td>TCP Chimney Offload</td><td>EnableTCPChimney = {0}</td><td>0 = Disabled (Microsoft recommendation for Exchange)</td><td>{1}</td></tr>' -f $tcpChim, $chimBadge))
+        }
+
+        # NodeRunner Max Memory
+        $nodeRunMem = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Search\SystemParameters' 'NodeRunnerMaxMemory'
+        if ($null -ne $nodeRunMem) {
+            $nrBadge = if ($nodeRunMem -eq 0) { Format-Badge 'Unlimited ✓' 'ok' } else { Format-Badge "${nodeRunMem} MB (capped)" 'warn' }
+            $perfRows.Add(('<tr><td>NodeRunner Max Memory</td><td>{0}</td><td>0 = unlimited (Exchange Search best practice)</td><td>{1}</td></tr>' -f $nodeRunMem, $nrBadge))
+        }
+
         $perfContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th></tr>{0}</table>' -f ($perfRows -join '')
 
         # ── 7. RBAC ROLE GROUP MEMBERSHIP ─────────────────────────────────────
