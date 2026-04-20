@@ -127,6 +127,10 @@
     # External namespace for Virtual Directory URL configuration (Phase 6)
     # Namespace = 'mail.contoso.com'
 
+    # OWA Download Domain — separate FQDN for attachment downloads (CVE-2021-1730 mitigation)
+    # Must differ from Namespace; requires matching DNS record and certificate coverage
+    # DownloadDomain = 'download.contoso.com'
+
     # Path to PFX certificate — also enables HSTS on OWA/ECP when set
     # CertificatePath = 'C:\Certs\exchange.pfx'
 }
