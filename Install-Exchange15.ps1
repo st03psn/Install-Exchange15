@@ -11,7 +11,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 5.64, April 20, 2026
+    Version 5.65, April 20, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -562,6 +562,10 @@
               now accepts -MinBuild parameter and reinstalls if installed version is below minimum
             - Phase 6: MSExchangeFrontEndTransport now started (not just configured to Automatic)
               after startup type is set; service was left stopped after Exchange setup
+    5.65    Fix broken SU download hint URL (2026-04-20):
+            - Replace aka.ms/ExchangeSU (resolves to Bing, not Exchange content) with the
+              official Microsoft Learn build numbers page which lists all SUs with download links:
+              https://learn.microsoft.com/en-us/exchange/new-features/build-numbers-and-release-dates
     5.64    Register-ExchangeLogCleanup log path improvements (2026-04-20):
             - Invoke-ExchangeLogCleanup.ps1: Exchange log coverage expanded from 6 specific
               transport sub-paths to two recursive trees: V15\Logging\ (EWS, OWA, ECP,
@@ -1166,7 +1170,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.64'
+    $ScriptVersion = '5.65'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -5577,7 +5581,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     }
                     if (-not (Test-Path $suPath)) {
                         Write-MyWarning ('Exchange SU {0}: installer not available for automatic download.' -f $su.KB)
-                        Write-MyOutput  ('  Download:  https://aka.ms/ExchangeSU')
+                        Write-MyOutput  ('  Download:  https://support.microsoft.com/help/{0}' -f ($su.KB -replace '^KB', ''))
                         Write-MyOutput  ('  Place EXE: {0}' -f $suPath)
 
                         # Interactive countdown — user has 5 min to place the file, then ENTER to install.
@@ -5617,7 +5621,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                         }
                     }
                     else {
-                        Write-MyWarning ('Exchange SU {0} install failed (exit code {1}). Try applying via Windows Update or download the installer from https://aka.ms/ExchangeSU' -f $su.KB, $rc)
+                        Write-MyWarning ('Exchange SU {0} install failed (exit code {1}). Try applying via Windows Update or see https://support.microsoft.com/help/{2}' -f $su.KB, $rc, ($su.KB -replace '^KB', ''))
                     }
                 }
             }
@@ -5642,7 +5646,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             $currentVer   = if ($currentBuild) { try { [System.Version]$currentBuild } catch { $null } } else { $null }
             if ($currentVer -and $hcLatestVer) {
                 if ($currentVer -lt $hcLatestVer) {
-                    Write-MyWarning ('Exchange build {0} is behind latest known SU {1} (per HealthChecker). Newer SU may require ESU enrollment — see https://aka.ms/ExchangeSU for the latest update.' -f $currentBuild, $hcLatest)
+                    Write-MyWarning ('Exchange build {0} is behind latest known SU {1} (per HealthChecker). Newer SU may require ESU enrollment — see https://learn.microsoft.com/en-us/exchange/new-features/build-numbers-and-release-dates for the latest update.' -f $currentBuild, $hcLatest)
                 }
                 else {
                     Write-MyOutput ('Exchange build {0} is current per HealthChecker (latest known: {1})' -f $currentBuild, $hcLatest)
