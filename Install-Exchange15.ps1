@@ -1179,7 +1179,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.68'
+    $ScriptVersion = '5.69'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -4403,7 +4403,7 @@ Write-Log 'Exchange log cleanup finished'
         if ($State['CertificatePath'])  { $instRows.Add('<tr><td>Certificate Path</td><td>{0}</td></tr>' -f $State['CertificatePath']) }
         if ($State['CopyServerConfig']) { $instRows.Add('<tr><td>Source Server Config</td><td>{0}</td></tr>' -f $State['CopyServerConfig']) }
         if ($State['LogRetentionDays']) { $instRows.Add('<tr><td>Log Retention</td><td>{0} days</td></tr>' -f $State['LogRetentionDays']) }
-        $modeText = if ($State['Autopilot']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
+        $modeText = if ($State['ConfigDriven']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
         $instRows.Add('<tr><td>Mode</td><td>{0}</td></tr>' -f $modeText)
         $instRows.Add('<tr><td>TLS 1.2 Enforced</td><td>{0}</td></tr>' -f $State['EnableTLS12'])
         $instRows.Add('<tr><td>TLS 1.3 Enforced</td><td>{0}</td></tr>' -f $State['EnableTLS13'])
@@ -7662,6 +7662,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $State["SetupVersion"] = ( Get-DetectedFileVersion "$($State["SourcePath"])\setup.exe")
         $State["TargetPath"] = $TargetPath
         $State["Autopilot"] = $Autopilot
+        $State["ConfigDriven"] = [bool]$ConfigFile
         $State["IncludeFixes"] = $IncludeFixes
         $State["NoSetup"] = $NoSetup
         $State["Recover"] = $Recover
@@ -7777,7 +7778,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $MAX_PHASE = 6
     }
 
-    $runMode = if ($State['Autopilot']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
+    $runMode = if ($State['ConfigDriven']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
     Write-MyOutput ('Mode: {0}' -f $runMode)
 
     if ( $Autopilot -and $State["InstallPhase"] -gt 1) {

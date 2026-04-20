@@ -225,6 +225,9 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v5.69 — April 2026
+- **Mode label fixed** — `Mode: Copilot (interactive)` now shown correctly when starting via the interactive menu, even if the auto-reboot toggle is on; `Mode: Autopilot (fully automated)` is reserved for config-file (`-ConfigFile`) starts
+
 ### v5.68 — April 2026
 - **Unnecessary services disabled** (`Disable-UnnecessaryServices`) — Print Spooler (PrintNightmare, CVE-2021-34527), Fax, Secondary Logon (pass-the-hash vector), Smart Card; per CIS/NSA/DISA STIG recommendations
 - **Shutdown Event Tracker disabled** (`Disable-ShutdownEventTracker`) — redundant with Windows Event IDs 1074/6006/6008; dialog blocks unattended Autopilot reboots

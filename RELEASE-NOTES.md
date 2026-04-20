@@ -4,6 +4,13 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.69 (2026-04-20)
+
+- `$State['ConfigDriven']` added to state: `$true` only when started via `-ConfigFile` (headless); `$false` for interactive menu start
+- Mode display (`Mode: Autopilot (fully automated)` / `Mode: Copilot (interactive)`) now driven by `ConfigDriven` instead of `Autopilot`; fixes incorrect "Autopilot" label when the auto-reboot toggle was on in the interactive menu
+
+---
+
 ## v5.68 (2026-04-20)
 
 - `Disable-UnnecessaryServices` — disables Print Spooler (Spooler), Fax, Secondary Logon (seclogon), Smart Card (SCardSvr); per CIS Benchmark / NSA / DISA STIG; Phase 5 hardening
