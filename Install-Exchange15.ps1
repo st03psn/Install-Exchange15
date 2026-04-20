@@ -3224,7 +3224,7 @@ $($htmlRows -join "`n")
         $defaultScriptFolder = 'C:\#service'
         $scriptFolder = $defaultScriptFolder
         if ([Environment]::UserInteractive) {
-            Write-MyOutput ('Enter folder for log cleanup script [{0}] (ENTER = default, auto-accept in 2 min):' -f $defaultScriptFolder)
+            Write-MyOutput ('Enter folder for log cleanup script [{0}] (ENTER = default, S = skip, auto-accept in 2 min):' -f $defaultScriptFolder)
             $inputBuffer = ''
             try {
                 try { $host.UI.RawUI.FlushInputBuffer() } catch { }
@@ -3254,12 +3254,17 @@ $($htmlRows -join "`n")
                     }
                     Start-Sleep -Milliseconds 100
                 }
+                if ($inputBuffer.Trim().ToUpper() -eq 'S') {
+                    Write-MyVerbose 'Log cleanup task registration skipped by user'
+                    return
+                }
                 if ($inputBuffer.Trim() -ne '') { $scriptFolder = $inputBuffer.Trim() }
             }
             catch {
                 # Console not available (RDP/Hyper-V terminal/PS2Exe) — fall back to Read-Host without timeout
                 try {
                     $userInput = (Read-Host).Trim()
+                    if ($userInput.ToUpper() -eq 'S') { Write-MyVerbose 'Log cleanup task registration skipped by user'; return }
                     if ($userInput -ne '') { $scriptFolder = $userInput }
                 }
                 catch { }
@@ -3374,7 +3379,7 @@ Write-Log 'Exchange log cleanup finished'
             }
             $answer = 'Y'
             if ([Environment]::UserInteractive) {
-                Write-MyOutput 'Add this server as source transport server? [Y/N] (default: Y):'
+                Write-MyOutput 'Add this server as source transport server? [Y/N/S=skip] (default: Y):'
                 try {
                     $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
                     $answer = $key.Character.ToString().ToUpper()
@@ -3382,7 +3387,7 @@ Write-Log 'Exchange log cleanup finished'
                 catch { $answer = 'Y' }
                 Write-MyOutput $answer
             }
-            if ($answer -ne 'N') {
+            if ($answer -notin @('N', 'S')) {
                 foreach ($sc in $sendConnectors) {
                     $sources = [System.Collections.Generic.List[object]]($sc.SourceTransportServers)
                     $sources.Add($env:COMPUTERNAME) | Out-Null
