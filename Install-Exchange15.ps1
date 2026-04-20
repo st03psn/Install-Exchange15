@@ -1179,7 +1179,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.69'
+    $ScriptVersion = '5.70'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -4641,8 +4641,8 @@ Write-Log 'Exchange log cleanup finished'
         @(
             @{ Proto='1.0'; Rec='Disabled'; LegacyRisk=$true;  CisId='CIS L1 / PCI-DSS 4.2.1'; RefUrl='https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-server-tls-guidance-part-1-getting-ready-for-tls-1-2/ba-p/607649'; RefLabel='Exchange TLS Guide' }
             @{ Proto='1.1'; Rec='Disabled'; LegacyRisk=$true;  CisId='CIS L1 / PCI-DSS 4.2.1'; RefUrl='https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-server-tls-guidance-part-1-getting-ready-for-tls-1-2/ba-p/607649'; RefLabel='Exchange TLS Guide' }
-            @{ Proto='1.2'; Rec='Enabled';  LegacyRisk=$false; CisId='CIS L1 / PCI-DSS 4.2.1'; RefUrl='https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-server-tls-guidance-part-2-enabling-tls-1-2/ba-p/607646'; RefLabel='Exchange TLS Guide' }
-            @{ Proto='1.3'; Rec='Enabled (Exchange SE / 2019 CU15+ on WS2022+)'; LegacyRisk=$false; CisId='Best practice'; RefUrl='https://techcommunity.microsoft.com/t5/exchange-team-blog/tls-1-3-support-in-exchange-server/ba-p/3777803'; RefLabel='Exchange Blog' }
+            @{ Proto='1.2'; Rec='Enabled';  LegacyRisk=$false; CisId='CIS L1 / PCI-DSS 4.2.1'; RefUrl='https://techcommunity.microsoft.com/blog/exchange/exchange-server-tls-guidance-part-2-enabling-tls-1-2-and-identifying-clients-not/607761'; RefLabel='Exchange TLS Guide' }
+            @{ Proto='1.3'; Rec='Enabled (Exchange SE / 2019 CU15+ on WS2022+)'; LegacyRisk=$false; CisId='Best practice'; RefUrl='https://support.microsoft.com/en-us/topic/partial-tls-1-3-support-for-exchange-server-2019-5f4058f5-b288-4859-9a85-9aac680f50fe'; RefLabel='Exchange Blog' }
         ) | ForEach-Object {
             $proto      = $_.Proto
             $srvEnabled = Get-SecRegVal "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS $proto\Server" 'Enabled'
@@ -4675,11 +4675,11 @@ Write-Log 'Exchange log cleanup finished'
         $secRows.Add(('<tr><td>Credential Guard</td><td>EnableVBS = {0}</td><td>0 = Disabled (Exchange servers)</td><td>{1}</td><td>{2}</td><td>CIS L2</td></tr>' -f $credGuard, $cgBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/virtualization' 'Exchange Virtualization')))
         $http2 = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\HTTP\Parameters' 'EnableHttp2Tls'
         $http2Badge = if ($http2 -eq 0) { Format-Badge 'Disabled' 'ok' } else { Format-Badge 'Enabled' 'warn' }
-        $secRows.Add(('<tr><td>HTTP/2 over TLS</td><td>EnableHttp2Tls = {0}</td><td>0 = Disabled (MAPI/RPC compat)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $http2, $http2Badge, (Format-RefLink 'https://techcommunity.microsoft.com/t5/exchange-team-blog/released-2022-h1-cumulative-updates-for-exchange-server/ba-p/3285209' 'Exchange Blog')))
+        $secRows.Add(('<tr><td>HTTP/2 over TLS</td><td>EnableHttp2Tls = {0}</td><td>0 = Disabled (MAPI/RPC compat)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $http2, $http2Badge, (Format-RefLink 'https://techcommunity.microsoft.com/blog/exchange/released-2022-h1-cumulative-updates-for-exchange-server/3285026' 'Exchange Blog')))
         # Serialized Data Signing — registry value name: EnableSerializationDataSigning
         $serialSign = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Diagnostics' 'EnableSerializationDataSigning'
         $serialBadge = if ($serialSign -eq 1) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Not set' 'warn' }
-        $secRows.Add(('<tr><td>Serialized Data Signing</td><td>{0}</td><td>1 = Enabled</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $serialSign, $serialBadge, (Format-RefLink 'https://techcommunity.microsoft.com/t5/exchange-team-blog/released-2022-h1-cumulative-updates-for-exchange-server/ba-p/3285209' 'Exchange Blog')))
+        $secRows.Add(('<tr><td>Serialized Data Signing</td><td>{0}</td><td>1 = Enabled</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $serialSign, $serialBadge, (Format-RefLink 'https://techcommunity.microsoft.com/blog/exchange/released-2022-h1-cumulative-updates-for-exchange-server/3285026' 'Exchange Blog')))
         $uacVal = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
         $uacBadge = if ($uacVal -eq 1 -or $null -eq $uacVal) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Disabled!' 'fail' }
         $secRows.Add(('<tr><td>UAC (EnableLUA)</td><td>{0}</td><td>1 = Enabled (re-enabled after setup)</td><td>{1}</td><td>{2}</td><td>CIS L1 §17.2 / BSI SYS.2.1</td></tr>' -f $uacVal, $uacBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/' 'MS Learn')))
@@ -4688,7 +4688,7 @@ Write-Log 'Exchange log cleanup finished'
         $ipv4Comp = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents'
         $ipv4ValText = if ($null -eq $ipv4Comp) { 'Not set (OS default)' } else { '0x{0:X}' -f [int]$ipv4Comp }
         $ipv4Badge = if ($ipv4Comp -eq 0x20) { Format-Badge '0x20 ✓' 'ok' } else { Format-Badge 'Not configured' 'warn' }
-        $secRows.Add(('<tr><td>IPv4 over IPv6 preference</td><td>{0}</td><td>0x20 = prefer IPv4 (keep IPv6 loopback)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $ipv4ValText, $ipv4Badge, (Format-RefLink 'https://techcommunity.microsoft.com/t5/exchange-team-blog/microsoft-exchange-server-and-ipv6/ba-p/594506' 'Exchange Blog')))
+        $secRows.Add(('<tr><td>IPv4 over IPv6 preference</td><td>{0}</td><td>0x20 = prefer IPv4 (keep IPv6 loopback)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $ipv4ValText, $ipv4Badge, (Format-RefLink 'https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/configure-ipv6-in-windows' 'Exchange Blog')))
 
         # NetBIOS over TCP/IP
         try {
@@ -4710,7 +4710,7 @@ Write-Log 'Exchange log cleanup finished'
                 if ($owaVdir) {
                     $epVal = $owaVdir.ExtendedProtectionTokenChecking
                     $epBadge = if ($epVal -in 'Require','Allow') { Format-Badge "$epVal ✓" 'ok' } else { Format-Badge "$epVal (risk)" 'warn' }
-                    $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0}</td><td>Require or Allow</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/clients/outlook-anywhere/use-the-exchange-management-shell-to-enable-extended-protection-for-client-access-services' 'MS Learn')))
+                    $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0}</td><td>Require or Allow</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
                 }
             } catch { }
         }
@@ -4721,7 +4721,7 @@ Write-Log 'Exchange log cleanup finished'
                 $oaVdir = Get-OutlookAnywhere -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue
                 if ($oaVdir) {
                     $oaBadge = if (-not $oaVdir.SSLOffloading) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge 'Enabled (blocks EP)' 'warn' }
-                    $secRows.Add(('<tr><td>SSL Offloading (Outlook Anywhere)</td><td>{0}</td><td>False (required for Extended Protection channel binding)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $oaVdir.SSLOffloading, $oaBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/clients/outlook-anywhere/configure-ssl-offloading' 'MS Learn')))
+                    $secRows.Add(('<tr><td>SSL Offloading (Outlook Anywhere)</td><td>{0}</td><td>False (required for Extended Protection channel binding)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $oaVdir.SSLOffloading, $oaBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
                 }
             } catch { }
         }
