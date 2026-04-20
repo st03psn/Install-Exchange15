@@ -93,6 +93,25 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); co
 .mode-card p { font-size: 13px; color: var(--muted); line-height: 1.55; }
 .mode-card code { font-family: Consolas, monospace; font-size: 11px; background: #e0e0e0; padding: 1px 5px; border-radius: 3px; color: var(--primary); }
 
+/* ─── MANUAL vs EXPRESS COMPARISON ─────────────────────────────────────── */
+.compare { background: var(--primary); color: #c8c6c4; padding: 64px 0; }
+.compare .section-label { color: #888; }
+.compare .section-title { color: #fff; }
+.compare .section-sub { color: #a8a6a4; }
+.compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 40px; }
+.compare-col { border-radius: 12px; overflow: hidden; }
+.compare-header { padding: 14px 24px; font-size: 14px; font-weight: 700; letter-spacing: .3px; }
+.compare-col.manual .compare-header { background: #c50f1f; color: #fff; }
+.compare-col.express .compare-header { background: #107c10; color: #fff; }
+.compare-col.manual ul { background: rgba(255,255,255,.05); padding: 20px 20px 20px 40px; list-style: disc; height: 100%; }
+.compare-col.manual li { font-size: 13px; color: #a8a6a4; padding: 5px 0; line-height: 1.5; }
+.compare-col.express .compare-single { background: rgba(255,255,255,.07); padding: 28px; height: 100%; }
+.compare-col.express .compare-single .big { font-size: 22px; font-weight: 700; color: #fff; margin-bottom: 20px; display: block; }
+.compare-col.express .compare-single p { font-size: 13px; color: #c8c6c4; margin-bottom: 14px; line-height: 1.6; padding-left: 20px; position: relative; }
+.compare-col.express .compare-single p::before { content: '✓'; position: absolute; left: 0; color: #4ade80; font-weight: 700; }
+.compare-col.express code { display: block; margin-top: 24px; background: #0f1a25; color: #4ade80; padding: 12px 16px; border-radius: 6px; font-size: 12px; font-family: Consolas, monospace; }
+@media (max-width: 700px) { .compare-grid { grid-template-columns: 1fr; } }
+
 /* ─── FEATURES GRID ─────────────────────────────────────────────────────── */
 .features { padding: 64px 0 48px; }
 .section-label { text-align: center; color: var(--accent); font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; }
@@ -295,19 +314,19 @@ footer a:hover { text-decoration: underline; }
       <div class="mode-card">
         <span class="mode-tag" style="background:#107c10">Mailbox Server</span>
         <h3>Full Exchange Installation</h3>
-        <p>The default mode. Install Exchange 2016, 2019, or SE from scratch — prerequisites, AD preparation, Exchange setup, and 40+ hardening and performance tasks. Hand over a fully production-ready, documented server.</p>
+        <p>The default mode. Install Exchange 2016, 2019, or SE from scratch — all prerequisites auto-downloaded, Windows and Exchange Security Updates applied, AD prepared, Exchange installed, and 40+ hardening and performance tasks completed. Hand over a fully production-ready, documented server.</p>
       </div>
 
       <div class="mode-card">
         <span class="mode-tag" style="background:#5c2d91">Recipient Management</span>
-        <h3>Recipient Management Tools</h3>
-        <p>Use <code>-InstallRecipientManagement</code> to install the Exchange Recipient Management toolset on a dedicated admin workstation (Windows Server or Windows 11). Manage on-premises mailboxes and distribution groups without direct access to an Exchange server.</p>
+        <h3>Hybrid AD Object Management</h3>
+        <p>In hybrid environments, Microsoft requires Exchange to be present for modifying AD attributes of mail-enabled objects. <code>-InstallRecipientManagement</code> installs only what is needed to manage Exchange recipients in AD — no mailbox role, no transport services. Runs on Windows 11 or any member server.</p>
       </div>
 
       <div class="mode-card">
         <span class="mode-tag" style="background:#5c2d91">Management Tools</span>
-        <h3>Hybrid AD Object Management</h3>
-        <p>Microsoft requires Exchange management tools to modify AD attributes of mail-enabled objects in hybrid environments. <code>-InstallManagementTools</code> installs just the Exchange Management Shell on Windows 11 or a member server — no mailbox role, no transport services, clean hybrid AD object management.</p>
+        <h3>Admin Workstation</h3>
+        <p><code>-InstallManagementTools</code> installs the Exchange Management Shell and admin toolset on a dedicated workstation (Windows Server or Windows 11). Manage mailboxes, distribution groups, and connectors from a central admin machine without logging on to an Exchange server directly.</p>
       </div>
 
       <div class="mode-card">
@@ -338,6 +357,12 @@ footer a:hover { text-decoration: underline; }
         <div class="feature-icon" style="background:#e3f2fd">🛡</div>
         <h3>Security Hardening</h3>
         <p>TLS 1.2/1.3, SMBv1/WDigest/NetBIOS disabled, LSA Protection, Extended Protection, IPv4 over IPv6 preference, MRS Proxy and MAPI encryption hardened, Serialized Data Signing, LM level 5, SMTP banner, unnecessary Windows services disabled (Print Spooler, Fax, Secondary Logon, Smart Card, Windows Search), Shutdown Event Tracker disabled — all applied automatically with reference links in the report.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#e1f5fe">⬇</div>
+        <h3>Automatic Prerequisites &amp; Security Updates</h3>
+        <p>.NET 4.8/4.8.1, VC++ 2012 &amp; 2013, UCMA 4.0, URL Rewrite — downloaded and installed automatically, skipped if already present. Windows security updates applied via Windows Update before Exchange setup. Current Exchange Security Update detected dynamically via HealthChecker's build dictionary and installed without manual KB hunting.</p>
       </div>
 
       <div class="feature-card">
@@ -386,6 +411,49 @@ footer a:hover { text-decoration: underline; }
   </div>
 </div>
 
+<!-- ═══ MANUAL vs EXPRESS ════════════════════════════════════════════════ -->
+<div class="compare">
+  <div class="container">
+    <div class="section-label">EXpress vs. manual installation</div>
+    <h2 class="section-title">What a manual Exchange deployment <strong>actually involves</strong></h2>
+    <p class="section-sub">Every step you'd have to perform by hand — and what EXpress does instead.</p>
+    <div class="compare-grid">
+      <div class="compare-col manual">
+        <div class="compare-header">❌ Manual installation</div>
+        <ul>
+          <li>Identify the correct .NET version for your OS, find the download, install, reboot</li>
+          <li>Hunt down VC++ 2012 and 2013 Redistributable links — both required, neither obvious</li>
+          <li>Download and install URL Rewrite Module 2.1 from IIS.net</li>
+          <li>Copy UCMA 4.0 Setup from Exchange media, install manually</li>
+          <li>Run Windows Update, wait, reboot, repeat until clean</li>
+          <li>Look up the current Exchange Security Update KB, find the download, install it</li>
+          <li>Read Microsoft's TLS hardening guide across multiple documentation pages</li>
+          <li>Disable SMBv1, WDigest, NetBIOS, HTTP/2 — each a separate registry edit</li>
+          <li>Enable LSA Protection, Extended Protection, Serialized Data Signing</li>
+          <li>Set LM compatibility level, disable Print Spooler, Fax, Secondary Logon</li>
+          <li>Configure High Performance power plan, pagefile, TCP offload, RSS, NIC queues</li>
+          <li>Set virtual directory URLs, bind certificate to IIS and SMTP</li>
+          <li>Download and run HealthChecker separately, interpret results manually</li>
+          <li>Set up log cleanup task, configure SMTP banner, HSTS, AMSI body scanning</li>
+          <li>Write your own documentation for everything you did</li>
+        </ul>
+      </div>
+      <div class="compare-col express">
+        <div class="compare-header">✅ With EXpress</div>
+        <div class="compare-single">
+          <span class="big">One command.</span>
+          <p>All prerequisites downloaded and installed automatically — .NET 4.8/4.8.1, VC++ 2012 &amp; 2013, UCMA 4.0, URL Rewrite — each only if not already present.</p>
+          <p>Windows security updates installed via Windows Update before Exchange setup. Current Exchange Security Update detected dynamically and applied automatically.</p>
+          <p>40+ hardening and performance settings applied in a single Phase 5 run — TLS, SMB, LSA, Extended Protection, AMSI, power plan, pagefile, RSS, NIC queues and more.</p>
+          <p>HealthChecker runs automatically. Results are embedded in the installation report alongside every security setting and its best-practice recommendation.</p>
+          <p>Complete HTML installation report generated at the end — proof of everything that was configured, no manual documentation required.</p>
+          <code>.\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ PHASES ════════════════════════════════════════════════════════════ -->
 <div class="phases">
   <div class="container">
@@ -403,15 +471,15 @@ footer a:hover { text-decoration: underline; }
       <div class="phase-item">
         <div class="phase-num">1</div>
         <div class="phase-body">
-          <h4>Windows Features &amp; Updates</h4>
-          <p>All required Windows Server roles and features installed in a single batch. Optional Windows security updates. Source server config exported.</p>
+          <h4>Windows Features &amp; Security Updates</h4>
+          <p>All required Windows Server roles and features installed in a single batch. Windows security updates applied automatically via Windows Update — no manual patch hunting. Source server config exported for swing migrations.</p>
         </div>
       </div>
       <div class="phase-item">
         <div class="phase-num">2</div>
         <div class="phase-body">
-          <h4>Prerequisites</h4>
-          <p>.NET Framework 4.8 / 4.8.1, OS-specific hotfixes, Visual C++ 2012 / 2013 Redistributables, URL Rewrite Module 2.1.</p>
+          <h4>Prerequisites &amp; Exchange Security Update</h4>
+          <p>.NET Framework 4.8 / 4.8.1, OS-specific hotfixes, VC++ 2012 / 2013 Redistributables, URL Rewrite 2.1 — all downloaded automatically, skipped if already installed. Current Exchange Security Update detected dynamically and applied before setup.</p>
         </div>
       </div>
       <div class="phase-item">
