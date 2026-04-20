@@ -5042,7 +5042,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $pollInterval = 5   # seconds between status checks
         $elapsed      = 0
         $cancelled    = $false
-        Write-Host '  Press C to cancel Windows Update installation at any time.' -ForegroundColor DarkGray
+        Write-Host '  Press X to cancel Windows Update installation at any time.' -ForegroundColor DarkGray
 
         while ($wuJob.State -eq 'Running') {
             Start-Sleep -Seconds $pollInterval
@@ -5050,13 +5050,13 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
             $remaining  = $WU_DOWNLOAD_TIMEOUT_SEC - $elapsed
             $pct        = [Math]::Min(99, [int]($elapsed * 100 / $WU_DOWNLOAD_TIMEOUT_SEC))
-            $statusText = 'Installing {0} update(s) — {1}s elapsed, {2}s remaining (C = cancel)' -f $approvedKBs.Count, $elapsed, $remaining
+            $statusText = 'Installing {0} update(s) — {1}s elapsed, {2}s remaining (X = cancel)' -f $approvedKBs.Count, $elapsed, $remaining
             Write-Progress -Activity 'Windows Updates' -Status $statusText -PercentComplete $pct
 
             # Non-blocking key check for cancellation
             if ([Console]::KeyAvailable) {
                 $key = [Console]::ReadKey($true)
-                if ($key.Key -in @([ConsoleKey]::C, [ConsoleKey]::Q)) {
+                if ($key.Key -in @([ConsoleKey]::X, [ConsoleKey]::Q)) {
                     Write-Progress -Activity 'Windows Updates' -Completed
                     Write-MyWarning 'Windows Update installation cancelled by user — continuing Exchange installation without updates'
                     Stop-Job  $wuJob -ErrorAction SilentlyContinue
