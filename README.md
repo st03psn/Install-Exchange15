@@ -184,6 +184,13 @@ The following best-practice configurations are automatically applied after Excha
 - **Windows Defender exclusions** — folder, process, and extension exclusions per Microsoft guidance
 - **HSTS header** — `Strict-Transport-Security: max-age=31536000` on OWA and ECP; conditional on `-CertificatePath`
 - **AMSI body scanning** — OWA, ECP, EWS, PowerShell (Exchange 2016/2019; Exchange SE: default-on since Aug 2025 SU)
+- **Windows services disabled** (CIS / NSA / DISA STIG) — the following services are stopped and set to `Disabled`; none are required on Exchange and each increases the attack surface or interferes with automation:
+  - `Spooler` (Print Spooler) — PrintNightmare CVE-2021-34527; no printing on mail servers
+  - `Fax` — no use case on Exchange
+  - `seclogon` (Secondary Logon) — pass-the-hash / privilege escalation vector (`runas`)
+  - `SCardSvr` (Smart Card) — no smart card hardware on servers
+  - `WSearch` (Windows Search) — Exchange uses its own content indexing engine
+- **Shutdown Event Tracker disabled** — registry (`ShutdownReasonOn/UI = 0`); redundant with Event IDs 1074/6006/6008; dialog blocks unattended Autopilot reboots
 
 ### Performance Tuning
 - **High Performance power plan** — activated automatically; Exchange must not run on Balanced
@@ -192,7 +199,7 @@ The following best-practice configurations are automatically applied after Excha
 - **TCP settings** — RPC minimum connection timeout 120 s; Keep-Alive 15 min
 - **TCP Chimney and Task Offload disabled** — Microsoft recommendation for Exchange servers
 - **HTTP/2 disabled** — see Security Hardening above
-- **Windows Search service disabled** — Exchange uses its own content indexing engine
+- **Windows Search service disabled** — see *Windows services disabled* in Security Hardening above
 - **RSS enabled on all NICs** — ensures network traffic uses all CPU cores; receive queue count = physical core count
 - **MaxConcurrentAPI configured** — Netlogon set to logical core count (min 10) to prevent 0xC000005E Kerberos errors
 - **CtsProcessorAffinityPercentage = 0** — Exchange Search best practice (no CPU affinity limit)
@@ -217,6 +224,10 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.68 — April 2026
+- **Unnecessary services disabled** (`Disable-UnnecessaryServices`) — Print Spooler (PrintNightmare, CVE-2021-34527), Fax, Secondary Logon (pass-the-hash vector), Smart Card; per CIS/NSA/DISA STIG recommendations
+- **Shutdown Event Tracker disabled** (`Disable-ShutdownEventTracker`) — redundant with Windows Event IDs 1074/6006/6008; dialog blocks unattended Autopilot reboots
 
 ### v5.66 — April 2026
 - **IPv4 over IPv6 preference** (`Set-IPv4OverIPv6Preference`) — `DisabledComponents = 0x20`; Microsoft recommended setting for Exchange; keeps IPv6 loopback intact; flags `RebootRequired`

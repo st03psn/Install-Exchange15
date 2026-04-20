@@ -4,6 +4,13 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.68 (2026-04-20)
+
+- `Disable-UnnecessaryServices` — disables Print Spooler (Spooler), Fax, Secondary Logon (seclogon), Smart Card (SCardSvr); per CIS Benchmark / NSA / DISA STIG; Phase 5 hardening
+- `Disable-ShutdownEventTracker` — sets `ShutdownReasonOn`/`ShutdownReasonUI = 0` under `HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Reliability`; redundant with Event IDs 1074/6006/6008; avoids blocking Autopilot reboots
+
+---
+
 ## v5.6 (2026-04-19)
 
 **Bugfixes (v5.51):**

@@ -1179,7 +1179,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.66'
+    $ScriptVersion = '5.68'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -6164,6 +6164,36 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         }
     }
 
+    function Disable-UnnecessaryServices {
+        Write-MyOutput 'Disabling unnecessary Windows services (security hardening)'
+        $services = @(
+            @{ Name = 'Spooler';  Desc = 'Print Spooler (PrintNightmare attack surface, CVE-2021-34527)' }
+            @{ Name = 'Fax';      Desc = 'Fax service (not required on Exchange)' }
+            @{ Name = 'seclogon'; Desc = 'Secondary Logon (pass-the-hash / privilege escalation vector)' }
+            @{ Name = 'SCardSvr'; Desc = 'Smart Card (not required on Exchange)' }
+        )
+        foreach ($svc in $services) {
+            $s = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
+            if ($s) {
+                if ($s.Status -eq 'Running') {
+                    Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
+                }
+                Set-Service -Name $svc.Name -StartupType Disabled -ErrorAction SilentlyContinue
+                Write-MyVerbose ('Disabled: {0}' -f $svc.Desc)
+            }
+            else {
+                Write-MyVerbose ('Service not found, skipping: {0}' -f $svc.Name)
+            }
+        }
+    }
+
+    function Disable-ShutdownEventTracker {
+        # Redundant with Event IDs 1074/6006/6008; dialog blocks unattended Autopilot reboots
+        Write-MyOutput 'Disabling Shutdown Event Tracker (redundant with event log; blocks unattended reboots)'
+        Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Reliability' -Name 'ShutdownReasonOn' -Value 0
+        Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Reliability' -Name 'ShutdownReasonUI' -Value 0
+    }
+
     function Disable-WDigestCredentialCaching {
         # Prevents cleartext credential storage in LSASS memory (Mimikatz mitigation)
         Write-MyOutput 'Disabling WDigest credential caching (security hardening)'
@@ -8129,6 +8159,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Step-P5 'TCP settings';                 Set-TCPSettings
                 Step-P5 'SMBv1';                        Disable-SMBv1
                 Step-P5 'Windows Search service';       Disable-WindowsSearchService
+                Step-P5 'Unnecessary services';         Disable-UnnecessaryServices
+                Step-P5 'Shutdown Event Tracker';       Disable-ShutdownEventTracker
                 Step-P5 'WDigest caching';              Disable-WDigestCredentialCaching
                 Step-P5 'HTTP/2';                       Disable-HTTP2
                 Step-P5 'TCP offload';                  Disable-TCPOffload
