@@ -2528,32 +2528,35 @@ process {
     }
 
     function Test-Preflight {
-        Write-MyOutput 'Performing preflight checks'
+        # Informational checks only on first run (phase 0/1); on resume these were already validated
+        if ($State['InstallPhase'] -le 1) {
+            Write-MyOutput 'Performing preflight checks'
 
-        $Computer = Get-LocalFQDNHostname
-        if ( $Computer) {
-            Write-MyOutput "Computer name is $Computer"
-        }
+            $Computer = Get-LocalFQDNHostname
+            if ( $Computer) {
+                Write-MyOutput "Computer name is $Computer"
+            }
 
-        Write-MyOutput 'Checking temporary installation folder'
-        New-Item -Path $State['InstallPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
-        if ( !( Test-Path $State['InstallPath'])) {
-            Write-MyError "Can't create temporary folder $($State['InstallPath'])"
-            exit $ERR_CANTCREATETEMPFOLDER
-        }
+            Write-MyOutput 'Checking temporary installation folder'
+            New-Item -Path $State['InstallPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+            if ( !( Test-Path $State['InstallPath'])) {
+                Write-MyError "Can't create temporary folder $($State['InstallPath'])"
+                exit $ERR_CANTCREATETEMPFOLDER
+            }
 
-        if ( [System.Version]$MajorOSVersion -ge [System.Version]$WS2016_MAJOR ) {
-            Write-MyOutput "Operating System is $($MajorOSVersion).$($MinorOSVersion)"
-        }
-        else {
-            Write-MyError 'The following Operating Systems are supported: Windows Server 2019, Windows Server 2022 (Exchange 2019) or Windows Server 2025 (Exchange 2019 CU15+)'
-            exit $ERR_UNEXPECTEDOS
-        }
-        Write-MyOutput ('Server core mode: {0}' -f (Test-ServerCore))
+            if ( [System.Version]$MajorOSVersion -ge [System.Version]$WS2016_MAJOR ) {
+                Write-MyOutput "Operating System is $($MajorOSVersion).$($MinorOSVersion)"
+            }
+            else {
+                Write-MyError 'The following Operating Systems are supported: Windows Server 2019, Windows Server 2022 (Exchange 2019) or Windows Server 2025 (Exchange 2019 CU15+)'
+                exit $ERR_UNEXPECTEDOS
+            }
+            Write-MyOutput ('Server core mode: {0}' -f (Test-ServerCore))
 
-        $NetVersion = Get-NETVersion
-        $NetVersionText = Get-NetVersionText $NetVersion
-        Write-MyOutput ".NET Framework is $NetVersion ($NetVersionText)"
+            $NetVersion = Get-NETVersion
+            $NetVersionText = Get-NetVersionText $NetVersion
+            Write-MyOutput ".NET Framework is $NetVersion ($NetVersionText)"
+        }
 
         if (! ( Test-Admin)) {
             Write-MyWarning 'Script not running in elevated mode, attempting auto-elevation ..'
@@ -2586,7 +2589,8 @@ process {
             Write-MyOutput 'Script running in elevated mode'
         }
 
-        if ( $State['Autopilot']) {
+        # Credential validation only needed while Exchange setup is running (phases 0-4)
+        if ($State['InstallPhase'] -le 4 -and $State['Autopilot']) {
             $credentialsFromCommandLine = $PSBoundParameters.ContainsKey('Credentials')
             if ( -not( $State['AdminAccount'] -and $State['AdminPassword'])) {
                 # No credentials in state yet — prompt interactively if possible, else fail
@@ -3552,7 +3556,9 @@ Write-Log 'Exchange log cleanup finished'
         if (-not $existingAgents) {
             Write-MyOutput 'Installing Exchange antispam agents'
             try {
+                $savedWP = $WarningPreference; $WarningPreference = 'SilentlyContinue'
                 & $installScript *>&1 | Out-Null
+                $WarningPreference = $savedWP
                 Write-MyVerbose 'Restarting MSExchangeTransport after antispam agent install'
                 Restart-Service MSExchangeTransport -Force -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
                 Write-MyVerbose 'MSExchangeTransport restarted after antispam agent install'
@@ -3576,7 +3582,7 @@ Write-Log 'Exchange log cleanup finished'
             $isRecipientFilter = $agent.Identity -like '*Recipient Filter*'
             if ($isRecipientFilter) {
                 if (-not $agent.Enabled) {
-                    $null = Enable-TransportAgent -Identity $agent.Identity -Confirm:$false -ErrorAction SilentlyContinue
+                    $null = Enable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
                     Write-MyOutput ('Enabled: {0}' -f $agent.Identity)
                     $needsTransportRestart = $true
                 }
@@ -3586,7 +3592,7 @@ Write-Log 'Exchange log cleanup finished'
             }
             else {
                 if ($agent.Enabled) {
-                    $null = Disable-TransportAgent -Identity $agent.Identity -Confirm:$false -ErrorAction SilentlyContinue
+                    $null = Disable-TransportAgent -Identity $agent.Identity -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
                     Write-MyOutput ('Disabled: {0}' -f $agent.Identity)
                     $needsTransportRestart = $true
                 }
@@ -7708,7 +7714,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         LockScreen
     }
 
-    Clear-DesktopBackground
+    if ($State['InstallPhase'] -le 1) {
+        Clear-DesktopBackground
+    }
 
     if ( $State.containsKey("LastSuccessfulPhase")) {
         Write-MyVerbose "Continuing from last successful phase $($State["InstallPhase"])"
