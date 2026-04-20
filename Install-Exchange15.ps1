@@ -3945,8 +3945,7 @@ Write-Log 'Exchange log cleanup finished'
             try {
                 # HC has its own log; suppress all console output to keep the install log clean.
                 # Pass a file name prefix (not a directory) so HC writes to ReportsPath correctly.
-                $hcOutPrefix = Join-Path $State['ReportsPath'] 'HealthChecker'
-                & $hcPath -OutputFilePath $hcOutPrefix -SkipVersionCheck *>&1 | Out-Null
+                & $hcPath -OutputFilePath $State['ReportsPath'] -SkipVersionCheck *>&1 | Out-Null
                 # Find the report file HealthChecker just created
                 $hcReport = Get-ChildItem -Path $State['ReportsPath'] -Filter 'HealthChecker*.htm*' -ErrorAction SilentlyContinue |
                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
