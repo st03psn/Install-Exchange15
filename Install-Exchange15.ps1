@@ -11,7 +11,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 5.65, April 20, 2026
+    Version 5.66, April 20, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -562,6 +562,15 @@
               now accepts -MinBuild parameter and reinstalls if installed version is below minimum
             - Phase 6: MSExchangeFrontEndTransport now started (not just configured to Automatic)
               after startup type is set; service was left stopped after Exchange setup
+    5.66    IPv4 preference and NetBIOS hardening (2026-04-20):
+            - Set-IPv4OverIPv6Preference: sets DisabledComponents = 0x20 in
+              HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters — prefers IPv4 over
+              IPv6 on all non-loopback interfaces while keeping IPv6 loopback intact (required
+              by Exchange internal components); Microsoft recommended setting for Exchange;
+              flags RebootRequired when changed
+            - Disable-NetBIOSOnAllNICs: calls SetTcpipNetbios(2) via WMI on all IP-enabled
+              NICs; Exchange does not require NetBIOS; disabling reduces attack surface for
+              LLMNR / NBT-NS poisoning and credential capture attacks
     5.65    Fix broken SU download hint URL (2026-04-20):
             - Replace aka.ms/ExchangeSU (resolves to Bing, not Exchange content) with the
               official Microsoft Learn build numbers page which lists all SUs with download links:
@@ -1170,7 +1179,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.65'
+    $ScriptVersion = '5.66'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -6174,6 +6183,48 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         }
     }
 
+    function Set-IPv4OverIPv6Preference {
+        # Microsoft recommendation for Exchange: prefer IPv4 over IPv6 (DisabledComponents = 0x20).
+        # Disables IPv6 on all non-loopback interfaces but keeps the IPv6 loopback intact,
+        # which Exchange internal components rely on. Full IPv6 disable (0xFF) is not recommended.
+        $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
+        $current = (Get-ItemProperty -Path $regPath -Name DisabledComponents -ErrorAction SilentlyContinue).DisabledComponents
+        if ($current -eq 0x20) {
+            Write-MyVerbose 'IPv4 over IPv6 preference already set (DisabledComponents = 0x20) (OK)'
+        } else {
+            Set-RegistryValue -Path $regPath -Name 'DisabledComponents' -Value 0x20 -PropertyType DWord
+            Write-MyOutput 'IPv4 over IPv6 preference set (DisabledComponents = 0x20) — effective after reboot'
+            $State['RebootRequired'] = $true
+        }
+    }
+
+    function Disable-NetBIOSOnAllNICs {
+        # Disables NetBIOS over TCP/IP on all NICs. Exchange does not require NetBIOS;
+        # disabling it reduces attack surface (LLMNR/NBT-NS poisoning, credential capture).
+        # SetTcpipNetbios(2) = Disable NetBIOS over TCP/IP
+        Write-MyOutput 'Disabling NetBIOS over TCP/IP on all NICs'
+        try {
+            $nics = Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' -ErrorAction Stop
+            $changed = 0
+            foreach ($nic in $nics) {
+                $result = ($nic | Invoke-CimMethod -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = [uint32]2 } -ErrorAction SilentlyContinue).ReturnValue
+                if ($result -eq 0) {
+                    Write-MyVerbose ('NetBIOS disabled on: {0}' -f $nic.Description)
+                    $changed++
+                } elseif ($result -eq 1) {
+                    Write-MyVerbose ('NetBIOS disable on {0}: reboot required' -f $nic.Description)
+                    $changed++
+                    $State['RebootRequired'] = $true
+                } else {
+                    Write-MyWarning ('NetBIOS disable on {0} returned code {1}' -f $nic.Description, $result)
+                }
+            }
+            Write-MyVerbose ('NetBIOS disabled on {0} NIC(s)' -f $changed)
+        } catch {
+            Write-MyWarning ('Failed to disable NetBIOS: {0}' -f $_.Exception.Message)
+        }
+    }
+
     function Enable-LSAProtection {
         # Enables LSA Protection (RunAsPPL) to prevent credential theft from LSASS memory.
         # Exchange 2019 CU12+ and Exchange SE are compatible with LSA Protection.
@@ -7904,6 +7955,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     'Windows Defender exclusions', 'Power plan', 'NIC power management', 'Page file',
                     'TCP settings', 'SMBv1', 'Windows Search', 'WDigest', 'HTTP/2', 'TCP offload',
                     'Credential Guard', 'LM compatibility', 'LSA Protection', 'RSS / NIC queues',
+                    'IPv4 over IPv6', 'NetBIOS on NICs',
                     'MaxConcurrentAPI', 'Disk allocation', 'Scheduled tasks', 'Server Manager',
                     'CRL timeout', 'TLS / Schannel', 'Root CA auto-update', 'Exchange module + search tuning',
                     'Security hardening', 'Org/Transport optimizations', 'IANA timezone mapping',
@@ -7937,6 +7989,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 Step-P5 'LM compatibility level';       Set-LmCompatibilityLevel
                 Step-P5 'LSA Protection (RunAsPPL)';   Enable-LSAProtection
                 Step-P5 'RSS / NIC queues';             Enable-RSSOnAllNICs
+                Step-P5 'IPv4 over IPv6';               Set-IPv4OverIPv6Preference
+                Step-P5 'NetBIOS on NICs';              Disable-NetBIOSOnAllNICs
                 Step-P5 'MaxConcurrentAPI';             Set-MaxConcurrentAPI
                 Step-P5 'Disk allocation unit';         Test-DiskAllocationUnitSize
                 Step-P5 'Scheduled tasks';              Disable-UnnecessaryScheduledTasks
