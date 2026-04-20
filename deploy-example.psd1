@@ -50,9 +50,10 @@
     # AutoPilot & credentials
     # -------------------------------------------------------------------------
 
-    # AutoPilot: automatic reboot + resume after each phase
-    # Credentials must be entered interactively on first run (stored encrypted in state file)
-    AutoPilot = $true
+    # Autopilot: automatic reboot + resume after each phase (fully unattended).
+    # Set to $false (or omit) to use Copilot (interactive) mode.
+    # Credentials must be entered interactively on first run (stored encrypted in state file).
+    Autopilot = $true
 
     # -------------------------------------------------------------------------
     # Security hardening  (recommended settings shown below)

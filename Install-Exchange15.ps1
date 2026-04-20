@@ -19,7 +19,7 @@
 
     .DESCRIPTION
     This script can install Exchange 2016/2019/SE prerequisites, optionally create the Exchange
-    organization (prepares Active Directory) and installs Exchange Server. When the AutoPilot switch is
+    organization (prepares Active Directory) and installs Exchange Server. When the Autopilot switch is
     specified, it will do all the required rebooting and automatic logging on using provided credentials.
     To keep track of provided parameters and state, it uses an XML file; if this file is
     present, this information will be used to resume the process. Note that you can use a central
@@ -41,7 +41,7 @@
       - Windows Server 2022 (Exchange 2019 CU12+/SE)
       - Windows Server 2025 (Exchange 2019 CU15+/SE)
     - Domain-joined system, except for Edge Server Role
-    - "AutoPilot" mode requires account with elevated administrator privileges
+    - "Autopilot" mode requires account with elevated administrator privileges
     - When you let the script prepare AD, the account needs proper permissions
 
     .REVISIONS
@@ -55,14 +55,14 @@
     1.03    Replaced installing most OS features in favor of /InstallWindowsComponents
             Removed installation of Office Filtering Pack
     1.1     When used for AD preparation, RSAT-ADDS-Tools won't be uninstalled
-            Pending reboot detection. In AutoPilot, script will reboot and restart phase.
+            Pending reboot detection. In Autopilot, script will reboot and restart phase.
             Installs Server-Media-Foundation feature (UCMA 4.0 requirement)
-            Validates provided credentials for AutoPilot
+            Validates provided credentials for Autopilot
             Check OS version as string (should accomodate non-US OS)
     1.5     Added support for WS2008R2 (i.e. added prereqs NET45, WMF3), IEESC toggling,
             KB974405, KB2619234, KB2758857 (supersedes KB2533623). Inserted phase for
             WS2008R2 to install hotfixes (+reboot); this phase is skipped for WS2012.
-            Added InstallPath to AutoPilot set (or default won't be set).
+            Added InstallPath to Autopilot set (or default won't be set).
     1.51    Rewrote Test-Credentials due to missing .NET 3.5 Out of the Box in WS2008R2.
             Testing for proper loading of servermanager module in WS2008R2.
     1.52    Fix .NET / PrepareAD order for WS2008R2, relocated RebootPending check
@@ -85,7 +85,7 @@
             Added KB2938053 (SP1 Transport Agent Fix)
             Added switch InstallFilterPack to install Office Filter Pack (OneNote & Publisher support)
             Fixed Exchange failed setup exit code anomaly
-    1.71    Uncommented RunOnce line - AutoPilot should work again
+    1.71    Uncommented RunOnce line - Autopilot should work again
             Using strings for OS version comparisons (should fix issue w/localized OS)
             Fixed issue installing .NET 4.51 on WS2012 ('all in one' kb2858728 contains/reports
             WS2008R2/kb958488 versus WS2012/kb2881468
@@ -393,7 +393,7 @@
               3-phase install flow installing setup.exe /roles:ManagementTools
             - New Build.ps1 helper to compile the script into a single .exe via PS2Exe
             - Script self-detection when running as .exe (PS2Exe): RunOnce command is
-              adjusted accordingly so AutoPilot mode keeps working
+              adjusted accordingly so Autopilot mode keeps working
             - Automatic Windows Update + Exchange Security Update handling (-InstallWindowsUpdates)
               via PSWindowsUpdate module with WUA COM fallback; known Exchange SU download list
               ($ExchangeSUMap: SE RTM/2019 CU13-15/2016 CU23, direct download.microsoft.com URLs)
@@ -416,12 +416,12 @@
             - Fixed Server Manager and IE ESC reappearing after every reboot: Disable-ServerManagerAtLogon
               and Disable-IEESC moved to Phase 1 (called once; registry changes persist across reboots)
             - Install-PendingWindowsUpdates: per-update prompt (Y/N/A/S) in interactive mode;
-              AutoPilot installs all without prompting; download+install runs in background job
+              Autopilot installs all without prompting; download+install runs in background job
               with $WU_DOWNLOAD_TIMEOUT_SEC (300s) timeout — Exchange install continues on timeout
             - config.psd1 auto-detection: if found in script/exe folder on interactive start,
               user is asked whether to use it before the installation menu is shown
             - Install-PendingWindowsUpdates: prompt shown whenever console is interactive
-              (AutoPilot no longer suppresses prompt); timeout raised to 3600s (60 min)
+              (Autopilot no longer suppresses prompt); timeout raised to 3600s (60 min)
             - Write-PhaseProgress: PS2Exe fallback — emits status via Write-MyOutput when
               Write-Progress is not rendered (Id 0 = phase transitions, Id 1 = Phase 5 steps)
     5.2     v5.2 feature release:
@@ -454,7 +454,7 @@
               caused a parse error (ArgumentException: Too many )'s) on script load
             - Install-PendingWindowsUpdates: installed count now filtered to approved KBs only;
               PSWindowsUpdate previously returned already-installed updates as 'Installed'
-            - Disable-IEESC and Disable-ServerManagerAtLogon moved from AutoPilot reboot block
+            - Disable-IEESC and Disable-ServerManagerAtLogon moved from Autopilot reboot block
               to Phase 1 (called once); registry changes persist across reboots — no need to
               repeat before each reboot
             - Removed dead code: DisableSharedCacheServiceProbe (function was defined but
@@ -550,12 +550,12 @@
             - New-InstallationReport: HealthChecker section distinguishes -SkipHealthCheck
               (intentionally skipped) from report not found (HC failed)
             - Reports subfolder: all reports and logs written to <InstallPath>\reports\
-              ($State['ReportsPath']); folder created on first run and on AutoPilot resume
+              ($State['ReportsPath']); folder created on first run and on Autopilot resume
             - New-AnonymousRelayConnector: menu now creates both internal AND external relay
               connectors when [Y] selected; blank subnet entry uses RFC 5737 placeholder
               192.0.2.1/32 (never routable, no SMTP traffic matches until updated); Default
               Frontend AnonymousUsers hardening skipped when only placeholders are set
-            - Register-ExchangeLogCleanup: interactive prompt skipped in AutoPilot mode (uses
+            - Register-ExchangeLogCleanup: interactive prompt skipped in Autopilot mode (uses
               default C:\#service silently)
     5.4     Installation Report + Verbose Logging (2026-04-18):
             - New-InstallationReport: comprehensive HTML report at Phase 6 completion;
@@ -617,7 +617,7 @@
     .PARAMETER TargetPath
     Specifies the location where to install the Exchange binaries.
 
-    .PARAMETER AutoPilot (switch)
+    .PARAMETER Autopilot (switch)
     Specifies you want to automatically restart and logon using Account specified. When
     not specified, you will need to restart, logon and start the script again manually.
     You also need to use the InstallPath parameter when used before, so the script knows where
@@ -727,7 +727,7 @@
     .PARAMETER InstallWindowsUpdates (optional, v5.1)
     Checks for pending Windows Updates and applicable Exchange Security Updates (SUs)
     during phase 1 / post-setup, downloads and installs them. Reboots are integrated
-    into the existing AutoPilot phase flow.
+    into the existing Autopilot phase flow.
 
     .PARAMETER SkipWindowsUpdates (optional, v5.1)
     Explicitly skips the Windows Update / Exchange SU check even when the menu or
@@ -791,8 +791,8 @@
     .\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1
 
     .EXAMPLE
-    # Fully unattended mailbox install with AutoPilot (automatic reboots through all phases)
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -Organization Contoso -AutoPilot
+    # Fully unattended mailbox install with Autopilot (automatic reboots through all phases)
+    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -Organization Contoso -Autopilot
 
     .EXAMPLE
     # Full install with custom DB paths, Autodiscover SCP, and certificate
@@ -800,11 +800,11 @@
     .\Install-Exchange15.ps1 -SourcePath C:\Install\ExchangeServerSE-x64.iso -Organization Contoso `
         -MDBName MDB01 -MDBDBPath D:\MailboxData\MDB01\DB -MDBLogPath D:\MailboxData\MDB01\Log `
         -SCP https://autodiscover.contoso.com/autodiscover/autodiscover.xml `
-        -CertificatePath C:\Certs\mail.pfx -AutoPilot -Credentials $Cred
+        -CertificatePath C:\Certs\mail.pfx -Autopilot -Credentials $Cred
 
     .EXAMPLE
     # Swing migration: copy config from source server, import PFX, join DAG
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -AutoPilot `
+    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -Autopilot `
         -CopyServerConfig EX01 -CertificatePath D:\Certs\mail.pfx -DAGName DAG01
 
     .EXAMPLE
@@ -817,15 +817,15 @@
 
     .EXAMPLE
     # Recover a failed server
-    .\Install-Exchange15.ps1 -Recover -SourcePath D:\Exchange -AutoPilot
+    .\Install-Exchange15.ps1 -Recover -SourcePath D:\Exchange -Autopilot
 
     .EXAMPLE
     # Edge Transport role
-    .\Install-Exchange15.ps1 -InstallEdge -SourcePath D:\Exchange -AutoPilot
+    .\Install-Exchange15.ps1 -InstallEdge -SourcePath D:\Exchange -Autopilot
 
     .EXAMPLE
     # Install Recipient Management Tools on an admin workstation
-    .\Install-Exchange15.ps1 -InstallRecipientManagement -SourcePath D:\Exchange -AutoPilot
+    .\Install-Exchange15.ps1 -InstallRecipientManagement -SourcePath D:\Exchange -Autopilot
 
     .EXAMPLE
     # Install Exchange Management Tools only (Server OS)
@@ -838,7 +838,7 @@
         -RelaySubnets '10.0.1.0/24' -ExternalRelaySubnets '10.0.2.5'
 
 #>
-[cmdletbinding(DefaultParameterSetName = 'AutoPilot')]
+[cmdletbinding(DefaultParameterSetName = 'Autopilot')]
 param(
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
@@ -859,7 +859,7 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'E')]
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ParameterSetName = 'AutoPilot')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Autopilot')]
     [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [parameter( Mandatory = $false, ParameterSetName = 'R')]
     [parameter( Mandatory = $false, ParameterSetName = 'T')]
@@ -885,7 +885,7 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [parameter( Mandatory = $false, ParameterSetName = 'R')]
     [parameter( Mandatory = $false, ParameterSetName = 'T')]
-    [switch]$AutoPilot,
+    [switch]$Autopilot,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'E')]
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
@@ -969,7 +969,7 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'E')]
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
-    [parameter( Mandatory = $false, ParameterSetName = 'AutoPilot')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Autopilot')]
     [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [ValidateRange(0, 6)]
     [int]$Phase,
@@ -1012,7 +1012,7 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [parameter( Mandatory = $false, ParameterSetName = 'R')]
     [parameter( Mandatory = $false, ParameterSetName = 'T')]
-    [parameter( Mandatory = $false, ParameterSetName = 'AutoPilot')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Autopilot')]
     [ValidateScript({ if (-not $_ -or (Test-Path $_ -PathType Leaf)) { $true } else { throw ('ConfigFile not found: {0}' -f $_) } })]
     [string]$ConfigFile,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
@@ -1555,14 +1555,14 @@ process {
         for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             try {
                 $defaultUser = if ($State['AdminAccount']) { $State['AdminAccount'] } else { [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
-                $rawCred = Get-Credential -UserName $defaultUser -Message ('Enter credentials for AutoPilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                $rawCred = Get-Credential -UserName $defaultUser -Message ('Enter credentials for Autopilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
                 # Get-Credential can return a PSObject wrapper in some terminal environments; unwrap before assigning to the typed $Credentials parameter variable.
                 $Script:Credentials = if ($rawCred -is [pscredential]) { $rawCred }
                                       elseif ($rawCred -and $rawCred.PSObject.BaseObject -is [pscredential]) { $rawCred.PSObject.BaseObject }
                                       else { $null }
                 # Fallback: Get-Credential returns $null silently in PS2Exe/compiled-exe and some RDP/Hyper-V console sessions.
                 if (-not $Script:Credentials) {
-                    Write-MyOutput ('Enter credentials for AutoPilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                    Write-MyOutput ('Enter credentials for Autopilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
                     $fbUser = Read-Host -Prompt ('Username [{0}]' -f $defaultUser)
                     if ([string]::IsNullOrWhiteSpace($fbUser)) { $fbUser = $defaultUser }
                     $fbPass = Read-Host -Prompt 'Password' -AsSecureString
@@ -1576,7 +1576,7 @@ process {
                 else {
                     $State['AdminAccount'] = $Script:Credentials.UserName
                     # ConvertFrom-SecureString without -Key uses DPAPI (user+machine bound).
-                    # AutoPilot always resumes as the same user on the same machine, so this is safe.
+                    # Autopilot always resumes as the same user on the same machine, so this is safe.
                     $State['AdminPassword'] = ($Script:Credentials.Password | ConvertFrom-SecureString)
                     Write-MyOutput ('Checking credentials (attempt {0}/{1})' -f $attempt, $maxAttempts)
                     if (Test-Credentials) {
@@ -2466,7 +2466,7 @@ process {
             Write-MyOutput 'Script running in elevated mode'
         }
 
-        if ( $State['AutoPilot']) {
+        if ( $State['Autopilot']) {
             $credentialsFromCommandLine = $PSBoundParameters.ContainsKey('Credentials')
             if ( -not( $State['AdminAccount'] -and $State['AdminPassword'])) {
                 # No credentials in state yet — prompt interactively if possible, else fail
@@ -2476,12 +2476,12 @@ process {
                     }
                 }
                 else {
-                    Write-MyError 'AutoPilot specified but no credentials provided'
+                    Write-MyError 'Autopilot specified but no credentials provided'
                     exit $ERR_NOACCOUNTSPECIFIED
                 }
             }
             else {
-                # Credentials already in state (command line, config file, or AutoPilot resume)
+                # Credentials already in state (command line, config file, or Autopilot resume)
                 Write-MyOutput 'Checking provided credentials'
                 if (Test-Credentials) {
                     Write-MyOutput 'Credentials valid'
@@ -3725,7 +3725,7 @@ Write-Log 'Exchange log cleanup finished'
         $server = $env:COMPUTERNAME
         $errors = 0
         $changed = 0
-        $forceParam = if ($State['AutoPilot']) { @{ Force = $true } } else { @{} }
+        $forceParam = if ($State['Autopilot']) { @{ Force = $true } } else { @{} }
 
         Write-MyOutput ('Configuring Virtual Directory URLs for namespace: {0}' -f $ns)
 
@@ -4041,7 +4041,7 @@ Write-Log 'Exchange log cleanup finished'
         if ($State['CertificatePath'])  { $instRows.Add('<tr><td>Certificate Path</td><td>{0}</td></tr>' -f $State['CertificatePath']) }
         if ($State['CopyServerConfig']) { $instRows.Add('<tr><td>Source Server Config</td><td>{0}</td></tr>' -f $State['CopyServerConfig']) }
         if ($State['LogRetentionDays']) { $instRows.Add('<tr><td>Log Retention</td><td>{0} days</td></tr>' -f $State['LogRetentionDays']) }
-        $instRows.Add('<tr><td>AutoPilot</td><td>{0}</td></tr>' -f $State['AutoPilot'])
+        $instRows.Add('<tr><td>Mode</td><td>{0}</td></tr>' -f (if ($State['Autopilot']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }))
         $instRows.Add('<tr><td>TLS 1.2 Enforced</td><td>{0}</td></tr>' -f $State['EnableTLS12'])
         $instRows.Add('<tr><td>TLS 1.3 Enforced</td><td>{0}</td></tr>' -f $State['EnableTLS13'])
         $instRows.Add('<tr><td>SSL 3 Disabled</td><td>{0}</td></tr>' -f $State['DisableSSL3'])
@@ -4229,16 +4229,17 @@ Write-Log 'Exchange log cleanup finished'
 <table class="data-table">{4}</table>
 "@ -f ($exRows -join ''), ($vdirRows -join ''), ($dbRows -join ''), ($connRows -join ''), ($certRows -join '')
 
-        # ── 5. SECURITY SETTINGS (with Exchange best-practice column) ─────────
+        # ── 5. SECURITY SETTINGS (with Exchange best-practice + reference column) ─
         $secRows = [System.Collections.Generic.List[string]]::new()
         function Get-SecRegVal($path, $name) { try { (Get-ItemProperty -Path $path -Name $name -ErrorAction Stop).$name } catch { $null } }
+        function Format-RefLink($url, $label) { '<a href="{0}" target="_blank" style="font-size:0.85em;white-space:nowrap">{1} ↗</a>' -f $url, $label }
 
         # TLS protocols — show current value + Exchange recommendation
         @(
-            @{ Proto='1.0'; Rec='Disabled'; LegacyRisk=$true  }
-            @{ Proto='1.1'; Rec='Disabled'; LegacyRisk=$true  }
-            @{ Proto='1.2'; Rec='Enabled';  LegacyRisk=$false }
-            @{ Proto='1.3'; Rec='Enabled (Exchange SE / 2019 CU15+ on WS2022+)'; LegacyRisk=$false }
+            @{ Proto='1.0'; Rec='Disabled'; LegacyRisk=$true;  RefUrl='https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-server-tls-guidance-part-1-getting-ready-for-tls-1-2/ba-p/607649'; RefLabel='Exchange TLS Guide' }
+            @{ Proto='1.1'; Rec='Disabled'; LegacyRisk=$true;  RefUrl='https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-server-tls-guidance-part-1-getting-ready-for-tls-1-2/ba-p/607649'; RefLabel='Exchange TLS Guide' }
+            @{ Proto='1.2'; Rec='Enabled';  LegacyRisk=$false; RefUrl='https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-server-tls-guidance-part-2-enabling-tls-1-2/ba-p/607646'; RefLabel='Exchange TLS Guide' }
+            @{ Proto='1.3'; Rec='Enabled (Exchange SE / 2019 CU15+ on WS2022+)'; LegacyRisk=$false; RefUrl='https://techcommunity.microsoft.com/t5/exchange-team-blog/tls-1-3-support-in-exchange-server/ba-p/3777803'; RefLabel='Exchange Blog' }
         ) | ForEach-Object {
             $proto      = $_.Proto
             $srvEnabled = Get-SecRegVal "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS $proto\Server" 'Enabled'
@@ -4247,39 +4248,39 @@ Write-Log 'Exchange log cleanup finished'
             $valText    = if ($null -eq $srvEnabled -and $null -eq $cliEnabled) { 'OS Default' } else { "Srv=$srvEnabled / Cli=$cliEnabled" }
             $label      = if ($isEnabled) { 'Enabled' } else { 'Disabled' }
             $badgeType  = if ($_.LegacyRisk) { if ($isEnabled) { 'warn' } else { 'ok' } } else { if ($isEnabled) { 'ok' } else { 'warn' } }
-            $secRows.Add(('<tr><td>TLS {0}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>' -f $proto, $valText, $_.Rec, (Format-Badge $label $badgeType)))
+            $secRows.Add(('<tr><td>TLS {0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>' -f $proto, $valText, $_.Rec, (Format-Badge $label $badgeType), (Format-RefLink $_.RefUrl $_.RefLabel)))
         }
         $strongCrypto = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319' 'SchUseStrongCrypto'
         $strongBadge  = if ($strongCrypto -eq 1) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Not set' 'warn' }
-        $secRows.Add(('<tr><td>.NET Strong Crypto</td><td>SchUseStrongCrypto = {0}</td><td>1 (required)</td><td>{1}</td></tr>' -f $strongCrypto, $strongBadge))
+        $secRows.Add(('<tr><td>.NET Strong Crypto</td><td>SchUseStrongCrypto = {0}</td><td>1 (required)</td><td>{1}</td><td>{2}</td></tr>' -f $strongCrypto, $strongBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/dotnet/framework/network-programming/tls' 'MS Learn')))
         try {
             $smb1 = (Get-SmbServerConfiguration -ErrorAction Stop).EnableSMB1Protocol
             $smb1Badge = if ($smb1) { Format-Badge 'Enabled (risk)' 'warn' } else { Format-Badge 'Disabled' 'ok' }
-            $secRows.Add(('<tr><td>SMBv1</td><td>{0}</td><td>Disabled</td><td>{1}</td></tr>' -f $smb1, $smb1Badge))
+            $secRows.Add(('<tr><td>SMBv1</td><td>{0}</td><td>Disabled</td><td>{1}</td><td>{2}</td></tr>' -f $smb1, $smb1Badge, (Format-RefLink 'https://techcommunity.microsoft.com/t5/storage-at-microsoft/stop-using-smb1/ba-p/425858' 'Microsoft Blog')))
         } catch { }
         $wdigest = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' 'UseLogonCredential'
         $wdigestBadge = if ($wdigest -eq 0) { Format-Badge 'Disabled' 'ok' } else { Format-Badge 'Enabled (risk)' 'warn' }
-        $secRows.Add(('<tr><td>WDigest Caching</td><td>UseLogonCredential = {0}</td><td>0 = Disabled</td><td>{1}</td></tr>' -f $wdigest, $wdigestBadge))
+        $secRows.Add(('<tr><td>WDigest Caching</td><td>UseLogonCredential = {0}</td><td>0 = Disabled</td><td>{1}</td><td>{2}</td></tr>' -f $wdigest, $wdigestBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection' 'MS Learn')))
         $lsaPPL = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RunAsPPL'
         $lsaBadge = if ($lsaPPL -eq 1) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Not set' 'warn' }
-        $secRows.Add(('<tr><td>LSA Protection (RunAsPPL)</td><td>{0}</td><td>1 = Enabled (Ex2019 CU12+/SE)</td><td>{1}</td></tr>' -f $lsaPPL, $lsaBadge))
+        $secRows.Add(('<tr><td>LSA Protection (RunAsPPL)</td><td>{0}</td><td>1 = Enabled (Ex2019 CU12+/SE)</td><td>{1}</td><td>{2}</td></tr>' -f $lsaPPL, $lsaBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection' 'MS Learn')))
         $lmLevel = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LmCompatibilityLevel'
         $lmBadge = if ($lmLevel -ge 5) { Format-Badge "Level $lmLevel ✓" 'ok' } else { Format-Badge "Level $lmLevel" 'warn' }
-        $secRows.Add(('<tr><td>LM Compatibility Level</td><td>{0}</td><td>5 = NTLMv2 only</td><td>{1}</td></tr>' -f $lmLevel, $lmBadge))
+        $secRows.Add(('<tr><td>LM Compatibility Level</td><td>{0}</td><td>5 = NTLMv2 only</td><td>{1}</td><td>{2}</td></tr>' -f $lmLevel, $lmBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/network-security-lan-manager-authentication-level' 'MS Learn')))
         $credGuard = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity'
         $cgBadge = if ($credGuard -eq 0) { Format-Badge 'Disabled' 'ok' } else { Format-Badge 'Enabled (review)' 'warn' }
-        $secRows.Add(('<tr><td>Credential Guard</td><td>EnableVBS = {0}</td><td>0 = Disabled (Exchange servers)</td><td>{1}</td></tr>' -f $credGuard, $cgBadge))
+        $secRows.Add(('<tr><td>Credential Guard</td><td>EnableVBS = {0}</td><td>0 = Disabled (Exchange servers)</td><td>{1}</td><td>{2}</td></tr>' -f $credGuard, $cgBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/virtualization' 'Exchange Virtualization')))
         $http2 = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\HTTP\Parameters' 'EnableHttp2Tls'
         $http2Badge = if ($http2 -eq 0) { Format-Badge 'Disabled' 'ok' } else { Format-Badge 'Enabled' 'warn' }
-        $secRows.Add(('<tr><td>HTTP/2 over TLS</td><td>EnableHttp2Tls = {0}</td><td>0 = Disabled (MAPI/RPC compat)</td><td>{1}</td></tr>' -f $http2, $http2Badge))
+        $secRows.Add(('<tr><td>HTTP/2 over TLS</td><td>EnableHttp2Tls = {0}</td><td>0 = Disabled (MAPI/RPC compat)</td><td>{1}</td><td>{2}</td></tr>' -f $http2, $http2Badge, (Format-RefLink 'https://techcommunity.microsoft.com/t5/exchange-team-blog/released-2022-h1-cumulative-updates-for-exchange-server/ba-p/3285209' 'Exchange Blog')))
         # Serialized Data Signing — registry value name: EnableSerializationDataSigning
         $serialSign = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Diagnostics' 'EnableSerializationDataSigning'
         $serialBadge = if ($serialSign -eq 1) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Not set' 'warn' }
-        $secRows.Add(('<tr><td>Serialized Data Signing</td><td>{0}</td><td>1 = Enabled</td><td>{1}</td></tr>' -f $serialSign, $serialBadge))
+        $secRows.Add(('<tr><td>Serialized Data Signing</td><td>{0}</td><td>1 = Enabled</td><td>{1}</td><td>{2}</td></tr>' -f $serialSign, $serialBadge, (Format-RefLink 'https://techcommunity.microsoft.com/t5/exchange-team-blog/released-2022-h1-cumulative-updates-for-exchange-server/ba-p/3285209' 'Exchange Blog')))
         $uacVal = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
         $uacBadge = if ($uacVal -eq 1 -or $null -eq $uacVal) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Disabled!' 'fail' }
-        $secRows.Add(('<tr><td>UAC (EnableLUA)</td><td>{0}</td><td>1 = Enabled (re-enabled after setup)</td><td>{1}</td></tr>' -f $uacVal, $uacBadge))
-        $secContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th></tr>{0}</table>' -f ($secRows -join '')
+        $secRows.Add(('<tr><td>UAC (EnableLUA)</td><td>{0}</td><td>1 = Enabled (re-enabled after setup)</td><td>{1}</td><td>{2}</td></tr>' -f $uacVal, $uacBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/' 'MS Learn')))
+        $secContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th><th>Reference</th></tr>{0}</table>' -f ($secRows -join '')
 
         # ── 6. PERFORMANCE SETTINGS (with best-practice column) ───────────────
         $perfRows = [System.Collections.Generic.List[string]]::new()
@@ -4748,8 +4749,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $sel = @{}
         foreach ($opt in $applicable) { $sel[$opt.Key] = $opt.Default }
 
-        # ── AutoPilot / non-interactive: apply defaults without menu ──────────
-        if ($State['AutoPilot'] -or -not [Environment]::UserInteractive) {
+        # ── Autopilot / non-interactive: apply defaults without menu ──────────
+        if ($State['Autopilot'] -or -not [Environment]::UserInteractive) {
             $defaults = @($applicable | Where-Object { $sel[$_.Key] })
             Write-MyOutput ('Applying Exchange optimizations — {0} of {1} selected (defaults)' -f $defaults.Count, $applicable.Count)
             foreach ($opt in $defaults) { Invoke-SingleOptimization $opt }
@@ -4878,7 +4879,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     function Install-PendingWindowsUpdates {
         # Installs pending Windows security and critical updates.
         # Interactive mode: prompts per update (Y/N/A=all/S=skip rest).
-        # AutoPilot mode:   installs all without prompting.
+        # Autopilot mode:   installs all without prompting.
         # Download + install runs in a background job with $WU_DOWNLOAD_TIMEOUT_SEC timeout;
         # on timeout the update step is skipped and Exchange installation continues.
         # Uses PSWindowsUpdate module when available; falls back to Windows Update Agent COM API.
@@ -4890,7 +4891,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         }
 
         # Interactive prompts whenever a real console is available.
-        # AutoPilot does NOT suppress the prompt — if someone is at the keyboard they can still
+        # Autopilot does NOT suppress the prompt — if someone is at the keyboard they can still
         # review each update. In a truly headless run [Environment]::UserInteractive is $false.
         $isInteractive = [Environment]::UserInteractive
 
@@ -4905,7 +4906,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             Write-MyVerbose 'PSWindowsUpdate module not found, attempting to install from PSGallery'
             try {
                 # Ensure NuGet provider present unattended — without this Install-Module
-                # prompts interactively even in non-interactive/AutoPilot sessions.
+                # prompts interactively even in non-interactive/Autopilot sessions.
                 Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
                 Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
                 $useModule = $true
@@ -4954,9 +4955,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         Write-MyOutput ('{0} update(s) found' -f $candidates.Count)
 
-        # --- Phase 2: Per-update prompt (interactive only; AutoPilot installs all) ---
+        # --- Phase 2: Per-update prompt (interactive only; Autopilot installs all) ---
         $approvedKBs = @()
-        $installAll  = -not $isInteractive   # AutoPilot: approve everything immediately
+        $installAll  = -not $isInteractive   # Autopilot: approve everything immediately
 
         for ($idx = 0; $idx -lt $candidates.Count; $idx++) {
             $u = $candidates[$idx]
@@ -6229,7 +6230,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         # Name = parameter/cfg key; Label = display text shown in menu
         $toggleDefs = [ordered]@{
-            'A' = @{ Name='AutoPilot';             Label='AutoPilot (auto-reboot)';      Default=$true  }
+            'A' = @{ Name='Autopilot';             Label='Autopilot (auto-reboot)';      Default=$true  }
             'B' = @{ Name='IncludeFixes';           Label='Install Exchange SU';           Default=$true  }
             'C' = @{ Name='DisableSSL3';            Label='Disable SSL 3.0';               Default=$true  }
             'D' = @{ Name='DisableRC4';             Label='Disable RC4';                   Default=$true  }
@@ -6273,7 +6274,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         function Get-DynamicDisabled {
             param([hashtable]$TS)
             $extra = @()
-            if (-not $TS['A']) { $extra += 'L' }                          # Lock requires AutoPilot
+            if (-not $TS['A']) { $extra += 'L' }                          # Lock requires Autopilot
             if (-not $TS['H']) { $extra += 'J'; $extra += 'F' }           # TLS 1.3 + CBC require TLS 1.2
             if ($TS['N'])      { $extra += @('B','O','P','Q','S','T') }   # PreflightOnly: post-install irrelevant
             return $extra
@@ -6288,7 +6289,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             param([int]$Mode, [hashtable]$ToggState, [string]$StatusMsg = '', [array]$ExtraDisabled = @())
             Clear-Host
             Write-MenuLine ('=' * 60) Cyan
-            Write-MenuLine ('  Install-Exchange15 v{0}' -f $ScriptVersion) Cyan
+            Write-MenuLine ('  Install-Exchange15 v{0}  —  Copilot' -f $ScriptVersion) Cyan
             Write-MenuLine ('=' * 60) Cyan
             Write-Host ''
             Write-MenuLine '  Installation Mode:' Yellow
@@ -6596,7 +6597,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     $State = @{}
     $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
     $State = Restore-State
-    # Ensure reports folder exists on AutoPilot resume (state restored from XML)
+    # Ensure reports folder exists on Autopilot resume (state restored from XML)
     if ($State['ReportsPath'] -and -not (Test-Path $State['ReportsPath'])) {
         New-Item -Path $State['ReportsPath'] -ItemType Directory -Force | Out-Null
     }
@@ -6621,10 +6622,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
     if (! $State.Count) {
         # No state, initialize settings from parameters.
-        # When started interactively with no meaningful parameters (default AutoPilot set, no bound params
+        # When started interactively with no meaningful parameters (default Autopilot set, no bound params
         # other than the defaults), show the interactive installation menu.
         $isInteractiveStart = [Environment]::UserInteractive -and
-                              ($PsCmdlet.ParameterSetName -eq 'AutoPilot') -and
+                              ($PsCmdlet.ParameterSetName -eq 'Autopilot') -and
                               ($PSBoundParameters.Keys | Where-Object { $_ -notin @('InstallPath','Verbose','Debug') }).Count -eq 0
 
         if ($isInteractiveStart) {
@@ -6662,7 +6663,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             $CopyServerConfig    = $menuResult['CopyServerConfig']
             $CertificatePath     = $menuResult['CertificatePath']
             $EdgeDNSSuffix       = $menuResult['EdgeDNSSuffix']
-            $AutoPilot           = [switch]($menuResult['AutoPilot'])
+            $Autopilot           = [switch]($menuResult['Autopilot'])
             $IncludeFixes        = [switch]($menuResult['IncludeFixes'])
             $DisableSSL3         = [switch]($menuResult['DisableSSL3'])
             $DisableRC4          = [switch]($menuResult['DisableRC4'])
@@ -6730,7 +6731,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             $RecipientMgmtCleanup       = [switch](Get-CfgValue 'RecipientMgmtCleanup'       ([bool]$RecipientMgmtCleanup))
 
             # Security / TLS switches
-            $AutoPilot      = [switch](Get-CfgValue 'AutoPilot'      ([bool]$AutoPilot))
+            $Autopilot      = [switch](Get-CfgValue 'Autopilot'      ([bool]$Autopilot))
             $IncludeFixes   = [switch](Get-CfgValue 'IncludeFixes'   ([bool]$IncludeFixes))
             $DisableSSL3    = [switch](Get-CfgValue 'DisableSSL3'    ([bool]$DisableSSL3))
             $DisableRC4     = [switch](Get-CfgValue 'DisableRC4'     ([bool]$DisableRC4))
@@ -6763,8 +6764,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
             Write-MyOutput "Configuration loaded: mode=$(if ($InstallEdge){'Edge'}elseif($Recover){'Recovery'}else{'Mailbox'}), source=$SourcePath, org=$Organization"
         }
-        elseif ( $($PsCmdlet.ParameterSetName) -eq "AutoPilot") {
-            Write-Error "Running in AutoPilot mode but no state file present"
+        elseif ( $($PsCmdlet.ParameterSetName) -eq "Autopilot") {
+            Write-Error "Running in Autopilot mode but no state file present"
             exit $ERR_AUTOPILOTNOSTATEFILE
         }
 
@@ -6799,7 +6800,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         }
         $State["SetupVersion"] = ( Get-DetectedFileVersion "$($State["SourcePath"])\setup.exe")
         $State["TargetPath"] = $TargetPath
-        $State["AutoPilot"] = $AutoPilot
+        $State["Autopilot"] = $Autopilot
         $State["IncludeFixes"] = $IncludeFixes
         $State["NoSetup"] = $NoSetup
         $State["Recover"] = $Recover
@@ -6912,7 +6913,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $MAX_PHASE = 6
     }
 
-    if ( $AutoPilot -and $State["InstallPhase"] -gt 1) {
+    $runMode = if ($State['Autopilot']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
+    Write-MyOutput ('Mode: {0}' -f $runMode)
+
+    if ( $Autopilot -and $State["InstallPhase"] -gt 1) {
         # Wait a little before proceeding
         Write-MyOutput "Will continue unattended installation of Exchange in $COUNTDOWN_TIMER seconds .."
         Start-Sleep -Seconds $COUNTDOWN_TIMER
@@ -6944,7 +6948,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     Write-MyOutput "Checking for pending reboot .."
     if ( Test-RebootPending ) {
         $State["InstallPhase"]--
-        if ( $State["AutoPilot"]) {
+        if ( $State["Autopilot"]) {
             Write-MyWarning "Reboot pending, will reboot system and rerun phase"
         }
         else {
@@ -6983,7 +6987,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     Write-MyOutput 'Recipient Management Tools - Phase 1: Installing prerequisites'
                     Install-RecipientManagementPrereqs
                     if ( Test-RebootPending) {
-                        if ($State['AutoPilot']) { Write-MyWarning 'Reboot pending, will reboot and continue' }
+                        if ($State['Autopilot']) { Write-MyWarning 'Reboot pending, will reboot and continue' }
                         else { Write-MyOutput 'Reboot pending, please reboot and restart script' }
                     }
                 }
@@ -7010,7 +7014,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     Write-MyOutput 'Exchange Management Tools - Phase 1: Installing Windows prerequisites'
                     Install-ManagementToolsPrereqs
                     if ( Test-RebootPending) {
-                        if ($State['AutoPilot']) { Write-MyWarning 'Reboot pending, will reboot and continue' }
+                        if ($State['Autopilot']) { Write-MyWarning 'Reboot pending, will reboot and continue' }
                         else { Write-MyOutput 'Reboot pending, please reboot and restart script' }
                     }
                 }
@@ -7258,7 +7262,13 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     'HSTS header', 'EOMT'
                 )
                 $p5Total = $p5Steps.Count; $p5Step = 0
+                $p5Sw = [Diagnostics.Stopwatch]::new(); $p5LastDesc = $null
                 function Step-P5($desc) {
+                    if ($script:p5LastDesc) {
+                        Write-MyVerbose ('{0} took {1:F1}s' -f $script:p5LastDesc, $script:p5Sw.Elapsed.TotalSeconds)
+                    }
+                    $script:p5LastDesc = $desc
+                    $script:p5Sw.Restart()
                     $script:p5Step++
                     Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 6: Post-configuration' -Status $desc -PercentComplete ($script:p5Step * 100 / $script:p5Total)
                 }
@@ -7316,7 +7326,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 }
                 # Insert your own generic customizations here
 
-                # Org / Transport optimizations (interactive menu or AutoPilot defaults)
+                # Org / Transport optimizations (interactive menu or Autopilot defaults)
                 if (-not $State['InstallEdge']) {
                     Step-P5 'Org/Transport optimizations'
                     # ECC/CBC/AMSI above may have restarted W3SVC, killing the implicit-remoting session.
@@ -7380,6 +7390,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 # EOMT — optional CVE mitigation tool
                 Step-P5 'EOMT'
                 Invoke-EOMT
+                if ($p5LastDesc) { Write-MyVerbose ('{0} took {1:F1}s' -f $p5LastDesc, $p5Sw.Elapsed.TotalSeconds) }
 
                 Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 6: Post-configuration' -Completed
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
@@ -7525,7 +7536,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         Write-MyVerbose ('Dismounted ISO: {0}' -f $State['SourceImage'])
     }
 
-    if ( $State["AutoPilot"]) {
+    if ( $State["Autopilot"]) {
         if ( $State["InstallPhase"] -lt $MAX_PHASE) {
             Write-MyVerbose "Preparing system for next phase"
             Disable-UAC
