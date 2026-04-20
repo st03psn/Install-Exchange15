@@ -271,7 +271,7 @@ footer a:hover { text-decoration: underline; }
       <div class="feature-card">
         <div class="feature-icon" style="background:#e3f2fd">🛡</div>
         <h3>Security Hardening</h3>
-        <p>TLS 1.2/1.3, SMBv1/WDigest/NetBIOS disabled, LSA Protection, Extended Protection, IPv4 over IPv6 preference, MRS Proxy and MAPI encryption hardened, Serialized Data Signing, LM level 5, SMTP banner — all applied automatically with reference links in the report.</p>
+        <p>TLS 1.2/1.3, SMBv1/WDigest/NetBIOS disabled, LSA Protection, Extended Protection, IPv4 over IPv6 preference, MRS Proxy and MAPI encryption hardened, Serialized Data Signing, LM level 5, SMTP banner, unnecessary Windows services disabled (Print Spooler, Fax, Secondary Logon, Smart Card, Windows Search), Shutdown Event Tracker disabled — all applied automatically with reference links in the report.</p>
       </div>
 
       <div class="feature-card">
@@ -366,7 +366,7 @@ footer a:hover { text-decoration: underline; }
         <div class="phase-num">5</div>
         <div class="phase-body">
           <h4>Post-Configuration</h4>
-          <p>40+ security and performance tasks: TLS 1.2/1.3 enforcement, SMBv1/WDigest/NetBIOS/HTTP2 disabled, LSA Protection, Extended Protection, IPv4 preference, MRS Proxy/MAPI encryption, RSS/MaxConcurrentAPI, pagefile, NodeRunner, HSTS, Exchange SU, virtual directory URLs, Exchange-level optimizations.</p>
+          <p>40+ security and performance tasks: TLS 1.2/1.3 enforcement, SMBv1/WDigest/NetBIOS/HTTP2 disabled, unnecessary Windows services disabled (Print Spooler, Fax, Secondary Logon, Smart Card, Windows Search), Shutdown Event Tracker disabled, LSA Protection, Extended Protection, IPv4 preference, MRS Proxy/MAPI encryption, RSS/MaxConcurrentAPI, pagefile, NodeRunner, HSTS, Exchange SU, virtual directory URLs, Exchange-level optimizations.</p>
         </div>
       </div>
       <div class="phase-item">
@@ -471,6 +471,22 @@ footer a:hover { text-decoration: underline; }
             <div class="mockup-row">
               <span class="label">WDigest Caching</span>
               <span class="value">UseLogonCredential = 0 <span class="mockup-badge ok">Disabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">Print Spooler (Spooler)</span>
+              <span class="value">StartupType = Disabled <span class="mockup-badge ok">Disabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">Secondary Logon (seclogon)</span>
+              <span class="value">StartupType = Disabled <span class="mockup-badge ok">Disabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">Windows Search (WSearch)</span>
+              <span class="value">StartupType = Disabled <span class="mockup-badge ok">Disabled ✓</span></span>
+            </div>
+            <div class="mockup-row">
+              <span class="label">Shutdown Event Tracker</span>
+              <span class="value">ShutdownReasonUI = 0 <span class="mockup-badge ok">Disabled ✓</span></span>
             </div>
             <div class="mockup-row">
               <span class="label">Serialized Data Signing</span>
