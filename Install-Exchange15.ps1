@@ -1210,7 +1210,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.79'
+    $ScriptVersion = '5.80'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -4188,12 +4188,13 @@ Write-Log 'Exchange log cleanup finished'
                 & $hcPath -BuildHtmlServersReport -SkipVersionCheck *>&1 | Out-Null
                 Pop-Location
                 $hcReport = Get-ChildItem -Path $State['ReportsPath'] -ErrorAction SilentlyContinue |
-                    Where-Object { $_.LastWriteTime -ge $hcBefore -and $_.Extension -match '\.html?' -and $_.Name -match '^(ExchangeAllServersReport|HealthChecker)' } |
+                    Where-Object { $_.LastWriteTime -ge $hcBefore -and $_.Extension -match '\.html?' -and $_.Name -match '^(ExchangeAllServersReport|HealthChecker|HCExchangeServerReport)' } |
                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
                 if ($hcReport) {
-                    # Rename to include server name for easy identification
-                    $newHcName = '{0}_{1}' -f $env:COMPUTERNAME, $hcReport.Name
-                    $newHcPath = Join-Path $State['ReportsPath'] $newHcName
+                    # Rename to SERVER_HCExchangeServerReport-<timestamp>.html
+                    $hcTimestamp = $hcReport.Name -replace '^(?:ExchangeAllServersReport|HealthChecker|HCExchangeServerReport)-', ''
+                    $newHcName   = '{0}_HCExchangeServerReport-{1}' -f $env:COMPUTERNAME, $hcTimestamp
+                    $newHcPath   = Join-Path $State['ReportsPath'] $newHcName
                     try {
                         Rename-Item -Path $hcReport.FullName -NewName $newHcName -ErrorAction Stop
                         $State['HCReportPath'] = $newHcPath
@@ -4685,19 +4686,12 @@ Write-Log 'Exchange log cleanup finished'
             }
         } catch { }
 
-        $exContent = @"
-<table class="data-table"><tr><th>Property</th><th>Value</th><th>Status</th></tr>{0}</table>
-<h3 class="subsection">Virtual Directory URLs</h3>
-<table class="data-table">{1}</table>
-<h3 class="subsection">Mailbox Databases</h3>
-<table class="data-table">{2}</table>
-<h3 class="subsection">Receive Connectors</h3>
-<table class="data-table">{3}</table>
-<h3 class="subsection">Certificates</h3>
-<table class="data-table">{4}</table>
-<h3 class="subsection">Exchange Optimizations</h3>
-<table class="data-table">{5}</table>
-"@ -f ($exRows -join ''), ($vdirRows -join ''), ($dbRows -join ''), ($connRows -join ''), ($certRows -join ''), ($exchOptRows -join '')
+        $exContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Status</th></tr>' + ($exRows -join '') + '</table>' +
+            '<h3 class="subsection">Virtual Directory URLs</h3><table class="data-table">' + ($vdirRows -join '') + '</table>' +
+            '<h3 class="subsection">Mailbox Databases</h3><table class="data-table">' + ($dbRows -join '') + '</table>' +
+            '<h3 class="subsection">Receive Connectors</h3><table class="data-table">' + ($connRows -join '') + '</table>' +
+            '<h3 class="subsection">Certificates</h3><table class="data-table">' + ($certRows -join '') + '</table>' +
+            '<h3 class="subsection">Exchange Optimizations</h3><table class="data-table">' + ($exchOptRows -join '') + '</table>'
 
         # ── 5. SECURITY SETTINGS (with Exchange best-practice + reference column) ─
         $secRows = [System.Collections.Generic.List[string]]::new()
