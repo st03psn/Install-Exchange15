@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.77 (April 2026, last updated 2026-04-21)
+**Version:** 5.78 (April 2026, last updated 2026-04-21)
 **License:** As-Is, without warranty
 
 ---
@@ -224,6 +224,9 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.78 — April 2026
+- **Exchange SU reboot loop** — Exchange SU installer (`.exe`) may internally call `ExitWindowsEx` and reboot the machine before the script's phase-end logic runs; in Autopilot mode, `RunOnce` + state are now persisted **before** launching the installer so the script always auto-resumes; a per-KB flag in state prevents the SU from being reinstalled when phase 5 re-runs after the reboot
 
 ### v5.77 — April 2026
 - **Exchange SU installer** — removed `/norestart` from arguments; Exchange SU `.exe` only accepts `/passive` and `/silent` — `/norestart` caused the installer to abort with "command line option not recognized"

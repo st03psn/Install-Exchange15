@@ -11,7 +11,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 5.77, April 21, 2026
+    Version 5.78, April 21, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -538,6 +538,15 @@
             - Reconnect-ExchangeSession: new helper reconnects Exchange implicit-remoting PS session
               after W3SVC restarts caused by Enable-ECC/CBC/AMSI; waits up to 90s for endpoint;
               called before Invoke-ExchangeOptimizations when any of ECC/CBC/AMSI were enabled
+    5.78    Bugfix (2026-04-21):
+            - Install-ExchangeSecurityUpdate (B15): Exchange SU installer may call ExitWindowsEx
+              internally and reboot the machine before the script's phase-end logic runs
+              (LastSuccessfulPhase update + Enable-RunOnce). In Autopilot mode, RunOnce + state
+              are now persisted immediately before launching the installer so the script always
+              auto-resumes after an installer-triggered reboot. A per-KB flag
+              (ExchangeSUInstalled_<KB>) is stored in state after a successful install (rc 0/3010)
+              so phase-5 re-entry skips the SU even when Get-InstalledExchangeBuild still returns
+              the pre-SU build number (service binary cache not yet flushed after reboot).
     5.77    Bugfix (2026-04-21):
             - Install-ExchangeSecurityUpdate (B14): removed /norestart from Exchange SU installer
               arguments — Exchange SU .exe only accepts /passive and /silent; /norestart caused
@@ -1193,7 +1202,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.77'
+    $ScriptVersion = '5.78'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -5866,6 +5875,20 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         if ($installedBuild) { Write-MyVerbose ('Installed Exchange build: {0}' -f $installedBuild) }
 
         $su = Get-LatestExchangeSecurityUpdate
+        # B15: skip if we already installed this exact KB in a previous phase-5 run.
+        # Exchange SU installers may trigger their own system reboot before the script's
+        # phase-end logic runs (Enable-RunOnce / LastSuccessfulPhase update). On the next
+        # run, the build version reported by Get-InstalledExchangeBuild may still show the
+        # pre-SU value (service binary cache / timing), causing an endless install loop.
+        # Persisting a per-KB flag in State prevents the reinstall.
+        if ($su) {
+            $suFlag = 'ExchangeSUInstalled_{0}' -f $su.KB
+            if ($State[$suFlag]) {
+                Write-MyVerbose ('Exchange SU {0} already installed in a previous run — skipping' -f $su.KB)
+                return
+            }
+        }
+
         if (-not $su) {
             Write-MyOutput 'No known Exchange Security Update applicable for this build'
         }
@@ -5917,11 +5940,27 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 }
                 if (Test-Path $suPath) {
                     Write-MyOutput ('Installing Exchange SU {0}' -f $su.KB)
+                    # B15: In Autopilot mode, pre-set RunOnce + save state before launching the
+                    # installer. Exchange SU installers (.exe) may call ExitWindowsEx internally
+                    # and reboot the machine before this script's phase-end logic runs, leaving
+                    # LastSuccessfulPhase = 4 and no RunOnce set — so the script would not
+                    # auto-resume. Pre-setting RunOnce here ensures the script always restarts.
+                    if ($State['Autopilot']) {
+                        Disable-UAC
+                        Enable-AutoLogon
+                        Enable-RunOnce
+                        Save-State $State
+                    }
                     # Exchange SU installers only accept /passive or /silent — /norestart is not supported.
                     # Exit code 3010 = success + reboot required; handled below.
                     $rc = Invoke-Process -FilePath $State['InstallPath'] -FileName $su.FileName -ArgumentList '/passive'
                     if ($rc -eq 0 -or $rc -eq 3010) {
                         Write-MyOutput ('Exchange SU {0} installed successfully' -f $su.KB)
+                        # Persist a per-KB installed flag immediately so phase-5 re-entry after
+                        # the reboot skips the SU (build version check alone is unreliable when
+                        # the service binary cache has not yet been flushed after the SU reboot).
+                        $State['ExchangeSUInstalled_{0}' -f $su.KB] = $true
+                        Save-State $State
                         if ($rc -eq 3010) {
                             Write-MyWarning 'Exchange SU requires a reboot'
                             $State['RebootRequired'] = $true
