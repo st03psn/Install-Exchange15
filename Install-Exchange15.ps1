@@ -1247,7 +1247,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.81'
+    $ScriptVersion = '5.82'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -5292,7 +5292,7 @@ $body
         }
         $d    = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
         $te   = Invoke-XmlEscape $DocTitle
-        $he   = Invoke-XmlEscape ($HeaderLabel ? $HeaderLabel : $DocTitle)
+        $he   = Invoke-XmlEscape (if ($HeaderLabel) { $HeaderLabel } else { $DocTitle })
         Add-ZipEntry '[Content_Types].xml' @'
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
