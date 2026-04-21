@@ -4,6 +4,21 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.82 (2026-04-21)
+
+- F22: `New-InstallationDocument` — generates a Word (.docx) installation report after Phase 6 using a pure-PowerShell OpenXML engine (no Office/COM); 15 chapters covering installation parameters, system details, network, AD, Exchange configuration, hardening, backup readiness, HealthChecker, monitoring, hybrid, public folders, executed cmdlets, and runbooks; CustomerDocument mode redacts RFC1918 IPs, certificate thumbprints, and passwords
+- F22: New parameters `–NoWordDoc`, `–StandaloneDocument`, `–CustomerDocument`, `–Language` (DE/EN)
+- F22: `–StandaloneDocument` mode (menu mode 7) runs Phase 1-only: loads Exchange module and generates document on existing servers without full install
+- F23: `tools/Build-KonzeptTemplate.ps1` — pure-PowerShell OpenXML generator for DE + EN Konzept-/Freigabedokument templates; 16 chapters (architecture, sizing, security, migration, hybrid, compliance, questionnaire, approval page); output: `templates/Exchange-Konzept-Vorlage-DE.docx` + `…-EN.docx`; Exchange SE only (2016/2019 out-of-support since 14.10.2025)
+
+---
+
+## v5.81 (2026-04-21)
+
+- `New-InstallationReport` (B17 complete): root cause identified — `New-HtmlSection`, `Format-Badge`, `Format-RefLink`, and all `$*Content` assembly lines used `-f` operator with dynamic HTML content; `String.Format` throws `FormatException` whenever any Exchange data value (connector name, cert SAN, policy value, etc.) contains a `{n}` sequence; all seven affected call sites converted to string concatenation — report is now fully immune to user-defined data containing curly braces
+
+---
+
 ## v5.80 (2026-04-21)
 
 - `New-InstallationReport` (B17): `$exContent` HERE-STRING with `-f` threw `FormatException` (`String.Format` index out of range) when any collected HTML row contained curly-brace patterns (e.g. CSS `{color:...}` or Exchange policy values); replaced `-f` string formatting with direct string concatenation — immune to content containing `{n}` sequences

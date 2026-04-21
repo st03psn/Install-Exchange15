@@ -93,6 +93,20 @@
     SkipInstallReport = $false   # $true to suppress HTML/PDF installation report at Phase 6
     SkipSetupAssist   = $false   # $true to skip CSS-Exchange SetupAssist on Phase 4 failure
 
+    # -------------------------------------------------------------------------
+    # v5.82 — Word installation document (F22)
+    # -------------------------------------------------------------------------
+
+    # $true to skip Word (.docx) installation document generation after Phase 6
+    # NoWordDoc = $false
+
+    # Redact RFC1918 IPs, certificate thumbprints, and passwords in the document
+    # (useful when sharing the document with external parties)
+    # CustomerDocument = $false
+
+    # Document language: 'DE' (default) or 'EN'
+    # Language = 'DE'
+
     # DoNotEnableEP = $false   # $true to skip Extended Protection configuration
     # NoNet481      = $false   # $true to skip .NET 4.8.1 installation
     # SkipRolesCheck = $false  # $true to skip Schema/Enterprise Admin membership check
