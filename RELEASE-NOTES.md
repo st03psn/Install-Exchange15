@@ -4,6 +4,24 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.76 (2026-04-21)
+
+- `Enable-AMSI`: added Edge Transport guard — `New-SettingOverride` requires an Exchange org connection; Edge is standalone/not domain-joined, so AMSI body scanning via SettingOverride is not applicable
+- `Set-MaxConcurrentAPI`: added Edge Transport guard — Netlogon `MaxConcurrentApi` is a domain-authentication optimization; Edge is not domain-joined
+- `Set-CtsProcessorAffinityPercentage`: added Edge Transport guard — Exchange Search registry path does not exist on Edge Transport
+- `Set-NodeRunnerMemoryLimit`: added Edge Transport guard — NodeRunner (Exchange Search) does not run on Edge Transport
+- `Test-AuthCertificate` (B12): added null-guard for `$authConfig` before `.CurrentCertificateThumbprint` access; `Get-AuthConfig` can return `$null` when Exchange PS session is not fully initialized (observed after IIS restart in Phase 6), previously causing a "You cannot call a method on a null-valued expression" error in the catch block
+- `New-AnonymousRelayConnector` (B13): fixed race condition — `Get-ReceiveConnector` called immediately after `New-ReceiveConnector` failed because Exchange had not yet registered the connector object; connector is now taken directly from the `New-ReceiveConnector` return value; 3-attempt × 5 s retry fallback added for the edge case where the return value is null
+
+---
+
+## v5.75 (2026-04-21)
+
+- `Initialize-Exchange`: returns `$true`/`$false` to indicate whether `setup.exe /PrepareAD` actually ran; exits early with `$false` when org exists and both FFL and DFL already meet the minimum — no setup.exe invoked, no wait
+- Phase 3: `Wait-ADReplication` only called when `Initialize-Exchange` returns `$true`; progress label changed from "Preparing Active Directory" to "Checking Active Directory" to reflect the conditional nature
+
+---
+
 ## v5.74 (2026-04-21)
 
 - `Enable-AMSI`: removed Exchange SE exception — HealthChecker always checks for the `AmsiRequestBodyScanning` SettingOverride regardless of version defaults; SettingOverride is now applied for all Exchange versions when `-EnableAMSI` is used
