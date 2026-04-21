@@ -4,6 +4,12 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.78 (2026-04-21)
+
+- `Install-ExchangeSecurityUpdate` (B15): Exchange SU installer (`.exe`) may call `ExitWindowsEx` internally and reboot the machine before the script's phase-end logic runs (`LastSuccessfulPhase` update + `Enable-RunOnce`); in Autopilot mode, `RunOnce` + state are now persisted **before** launching the installer so the script always auto-resumes after an installer-triggered reboot; a per-KB flag `ExchangeSUInstalled_<KB>` is stored in state after successful install (rc 0/3010) so phase-5 re-entry skips the SU even when `Get-InstalledExchangeBuild` still returns the pre-SU build number (service binary cache not yet flushed after reboot)
+
+---
+
 ## v5.77 (2026-04-21)
 
 - `Install-ExchangeSecurityUpdate` (B14): removed `/norestart` from Exchange SU installer arguments; Exchange SU `.exe` only supports `/passive` and `/silent` — `/norestart` caused the installer to abort immediately with "The following command line options are not recognized: /norestart"; exit code 3010 (reboot required) is already handled correctly
