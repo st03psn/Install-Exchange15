@@ -11,7 +11,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 5.74, April 21, 2026
+    Version 5.76, April 21, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -538,6 +538,16 @@
             - Reconnect-ExchangeSession: new helper reconnects Exchange implicit-remoting PS session
               after W3SVC restarts caused by Enable-ECC/CBC/AMSI; waits up to 90s for endpoint;
               called before Invoke-ExchangeOptimizations when any of ECC/CBC/AMSI were enabled
+    5.76    Bugfixes (2026-04-21):
+            - Test-AuthCertificate: added null-guard for $authConfig before property access;
+              Get-AuthConfig can return $null when Exchange PS session is not fully initialized
+              (observed in Phase 6 after IIS restart) — previously threw "You cannot call a
+              method on a null-valued expression" as a terminating error caught by the catch block
+            - New-AnonymousRelayConnector: fixed race condition where Get-ReceiveConnector failed
+              immediately after New-ReceiveConnector because Exchange AD had not yet registered
+              the new object; now captures the object returned by New-ReceiveConnector directly
+              and uses it for Add-ADPermission; added 3-attempt retry fallback with 5s backoff
+              for the edge case where New-ReceiveConnector returns null
     5.64    Report cleanup (2026-04-20):
             - New-InstallationReport: HealthChecker section (Section 7) removed from report;
               HC runs independently and produces its own HTML report in ReportsPath
@@ -1179,7 +1189,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.74'
+    $ScriptVersion = '5.76'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -1458,19 +1468,28 @@ process {
                     catch {
                         Get-BitsTransfer -ErrorAction SilentlyContinue | Where-Object { $_.JobState -notin 'Transferred','Acknowledged' } | Remove-BitsTransfer -ErrorAction SilentlyContinue
                         Remove-Item -Path $destPath -ErrorAction SilentlyContinue
-                        if ($attempt -lt 3) {
+                        # 0x800704DD = ERROR_NOT_LOGGED_ON: BITS has no network logon session
+                        # (common in Autopilot RunOnce context after reboot). Fall back to
+                        # WebClient immediately — no point retrying BITS in this scenario.
+                        $isBitsLogonError = $_.Exception.Message -match '0x800704DD|not logged on to the network'
+                        if ($attempt -lt 3 -and -not $isBitsLogonError) {
                             Write-MyWarning ('Download attempt {0}/3 failed, retrying in {1} seconds: {2}' -f $attempt, ($attempt * 5), $_.Exception.Message)
                             Start-Sleep -Seconds ($attempt * 5)
                         }
                         else {
-                            # Final attempt: try web download as fallback
+                            # Final attempt or BITS network-logon error: try web download as fallback
                             try {
-                                Write-MyVerbose 'BITS failed, trying web download as fallback'
+                                if ($isBitsLogonError) {
+                                    Write-MyVerbose 'BITS unavailable (no network logon session) — using web download'
+                                } else {
+                                    Write-MyVerbose 'BITS failed after 3 attempts, trying web download as fallback'
+                                }
                                 Invoke-WebDownload -Uri $URL -OutFile $destPath
                                 $downloaded = $true
+                                break
                             }
                             catch {
-                                Write-MyWarning ('Problem downloading package from URL after 3 attempts: {0}' -f $_.Exception.Message)
+                                Write-MyWarning ('Problem downloading package from URL: {0}' -f $_.Exception.Message)
                                 Remove-Item -Path $destPath -ErrorAction SilentlyContinue
                             }
                         }
@@ -2246,56 +2265,52 @@ process {
     }
 
     function Initialize-Exchange {
-        if (!$State['InstallEdge']) {
-            $params = @()
-            # Set minimum levels based on Exchange version (applies to both new and existing org paths)
-            if ($State['MajorSetupVersion'] -ge $EX2019_MAJOR) {
-                $MinFFL = $EX2019_MINFORESTLEVEL
-                $MinDFL = $EX2019_MINDOMAINLEVEL
-            }
-            else {
-                $MinFFL = $EX2016_MINFORESTLEVEL
-                $MinDFL = $EX2016_MINDOMAINLEVEL
-            }
-            Write-MyOutput 'Checking Exchange organization existence'
-            if ( $null -ne ( Test-ExchangeOrganization $State['OrganizationName'])) {
-                $params += '/PrepareAD', "/OrganizationName:`"$($State['OrganizationName'])`""
-            }
-            else {
-                Write-MyOutput 'Organization exist; checking Exchange Forest Schema and Domain versions'
-                $forestlvl = Get-ExchangeForestLevel
-                $domainlvl = Get-ExchangeDomainLevel
-                Write-MyOutput "Exchange Forest Schema version: $forestlvl, Domain: $domainlvl)"
-                if (( $forestlvl -lt $MinFFL) -or ( $domainlvl -lt $MinDFL)) {
-                    Write-MyOutput "Exchange Forest Schema or Domain needs updating (Required: $MinFFL/$MinDFL)"
-                    $params += '/PrepareAD'
+        # Returns $true if PrepareAD was executed, $false if already up-to-date (skip).
+        if ($State['InstallEdge']) { return $false }
 
-                }
-                else {
-                    Write-MyOutput 'Active Directory looks already updated'
-                }
-            }
-        }
-        if ($params.count -gt 0) {
-            if (!$State['InstallEdge']) {
-                Write-MyOutput "Preparing AD, Exchange organization will be $($State['OrganizationName'])"
-            }
-            $params += $State['IAcceptSwitch']
-            $exitCode = Invoke-Process $State['SourcePath'] 'setup.exe' $params
-            if ($exitCode -ne 0) {
-                Write-MyError "Exchange setup /PrepareAD failed with exit code $exitCode. Please consult the Exchange setup log, i.e. C:\ExchangeSetupLogs\ExchangeSetup.log"
-                exit $ERR_PROBLEMADPREPARE
-            }
-            if ( ( $null -eq ( Test-ExchangeOrganization $State['OrganizationName'])) -or
-                ( (Get-ExchangeForestLevel) -lt $MinFFL) -or
-                ( (Get-ExchangeDomainLevel) -lt $MinDFL)) {
-                Write-MyError 'Problem updating schema, domain or Exchange organization. Please consult the Exchange setup log, i.e. C:\ExchangeSetupLogs\ExchangeSetup.log'
-                exit $ERR_PROBLEMADPREPARE
-            }
+        $params = @()
+        if ($State['MajorSetupVersion'] -ge $EX2019_MAJOR) {
+            $MinFFL = $EX2019_MINFORESTLEVEL
+            $MinDFL = $EX2019_MINDOMAINLEVEL
         }
         else {
-            Write-MyWarning "Exchange organization $($State['OrganizationName']) already exists, skipping this step"
+            $MinFFL = $EX2016_MINFORESTLEVEL
+            $MinDFL = $EX2016_MINDOMAINLEVEL
         }
+
+        Write-MyOutput 'Checking whether Active Directory preparation is required'
+        if ($null -ne (Test-ExchangeOrganization $State['OrganizationName'])) {
+            Write-MyOutput "Exchange organization '$($State['OrganizationName'])' does not exist — PrepareAD required"
+            $params += '/PrepareAD', "/OrganizationName:`"$($State['OrganizationName'])`""
+        }
+        else {
+            $forestlvl = Get-ExchangeForestLevel
+            $domainlvl = Get-ExchangeDomainLevel
+            Write-MyOutput "Exchange Forest Schema: $forestlvl (min $MinFFL), Domain: $domainlvl (min $MinDFL)"
+            if (($forestlvl -lt $MinFFL) -or ($domainlvl -lt $MinDFL)) {
+                Write-MyOutput 'AD schema or domain level below minimum — PrepareAD required'
+                $params += '/PrepareAD'
+            }
+            else {
+                Write-MyOutput 'Active Directory is already prepared — skipping PrepareAD'
+                return $false
+            }
+        }
+
+        Write-MyOutput "Preparing Active Directory — Exchange organization: $($State['OrganizationName'])"
+        $params += $State['IAcceptSwitch']
+        $exitCode = Invoke-Process $State['SourcePath'] 'setup.exe' $params
+        if ($exitCode -ne 0) {
+            Write-MyError "Exchange setup /PrepareAD failed with exit code $exitCode. Please consult the Exchange setup log, i.e. C:\ExchangeSetupLogs\ExchangeSetup.log"
+            exit $ERR_PROBLEMADPREPARE
+        }
+        if (($null -eq (Test-ExchangeOrganization $State['OrganizationName'])) -or
+            ((Get-ExchangeForestLevel) -lt $MinFFL) -or
+            ((Get-ExchangeDomainLevel) -lt $MinDFL)) {
+            Write-MyError 'Problem updating schema, domain or Exchange organization. Please consult the Exchange setup log, i.e. C:\ExchangeSetupLogs\ExchangeSetup.log'
+            exit $ERR_PROBLEMADPREPARE
+        }
+        return $true
     }
 
     function Install-WindowsFeatures( $MajorOSVersion) {
@@ -3685,20 +3700,31 @@ Write-Log 'Exchange log cleanup finished'
                 Write-MyVerbose ('Resolved ANONYMOUS LOGON account: {0}' -f $anonLogon)
 
                 $existing = Get-ReceiveConnector -Identity "$server\$extName" -ErrorAction SilentlyContinue
+                $connObj = $null
                 if ($existing) {
                     Set-ReceiveConnector -Identity "$server\$extName" -RemoteIPRanges $State['ExternalRelaySubnets'] `
                         -AuthMechanism Tls -ProtocolLoggingLevel Verbose -ErrorAction Stop
                     Write-MyVerbose 'External relay connector already exists — RemoteIPRanges, TLS and logging updated'
+                    $connObj = $existing
                 }
                 else {
-                    New-ReceiveConnector -Name $extName -Server $server -TransportRole FrontendTransport `
+                    # Capture the returned object directly to avoid a race condition where
+                    # Get-ReceiveConnector fails immediately after creation (Exchange AD not yet updated).
+                    $connObj = New-ReceiveConnector -Name $extName -Server $server -TransportRole FrontendTransport `
                         -RemoteIPRanges $State['ExternalRelaySubnets'] -Bindings '0.0.0.0:25' `
                         -PermissionGroups AnonymousUsers -AuthMechanism Tls `
-                        -ProtocolLoggingLevel Verbose -ErrorAction Stop | Out-Null
+                        -ProtocolLoggingLevel Verbose -ErrorAction Stop
                 }
-                Get-ReceiveConnector -Identity "$server\$extName" |
-                    Add-ADPermission -User $anonLogon `
-                        -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+                # Fallback: if the object is somehow null, retry Get-ReceiveConnector with backoff
+                if (-not $connObj) {
+                    for ($retry = 1; $retry -le 3 -and -not $connObj; $retry++) {
+                        Write-MyVerbose ('Waiting for external relay connector to register in Exchange (attempt {0}/3)...' -f $retry)
+                        Start-Sleep -Seconds 5
+                        $connObj = Get-ReceiveConnector -Identity "$server\$extName" -ErrorAction SilentlyContinue
+                    }
+                }
+                $connObj | Add-ADPermission -User $anonLogon `
+                    -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
                 Write-MyOutput ('External relay connector created with Ms-Exch-SMTP-Accept-Any-Recipient for {0}' -f $anonLogon)
             }
             catch {
@@ -4144,8 +4170,18 @@ Write-Log 'Exchange log cleanup finished'
                     Where-Object { $_.LastWriteTime -ge $hcBefore -and $_.Extension -match '\.html?' -and $_.Name -match '^(ExchangeAllServersReport|HealthChecker)' } |
                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
                 if ($hcReport) {
-                    $State['HCReportPath'] = $hcReport.FullName
-                    Write-MyOutput ('HealthChecker report saved to {0}' -f $hcReport.FullName)
+                    # Rename to include server name for easy identification
+                    $newHcName = '{0}_{1}' -f $env:COMPUTERNAME, $hcReport.Name
+                    $newHcPath = Join-Path $State['ReportsPath'] $newHcName
+                    try {
+                        Rename-Item -Path $hcReport.FullName -NewName $newHcName -ErrorAction Stop
+                        $State['HCReportPath'] = $newHcPath
+                        Write-MyOutput ('HealthChecker report saved to {0}' -f $newHcPath)
+                    }
+                    catch {
+                        $State['HCReportPath'] = $hcReport.FullName
+                        Write-MyOutput ('HealthChecker report saved to {0}' -f $hcReport.FullName)
+                    }
                 } else {
                     Write-MyOutput ('HealthChecker completed — report in {0}' -f $State['ReportsPath'])
                 }
@@ -4256,6 +4292,10 @@ Write-Log 'Exchange log cleanup finished'
     function Test-AuthCertificate {
         try {
             $authConfig = Get-AuthConfig -ErrorAction Stop
+            if (-not $authConfig) {
+                Write-MyVerbose 'Test-AuthCertificate: Get-AuthConfig returned null — Exchange PS session may not be fully initialized'
+                return
+            }
             $thumbprint = $authConfig.CurrentCertificateThumbprint
             if (-not $thumbprint) {
                 Write-MyWarning 'Exchange Auth Certificate: no thumbprint configured in AuthConfig'
@@ -4900,26 +4940,107 @@ main{flex:1;padding:32px 36px;max-width:1200px;overflow-x:auto}
 code{font-family:Consolas,monospace;font-size:12px;background:#f0f0f0;padding:1px 5px;border-radius:3px;word-break:break-all}
 footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;text-align:center;margin-top:8px}
 @media print{
-  .toc{display:none!important}
-  body{background:#fff}
-  header,.section-title{-webkit-print-color-adjust:exact;print-color-adjust:exact}
-  .section{box-shadow:none;border:1px solid #ddd;page-break-inside:avoid}
-  main{padding:0}
+  @page{size:A4 portrait;margin:1.8cm 1.5cm 2cm 1.5cm}
+  @page:first{margin-top:1cm}
+  *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}
+  .toc,.summary-bar{display:none!important}
+  body{background:#fff;font-size:10pt}
+  header{padding:12px 20px;break-after:avoid}
+  header h1{font-size:14pt}
+  .container{display:block}
+  main{padding:0;max-width:100%}
+  .section{background:#fff;box-shadow:none;border:1pt solid #ccc;margin-bottom:14pt;page-break-inside:avoid;break-inside:avoid}
+  .section-title{padding:7pt 12pt;font-size:11pt}
+  .section-body{padding:10pt 12pt}
+  .subsection{font-size:9pt;margin:14pt 0 6pt}
+  .data-table{font-size:8.5pt;width:100%;table-layout:fixed}
+  .data-table th,.data-table td{padding:4pt 6pt;word-break:break-word}
+  .data-table tr{page-break-inside:avoid;break-inside:avoid}
+  code{font-size:7.5pt;word-break:break-all}
+  #installlog pre{max-height:none;font-size:6.5pt;page-break-inside:auto}
+  #healthchecker iframe{display:none}
+  #healthchecker::after{content:"HealthChecker report is embedded in the HTML version of this document.";font-style:italic;color:#666;font-size:10pt}
+  a{color:inherit;text-decoration:none}
+  footer{font-size:8pt;padding:8pt 20pt;margin-top:6pt}
+  /* Print document header on continuation pages via border-top trick */
+  .section:nth-child(n+2){border-top:2pt solid #1a2332}
 }
 '@
 
-        # ── 9. HEALTHCHECKER ──────────────────────────────────────────────────────
+        # ── 9. HEALTHCHECKER (embedded via srcdoc — no external file dependency) ──
         $hcContent = if ($State['SkipHealthCheck']) {
             '<p style="color:#666;font-size:13px;">HealthChecker was skipped (<code>-SkipHealthCheck</code> specified).</p>'
         } elseif ($State['HCReportPath'] -and (Test-Path $State['HCReportPath'])) {
-            $hcRelPath = Split-Path $State['HCReportPath'] -Leaf
-            ('<p style="font-size:13px;margin-bottom:12px;">Report: <a href="{0}" target="_blank">{0}</a></p>' +
-             '<iframe src="{0}" style="width:100%;height:820px;border:1px solid #e1dfdd;border-radius:4px;" title="HealthChecker Report"></iframe>') -f $hcRelPath
+            try {
+                $hcRaw     = [System.IO.File]::ReadAllText($State['HCReportPath'], [System.Text.Encoding]::UTF8)
+                # Escape for HTML attribute value: & → &amp;  " → &quot;
+                $hcSrcdoc  = $hcRaw -replace '&', '&amp;' -replace '"', '&quot;'
+                '<iframe srcdoc="' + $hcSrcdoc + '" style="width:100%;height:860px;border:1px solid #e1dfdd;border-radius:4px;" title="HealthChecker Report" sandbox="allow-same-origin allow-scripts allow-popups"></iframe>'
+            }
+            catch {
+                '<p style="color:#d83b01;font-size:13px;">HealthChecker report could not be embedded: {0}</p>' -f $_.Exception.Message
+            }
         } else {
             '<p style="color:#d83b01;font-size:13px;">HealthChecker report not found — HC may have failed to run. Check the installation log for details.</p>'
         }
 
+        # ── 0. MANAGEMENT SUMMARY ─────────────────────────────────────────────
+        $mgmtRows = [System.Collections.Generic.List[string]]::new()
+
+        # Count security badge types from built HTML string
+        $secOK   = ([regex]::Matches($secContent,   'background:#107c10')).Count
+        $secWarn = ([regex]::Matches($secContent,   'background:#d83b01')).Count
+        $secFail = ([regex]::Matches($secContent,   'background:#c50f1f')).Count
+        $perfOK  = ([regex]::Matches($perfContent,  'background:#107c10')).Count
+        $perfWarn= ([regex]::Matches($perfContent,  'background:#d83b01')).Count
+
+        $secStatusBadge  = if ($secFail -gt 0)  { Format-Badge "$secFail critical, $secWarn warnings" 'fail' }
+                           elseif ($secWarn -gt 0) { Format-Badge "$secWarn warnings" 'warn' }
+                           else { Format-Badge "All $secOK items OK" 'ok' }
+        $perfStatusBadge = if ($perfWarn -gt 0) { Format-Badge "$perfWarn items to review" 'warn' } else { Format-Badge "All $perfOK items OK" 'ok' }
+
+        $certStatus = try {
+            $certs = @(Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop)
+            $expiring = @($certs | Where-Object { ($_.NotAfter - (Get-Date)).Days -le 90 })
+            if ($expiring.Count -gt 0) { Format-Badge ('{0} expiring within 90 days' -f $expiring.Count) 'warn' }
+            else { Format-Badge ('{0} certificate(s) — all valid' -f $certs.Count) 'ok' }
+        } catch { Format-Badge 'Could not query' 'na' }
+
+        $vdirStatus = if ($State['Namespace']) { Format-Badge ('Configured ({0})' -f $State['Namespace']) 'ok' } else { Format-Badge 'Not configured' 'warn' }
+        $suStatus   = if ($State['IncludeFixes']) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Skipped' 'warn' }
+        $hcStatus   = if ($State['SkipHealthCheck']) { Format-Badge 'Skipped' 'na' } elseif ($State['HCReportPath']) { Format-Badge 'Completed — see section below' 'ok' } else { Format-Badge 'Failed / not found' 'warn' }
+        $modeStatus = if ($State['ConfigDriven']) { Format-Badge 'Autopilot (fully automated)' 'info' } else { Format-Badge 'Copilot (interactive)' 'info' }
+
+        $mgmtRows.Add('<tr><td style="width:220px"><strong>Exchange Version</strong></td><td>{0}</td><td>{1}</td></tr>' -f $exVersion, (Format-Badge 'Installed' 'ok'))
+        $mgmtRows.Add('<tr><td><strong>Server</strong></td><td>{0}</td><td>{1}</td></tr>' -f ('{0} ({1})' -f $env:COMPUTERNAME, (try { '{0}.{1}' -f (Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue).DNSHostName, (Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue).Domain } catch { '' })), (Format-Badge 'OK' 'ok'))
+        $mgmtRows.Add('<tr><td><strong>Organization</strong></td><td>{0}</td><td></td></tr>' -f $State['OrganizationName'])
+        $mgmtRows.Add('<tr><td><strong>Installation Mode</strong></td><td>{0}</td><td>{1}</td></tr>' -f $instMode, $modeStatus)
+        $mgmtRows.Add('<tr><td><strong>Virtual Directory URLs</strong></td><td>{0}</td><td>{1}</td></tr>' -f $State['Namespace'], $vdirStatus)
+        $mgmtRows.Add('<tr><td><strong>Security Hardening</strong></td><td>{0} OK / {1} warnings / {2} critical</td><td>{3}</td></tr>' -f $secOK, $secWarn, $secFail, $secStatusBadge)
+        $mgmtRows.Add('<tr><td><strong>Performance Settings</strong></td><td>{0} OK / {1} to review</td><td>{2}</td></tr>' -f $perfOK, $perfWarn, $perfStatusBadge)
+        $mgmtRows.Add('<tr><td><strong>Certificates</strong></td><td></td><td>{0}</td></tr>' -f $certStatus)
+        $mgmtRows.Add('<tr><td><strong>Security Updates</strong></td><td></td><td>{0}</td></tr>' -f $suStatus)
+        $mgmtRows.Add('<tr><td><strong>HealthChecker</strong></td><td></td><td>{0}</td></tr>' -f $hcStatus)
+        $mgmtRows.Add('<tr><td><strong>Report Generated</strong></td><td>{0}</td><td></td></tr>' -f $reportDate)
+
+        # Action items — surface any WARN/FAIL as bullet list
+        $actionItems = [System.Collections.Generic.List[string]]::new()
+        if ($secFail -gt 0)  { $actionItems.Add('<li><strong>Security:</strong> {0} critical finding(s) require immediate attention — see Security Settings section.</li>' -f $secFail) }
+        if ($secWarn -gt 0)  { $actionItems.Add('<li><strong>Security:</strong> {0} warning(s) — review Security Settings section.</li>' -f $secWarn) }
+        if ($perfWarn -gt 0) { $actionItems.Add('<li><strong>Performance:</strong> {0} setting(s) below recommendation — review Performance &amp; Tuning section.</li>' -f $perfWarn) }
+        if (-not $State['Namespace']) { $actionItems.Add('<li><strong>Virtual Directories:</strong> No external namespace configured. OWA/ECP/EWS URLs may still point to server hostname.</li>') }
+        if (-not $State['IncludeFixes']) { $actionItems.Add('<li><strong>Security Updates:</strong> Exchange Security Update installation was skipped. Apply the latest SU manually.</li>') }
+
+        $actionHtml = if ($actionItems.Count -gt 0) {
+            '<h3 class="subsection">Action Items</h3><ul style="margin:8px 0 0 20px;line-height:1.8;font-size:13px">' + ($actionItems -join '') + '</ul>'
+        } else {
+            '<p style="color:#107c10;font-size:13px;margin-top:12px">&#10003; No critical action items identified.</p>'
+        }
+
+        $mgmtContent = '<table class="data-table"><tr><th>Item</th><th>Detail</th><th>Status</th></tr>{0}</table>{1}' -f ($mgmtRows -join ''), $actionHtml
+
         $sections = @(
+            (New-HtmlSection 'summary'      'Management Summary'        $mgmtContent)
             (New-HtmlSection 'params'       'Installation Parameters'   ('<table class="data-table">{0}</table>' -f ($instRows -join '')))
             (New-HtmlSection 'system'       'System Information'        $sysContent)
             (New-HtmlSection 'ad'           'Active Directory'          $adContent)
@@ -4933,6 +5054,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         $toc = @(
             '<div class="toc-title">Contents</div>'
+            '<a href="#summary">Management Summary</a>'
             '<a href="#params">Installation Parameters</a>'
             '<a href="#system">System Information</a>'
             '<a href="#ad">Active Directory</a>'
@@ -4998,7 +5120,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             try {
                 $fileUri  = 'file:///{0}' -f ($reportPath -replace '\\', '/')
                 $edgeArgs = '--headless', '--disable-gpu', '--run-all-compositor-stages-before-draw',
-                            '--log-level=3',   # suppress DevTools/renderer noise
+                            '--log-level=3',        # suppress DevTools/renderer noise
+                            '--disable-extensions', # no extension interference
+                            '--print-to-pdf-no-header',  # remove browser URL/date chrome
+                            '--virtual-time-budget=8000', # allow srcdoc iframe time to render
                             "--print-to-pdf=`"$pdfPath`"", "`"$fileUri`""
                 $proc = Start-Process -FilePath $edgeExe -ArgumentList $edgeArgs -NoNewWindow -Wait -PassThru `
                             -RedirectStandardError $edgeStdErr -ErrorAction Stop
@@ -5464,7 +5589,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         # --- Phase 2: Per-update prompt (interactive only; Autopilot installs all) ---
         $approvedKBs = @()
-        $installAll  = -not $isInteractive   # Autopilot: approve everything immediately
+        $installAll  = -not $isInteractive   # non-interactive session: approve everything immediately
 
         for ($idx = 0; $idx -lt $candidates.Count; $idx++) {
             $u = $candidates[$idx]
@@ -5483,6 +5608,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             Write-Host ('{0}' -f $label) -ForegroundColor Cyan
             $ans = ''
             if ($host.UI.RawUI -and $host.UI.RawUI.KeyAvailable -ne $null) {
+                # Flush any buffered keystrokes (e.g. from credential prompts or prior Read-Host
+                # calls) so a stale keystroke doesn't immediately resolve the prompt as 'N'.
+                try { $host.UI.RawUI.FlushInputBuffer() } catch { }
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
                 Write-Host ('  Install? [Y/N/A=all/S=skip] (auto-No in {0}s) ' -f $WU_PROMPT_TIMEOUT_SEC) -NoNewline -ForegroundColor DarkCyan
                 while ($sw.Elapsed.TotalSeconds -lt $WU_PROMPT_TIMEOUT_SEC) {
@@ -5724,8 +5852,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
     function Install-ExchangeSecurityUpdate {
         # Downloads and installs an Exchange Security Update (.exe, .cab, or .msp).
         # P6: also does a dynamic gap-check against HealthChecker.ps1's build dictionary.
-        if (-not $State['InstallWindowsUpdates']) {
-            Write-MyVerbose 'InstallWindowsUpdates not set, skipping Exchange SU check'
+        if (-not $State['IncludeFixes']) {
+            Write-MyVerbose 'IncludeFixes not set, skipping Exchange SU check'
             return
         }
 
@@ -6441,6 +6569,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         # against domain controllers. Exchange generates heavy auth load; the default (10) can
         # cause 0xC000005E (No logon servers) errors under load on busy servers.
         # Microsoft recommendation for Exchange: raise to match logical processor count (min 10).
+        # Edge Transport is not domain-joined — Netlogon optimization does not apply.
+        if ($State['InstallEdge']) { Write-MyVerbose 'Set-MaxConcurrentAPI: skipped (Edge Transport)'; return }
         Write-MyOutput 'Setting Netlogon MaxConcurrentApi for Kerberos authentication optimization'
         $logicalProcs = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue).NumberOfLogicalProcessors
         if (-not $logicalProcs -or $logicalProcs -lt 10) { $logicalProcs = 10 }
@@ -6451,6 +6581,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
     function Set-CtsProcessorAffinityPercentage {
         # HealthChecker flags any non-zero value as harmful to Exchange Search performance
+        # Edge Transport uses a different search stack — this registry path does not exist there.
+        if ($State['InstallEdge']) { Write-MyVerbose 'Set-CtsProcessorAffinityPercentage: skipped (Edge Transport)'; return }
         Write-MyOutput 'Setting CtsProcessorAffinityPercentage to 0 (Exchange Search best practice)'
         $regPath = 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Search\SystemParameters'
         if (-not (Test-Path $regPath -ErrorAction SilentlyContinue)) {
@@ -6471,6 +6603,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
     function Set-NodeRunnerMemoryLimit {
         # HealthChecker flags any non-zero memoryLimitMegabytes as a Search performance limiter
+        # Edge Transport does not run Exchange Search / NodeRunner.
+        if ($State['InstallEdge']) { Write-MyVerbose 'Set-NodeRunnerMemoryLimit: skipped (Edge Transport)'; return }
         Write-MyOutput 'Setting NodeRunner memory limit to 0 (unlimited, Exchange Search best practice)'
         $exchangeInstallPath = (Get-ItemProperty -Path $EXCHANGEINSTALLKEY -Name MsiInstallPath -ErrorAction SilentlyContinue).MsiInstallPath
         if ($exchangeInstallPath) {
@@ -6606,6 +6740,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             [string[]]$ConfigParam = @("EnabledEcp=True", "EnabledEws=True", "EnabledOwa=True", "EnabledPowerShell=True")
         )
         # https://learn.microsoft.com/en-us/exchange/antispam-and-antimalware/amsi-integration-with-exchange?view=exchserver-2019#enable-exchange-server-amsi-body-scanning
+        # Edge Transport is not domain-joined and has no org connection; New-SettingOverride would fail.
+        if ($State['InstallEdge']) { Write-MyVerbose 'Enable-AMSI: skipped (Edge Transport — no org connection)'; return }
         Write-MyVerbose 'Enabling AMSI body scanning for OWA, ECP, EWS and PowerShell'
 
         New-SettingOverride -Name "EnableAMSIBodyScan" -Component Cafe -Section AmsiRequestBodyScanning -Parameters $ConfigParam -Reason "Enabling AMSI body Scan"
@@ -6969,21 +7105,67 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             [String]$MinBuild = ''
         )
         Write-MyVerbose ('Looking for presence of Visual C++ v{0} Runtime' -f $version)
+        $presence = $false
+        $build = $null
+
+        # Primary check: VisualStudio registry paths (used by VC++ 2015+ / VS 14.x bundles,
+        # and some variants of 2012/2013 installers).
         $RegPaths = @(
             'HKLM:\Software\WOW6432Node\Microsoft\VisualStudio\{0}\VC\Runtimes\x64',
             'HKLM:\Software\Microsoft\VisualStudio\{0}\VC\Runtimes\x64',
             'HKLM:\Software\WOW6432Node\Microsoft\VisualStudio\{0}\VC\VCRedist\x64',
             'HKLM:\Software\Microsoft\VisualStudio\{0}\VC\VCRedist\x64')
-        $presence = $false
-        $build = $null
         foreach ( $RegPath in $RegPaths) {
             $Key = (Get-ItemProperty -Path ($RegPath -f $version) -Name Installed -ErrorAction SilentlyContinue).Installed
             if ( $Key -eq 1) {
                 $build = (Get-ItemProperty -Path ($RegPath -f $version) -Name Version -ErrorAction SilentlyContinue).Version
                 $presence = $true
+                break
             }
         }
-        if ( $presence) {
+
+        # Fallback 1: scan Add/Remove Programs for matching display name.
+        # VC++ 2013 (12.0) and older standalone redistributables do not write to
+        # the VisualStudio\{ver}\VC\Runtimes path — they only register here.
+        if (-not $presence) {
+            $yearMap = @{ '10.0' = '2010'; '11.0' = '2012'; '12.0' = '2013'; '14.0' = '2015' }
+            $yearStr  = $yearMap[$version]
+            if ($yearStr) {
+                foreach ($hive in @('HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+                                    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')) {
+                    # Match display name without requiring "(x64)" — the format varies by installer
+                    # version (e.g. "...Redistributable (x64)..." vs "...x64 Minimum Runtime...").
+                    $entry = Get-ChildItem $hive -ErrorAction SilentlyContinue |
+                             Get-ItemProperty -ErrorAction SilentlyContinue |
+                             Where-Object { $_.DisplayName -like "Microsoft Visual C++ $yearStr*" } |
+                             Sort-Object DisplayVersion -Descending |
+                             Select-Object -First 1
+                    if ($entry) {
+                        $build    = $entry.DisplayVersion
+                        $presence = $true
+                        Write-MyVerbose ('Found Visual C++ v{0} in Add/Remove Programs: {1}' -f $version, $entry.DisplayName)
+                        break
+                    }
+                }
+            }
+        }
+
+        # Fallback 2: check the runtime DLL in System32 — the same check Exchange Setup uses.
+        # msvcr110.dll = VC++ 2012 (11.0), msvcr120.dll = VC++ 2013 (12.0)
+        if (-not $presence) {
+            $dllMap = @{ '11.0' = 'msvcr110.dll'; '12.0' = 'msvcr120.dll' }
+            $dll    = $dllMap[$version]
+            if ($dll) {
+                $dllPath = Join-Path $env:SystemRoot "System32\$dll"
+                if (Test-Path $dllPath) {
+                    $build    = (Get-Item $dllPath -ErrorAction SilentlyContinue).VersionInfo.ProductVersion
+                    $presence = $true
+                    Write-MyVerbose ('Found Visual C++ v{0} via {1}, version {2}' -f $version, $dll, $build)
+                }
+            }
+        }
+
+        if ($presence) {
             Write-MyVerbose ('Found Visual C++ Runtime v{0}, build {1}' -f $version, $build)
             if ($MinBuild -and $build -and ([System.Version]$build -lt [System.Version]$MinBuild)) {
                 Write-MyVerbose ('Visual C++ v{0} build {1} is older than required minimum {2} — will update' -f $version, $build, $MinBuild)
@@ -7794,7 +7976,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $MAX_PHASE = 1
     }
     else {
-        $MAX_PHASE = 6
+        $MAX_PHASE = 7
     }
 
     $runMode = if ($State['ConfigDriven']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
@@ -7977,11 +8159,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     }
                     else {
                         if ([System.Version]$FullOSVersion -lt [System.Version]$WS2022_PREFULL ) {
-                            Write-MyOutput "Will install .NET Framework 4.8 as default for this OS"
+                            Write-MyOutput ".NET Framework 4.8 required for this OS — will install if not present"
                             $State["Install481"] = $False
                         }
                         else {
-                            Write-MyOutput "Will install .NET Framework 4.8.1 as default for this OS"
+                            Write-MyOutput ".NET Framework 4.8.1 required for this OS — will install if not present"
                             $State["Install481"] = $True
                         }
                     }
@@ -8061,12 +8243,20 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 # VC++ 2012 (v11.0): required for Exchange 2016 CU23, Exchange 2019, SE and Edge Transport role (flagged by HealthChecker)
                 if ( -not (Get-VCRuntime -version '11.0') -and $State["VCRedist2012"] ) {
                     Install-MyPackage "" "Visual C++ 2012 Redistributable" "vcredist_x64_2012.exe" "https://download.microsoft.com/download/1/6/B/16B06F60-3B20-4FF2-B699-5E9B7962F9AE/VSU_4/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
+                    if ( -not (Get-VCRuntime -version '11.0')) {
+                        Write-MyError 'Visual C++ 2012 Redistributable installation could not be verified — Exchange Setup will fail. Check the installer manually.'
+                        exit $ERR_PROBLEMPACKAGESETUP
+                    }
                 }
 
                 # VC++ 2013 (v12.0): required for Exchange 2016 CU23, 2019 and SE; minimum 12.0.40664 (KB4538461)
                 if ( -not (Get-VCRuntime -version '12.0' -MinBuild '12.0.40664') -and $State["VCRedist2013"] ) {
-                    # Stable Microsoft CDN URL for VC++ 2013 x64 12.0.40664 (KB4538461, Jan 2020 security update)
-                    Install-MyPackage "" "Visual C++ 2013 Redistributable" "vcredist_x64_2013.exe" "https://download.microsoft.com/download/A/8/0/A80747C3-41BD-45DF-B505-E9710D2744E0/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
+                    # VC++ 2013 x64 12.0.40664 (KB4538461, Jan 2020 update) — Microsoft Download Center
+                    Install-MyPackage "" "Visual C++ 2013 Redistributable" "vcredist_x64_2013.exe" "https://download.microsoft.com/download/C/C/2/CC2DF5F8-4454-44B4-802D-5EA68D086676/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
+                    if ( -not (Get-VCRuntime -version '12.0')) {
+                        Write-MyError 'Visual C++ 2013 Redistributable installation could not be verified — Exchange Setup will fail. Check the installer manually.'
+                        exit $ERR_PROBLEMPACKAGESETUP
+                    }
                 }
 
                 # URL Rewrite module
@@ -8095,10 +8285,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     Set-EdgeDNSSuffix -DNSSuffix $State['EdgeDNSSuffix']
                 }
                 if ($State["OrganizationName"]) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: Preparing Active Directory' -PercentComplete 60
-                    Write-MyOutput "Preparing Active Directory"
-                    Initialize-Exchange
-                    Wait-ADReplication
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: Checking Active Directory' -PercentComplete 60
+                    $adPrepRan = Initialize-Exchange
+                    if ($adPrepRan) {
+                        Wait-ADReplication
+                    }
                 }
                 Write-MyVerbose ('Phase 3 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
@@ -8319,7 +8510,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             }
 
             6 {
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Finalizing' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Finalizing' -PercentComplete 0
                 if ( Get-Service MSExchangeTransport -ErrorAction SilentlyContinue) {
                     Write-MyOutput "Configuring MSExchangeTransport startup to Automatic"
                     Set-Service MSExchangeTransport -StartupType Automatic
@@ -8339,38 +8530,38 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
                 # Install antispam agents (Mailbox role only)
                 if ($State['InstallMailbox'] -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Antispam agents' -PercentComplete 8
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Antispam agents' -PercentComplete 8
                     Install-AntispamAgents
                 }
 
                 # Set Virtual Directory URLs
                 if ($State['Namespace'] -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Virtual Directory URLs' -PercentComplete 15
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Virtual Directory URLs' -PercentComplete 15
                     Set-VirtualDirectoryURLs
                 }
 
                 # Join Database Availability Group
                 if ($State['DAGName']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Joining DAG' -PercentComplete 30
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Joining DAG' -PercentComplete 30
                     Join-DAG
                 }
 
                 # DAG replication health check (F8)
                 if ($State['DAGName'] -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: DAG replication health' -PercentComplete 33
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: DAG replication health' -PercentComplete 33
                     Test-DAGReplicationHealth
                 }
 
                 # Add server to existing Send Connectors
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Send Connectors' -PercentComplete 35
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Send Connectors' -PercentComplete 35
                     Add-ServerToSendConnectors
                 }
 
                 # Server Manager stays disabled permanently on Exchange servers (set machine-wide in Phase 5)
 
                 if ( !($State['InstallEdge'])) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: IIS health check' -PercentComplete 60
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: IIS health check' -PercentComplete 60
                     Write-MyVerbose 'Performing Health Monitor checks..'
                     # Warmup IIS
                     $hcPassed = 0
@@ -8411,54 +8602,69 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
                 # Database / log path separation check
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: DB path check' -PercentComplete 73
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: DB path check' -PercentComplete 73
                     Test-DBLogPathSeparation
                 }
 
                 # Auth Certificate health check
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Auth Certificate check' -PercentComplete 75
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Auth Certificate check' -PercentComplete 75
                     Test-AuthCertificate
                 }
 
                 # VSS writers, EEMS, Modern Auth checks (F9, F10, F11)
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: VSS writers' -PercentComplete 76
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: VSS writers' -PercentComplete 76
                     Test-VSSWriters
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: EEMS status' -PercentComplete 77
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: EEMS status' -PercentComplete 77
                     Test-EEMSStatus
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Modern Auth' -PercentComplete 77
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Modern Auth' -PercentComplete 77
                     Get-ModernAuthReport
                 }
 
                 # Anonymous relay connector
                 if (($State['RelaySubnets'] -or $State['ExternalRelaySubnets']) -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Anonymous relay connector' -PercentComplete 78
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Anonymous relay connector' -PercentComplete 78
                     New-AnonymousRelayConnector
                 }
 
                 # Exchange log cleanup scheduled task
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Log cleanup task' -PercentComplete 76
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Log cleanup task' -PercentComplete 76
                 Register-ExchangeLogCleanup
 
                 # RBAC role group membership report
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: RBAC report' -PercentComplete 78
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: RBAC report' -PercentComplete 78
                     Get-RBACReport
-                }
-
-                # Run CSS-Exchange HealthChecker
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: HealthChecker' -PercentComplete 80
-                if (-not $State['SkipHealthCheck']) {
-                    Invoke-HealthChecker
                 }
 
                 Enable-UAC
                 Enable-IEESC
 
+                Write-PhaseProgress -Activity 'Exchange Installation' -Completed
+            }
+
+            7 {
+                # Phase 7 runs after the Phase 6 reboot so that:
+                # - Exchange computer account group membership is in the process token
+                # - All services have started cleanly from scratch
+                # - HealthChecker results reflect the fully-configured server
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: HealthChecker &amp; Report' -PercentComplete 0
+
+                # Reload Exchange PS module after reboot
+                if (-not $State['InstallEdge']) {
+                    Import-ExchangeModule
+                }
+
+                # Run CSS-Exchange HealthChecker
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: HealthChecker' -PercentComplete 20
+                if (-not $State['SkipHealthCheck']) {
+                    Invoke-HealthChecker
+                }
+
                 # Installation Report
                 if (-not $State['SkipInstallReport'] -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Installation Report' -PercentComplete 92
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: Installation Report' -PercentComplete 70
                     New-InstallationReport
                 }
 

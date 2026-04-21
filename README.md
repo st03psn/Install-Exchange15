@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.74 (April 2026, last updated 2026-04-21)
+**Version:** 5.76 (April 2026, last updated 2026-04-21)
 **License:** As-Is, without warranty
 
 ---
@@ -224,6 +224,14 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.76 — April 2026
+- **Auth Certificate check** — `Test-AuthCertificate` no longer throws "null-valued expression" when `Get-AuthConfig` returns `$null` after an IIS restart; null-guard added before property access
+- **External relay connector** — fixed race condition where `Add-ADPermission` failed immediately after `New-ReceiveConnector` because Exchange had not yet registered the object in AD; connector object now taken directly from the `New-ReceiveConnector` return value; 3-attempt/5 s retry fallback for edge cases
+
+### v5.75 — April 2026
+- **AD preparation** — `Initialize-Exchange` returns `$true`/`$false`; `Wait-ADReplication` only called when PrepareAD actually ran; progress label reflects conditional check
+- **Edge Transport guards** — `Enable-AMSI`, `Set-MaxConcurrentAPI`, `Set-CtsProcessorAffinityPercentage`, `Set-NodeRunnerMemoryLimit` now skip silently for Edge role
 
 ### v5.74 — April 2026
 - **AMSI body scanning** — Exchange SE exception removed; HealthChecker always checks for the `AmsiRequestBodyScanning` SettingOverride, so the override is now applied for all Exchange versions when `-EnableAMSI` is used
