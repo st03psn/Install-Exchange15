@@ -11,7 +11,7 @@
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
 
-    Version 5.78, April 21, 2026
+    Version 5.79, April 21, 2026
 
     Thanks to Maarten Piederiet, Thomas Stensitzki, Brian Reid, Martin Sieber, Sebastiaan Brozius, Bobby West,`
     Pavel Andreev, Rob Whaley, Simon Poirier, Brenle, Eric Vegter and everyone else who provided feedback
@@ -538,6 +538,14 @@
             - Reconnect-ExchangeSession: new helper reconnects Exchange implicit-remoting PS session
               after W3SVC restarts caused by Enable-ECC/CBC/AMSI; waits up to 90s for endpoint;
               called before Invoke-ExchangeOptimizations when any of ECC/CBC/AMSI were enabled
+    5.79    Bugfix (2026-04-21):
+            - New-InstallationReport (B16): transcript file read with explicit UTF-8 encoding
+              while PS 5.1 writes transcripts as UTF-16 LE — removed explicit encoding so .NET
+              auto-detects the BOM; log section now wrapped in try/catch so an IOException does
+              not propagate to the global trap and kill the script; log output capped to last
+              2000 lines with truncation notice to prevent multi-MB HTML files when transcript
+              has accumulated over multiple reboots; Phase 6 call site wrapped in try/catch so
+              any crash inside New-InstallationReport no longer kills the entire script
     5.78    Bugfix (2026-04-21):
             - Install-ExchangeSecurityUpdate (B15): Exchange SU installer may call ExitWindowsEx
               internally and reboot the machine before the script's phase-end logic runs
@@ -1202,7 +1210,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.78'
+    $ScriptVersion = '5.79'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -4917,10 +4925,28 @@ Write-Log 'Exchange log cleanup finished'
         $rbacContent = '<table class="data-table">{0}</table>' -f ($rbacRows -join '')
 
         # ── 9. INSTALLATION LOG ───────────────────────────────────────────────
+        # B16 fixes:
+        # 1. ReadAllText was called with UTF-8 encoding; PS 5.1 transcripts are UTF-16 LE —
+        #    removed explicit encoding so .NET auto-detects the BOM (handles both UTF-8/UTF-16).
+        # 2. Wrapped in try/catch — an IOExceptionon a large/locked transcript file propagated
+        #    to the global trap { break } and killed the entire script.
+        # 3. Capped to the last 2000 lines — a transcript accumulated over multiple reboots
+        #    (30h+ install) can be several MB; embedding the full file makes the HTML report
+        #    unusably large and strains memory during the regex-replace operations.
         $logContent = if ($State['TranscriptFile'] -and (Test-Path $State['TranscriptFile'])) {
-            $logText = [System.IO.File]::ReadAllText($State['TranscriptFile'], [System.Text.Encoding]::UTF8)
-            $logEscaped = $logText -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
-            '<pre style="font-family:Consolas,monospace;font-size:12px;line-height:1.5;background:#1e1e1e;color:#d4d4d4;padding:16px;border-radius:4px;overflow:auto;max-height:600px;white-space:pre-wrap;word-break:break-all">{0}</pre>' -f $logEscaped
+            try {
+                $logLines   = [System.IO.File]::ReadAllLines($State['TranscriptFile'])
+                $totalLines = $logLines.Count
+                $maxLines   = 2000
+                $truncated  = $totalLines -gt $maxLines
+                $logLines   = if ($truncated) { $logLines[($totalLines - $maxLines)..($totalLines - 1)] } else { $logLines }
+                $logText    = $logLines -join "`n"
+                $logEscaped = $logText -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;'
+                $truncNote  = if ($truncated) { '<div style="color:#ff9800;font-size:11px;margin-bottom:6px">&#9888; Log truncated — showing last {0} of {1} lines. Full log: <code>{2}</code></div>' -f $maxLines, $totalLines, $State['TranscriptFile'] } else { '' }
+                $truncNote + '<pre style="font-family:Consolas,monospace;font-size:12px;line-height:1.5;background:#1e1e1e;color:#d4d4d4;padding:16px;border-radius:4px;overflow:auto;max-height:600px;white-space:pre-wrap;word-break:break-all">' + $logEscaped + '</pre>'
+            } catch {
+                '<p style="color:#8a8886"><em>Log file could not be read ({0}): {1}</em></p>' -f $State['TranscriptFile'], $_.Exception.Message
+            }
         } else {
             '<p style="color:#8a8886"><em>Log file not found: {0}</em></p>' -f $State['TranscriptFile']
         }
@@ -8710,7 +8736,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 # Installation Report
                 if (-not $State['SkipInstallReport'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: Installation Report' -PercentComplete 70
-                    New-InstallationReport
+                    # B16: wrap in try/catch so a crash inside New-InstallationReport does not
+                    # propagate to the global trap { break } and kill the script before the
+                    # "We're good to go" message and phase-end reboot logic run.
+                    try { New-InstallationReport } catch { Write-MyWarning ('Installation Report failed: {0}' -f $_.Exception.Message) }
                 }
 
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
