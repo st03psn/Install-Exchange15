@@ -4,6 +4,16 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.79 (2026-04-21)
+
+- `New-InstallationReport` (B16): four defects fixed:
+  1. **Wrong encoding** — transcript file was read with explicit `UTF-8`; PS 5.1 writes transcripts as UTF-16 LE; removed explicit encoding so .NET auto-detects the BOM (handles both UTF-8 and UTF-16 transcripts)
+  2. **No try/catch on log reading** — an `IOException` (large/locked file) propagated to the global `trap { break }` and killed the entire script during Phase 6 report generation; log section now wrapped in `try/catch`
+  3. **Log size not capped** — a transcript accumulated over multiple reboots (30 h+ install with 3× Phase 5 loops) could be several MB; the full content embedded in `<pre>` made the HTML report unusably large; capped to last 2 000 lines with truncation notice and full path
+  4. **Call site unprotected** — `New-InstallationReport` called without try/catch in Phase 6; any uncaught exception inside the function killed the script before "We're good to go" and phase-end logic ran; call site now wrapped in `try/catch` that logs a warning and continues
+
+---
+
 ## v5.78 (2026-04-21)
 
 - `Install-ExchangeSecurityUpdate` (B15): Exchange SU installer (`.exe`) may call `ExitWindowsEx` internally and reboot the machine before the script's phase-end logic runs (`LastSuccessfulPhase` update + `Enable-RunOnce`); in Autopilot mode, `RunOnce` + state are now persisted **before** launching the installer so the script always auto-resumes after an installer-triggered reboot; a per-KB flag `ExchangeSUInstalled_<KB>` is stored in state after successful install (rc 0/3010) so phase-5 re-entry skips the SU even when `Get-InstalledExchangeBuild` still returns the pre-SU build number (service binary cache not yet flushed after reboot)
