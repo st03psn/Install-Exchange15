@@ -4,6 +4,13 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.80 (2026-04-21)
+
+- `New-InstallationReport` (B17): `$exContent` HERE-STRING with `-f` threw `FormatException` (`String.Format` index out of range) when any collected HTML row contained curly-brace patterns (e.g. CSS `{color:...}` or Exchange policy values); replaced `-f` string formatting with direct string concatenation — immune to content containing `{n}` sequences
+- `Invoke-HealthChecker`: HC report renamed to `SERVER_HCExchangeServerReport-<timestamp>.html` (was `SERVER_ExchangeAllServersReport-...`); `Where-Object` filter and `Rename-Item` logic updated; all three known HC output prefixes (`ExchangeAllServersReport`, `HealthChecker`, `HCExchangeServerReport`) detected to handle existing reports and future HC versions
+
+---
+
 ## v5.79 (2026-04-21)
 
 - `New-InstallationReport` (B16): four defects fixed:

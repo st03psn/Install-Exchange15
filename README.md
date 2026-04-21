@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.79 (April 2026, last updated 2026-04-21)
+**Version:** 5.80 (April 2026, last updated 2026-04-21)
 **License:** As-Is, without warranty
 
 ---
@@ -224,6 +224,10 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.80 — April 2026
+- **Installation Report FormatException** — `String.Format` index-out-of-range when collected HTML rows contained curly-brace sequences (e.g. CSS or Exchange policy values); `$exContent` section converted from `-f` formatting to string concatenation
+- **HealthChecker report name** — HC output now saved as `SERVER_HCExchangeServerReport-<timestamp>.html`
 
 ### v5.79 — April 2026
 - **Installation Report crash** — transcript read with wrong encoding (UTF-8 instead of UTF-16 LE); log section now auto-detects encoding from BOM, is wrapped in try/catch, and capped at last 2 000 lines; report generation wrapped in try/catch so a crash no longer kills the entire script
