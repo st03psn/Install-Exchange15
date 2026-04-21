@@ -4,6 +4,12 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.77 (2026-04-21)
+
+- `Install-ExchangeSecurityUpdate` (B14): removed `/norestart` from Exchange SU installer arguments; Exchange SU `.exe` only supports `/passive` and `/silent` — `/norestart` caused the installer to abort immediately with "The following command line options are not recognized: /norestart"; exit code 3010 (reboot required) is already handled correctly
+
+---
+
 ## v5.76 (2026-04-21)
 
 - `Enable-AMSI`: added Edge Transport guard — `New-SettingOverride` requires an Exchange org connection; Edge is standalone/not domain-joined, so AMSI body scanning via SettingOverride is not applicable

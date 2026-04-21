@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.76 (April 2026, last updated 2026-04-21)
+**Version:** 5.77 (April 2026, last updated 2026-04-21)
 **License:** As-Is, without warranty
 
 ---
@@ -224,6 +224,9 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.77 — April 2026
+- **Exchange SU installer** — removed `/norestart` from arguments; Exchange SU `.exe` only accepts `/passive` and `/silent` — `/norestart` caused the installer to abort with "command line option not recognized"
 
 ### v5.76 — April 2026
 - **Auth Certificate check** — `Test-AuthCertificate` no longer throws "null-valued expression" when `Get-AuthConfig` returns `$null` after an IIS restart; null-guard added before property access
