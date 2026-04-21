@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.80 (April 2026, last updated 2026-04-21)
+**Version:** 5.82 (April 2026, last updated 2026-04-21)
 **License:** As-Is, without warranty
 
 ---
@@ -82,6 +82,12 @@ If a `config.psd1` file is found in the same folder as the script or `.exe`, you
 .\Install-Exchange15.ps1 -StandaloneOptimize -Namespace mail.contoso.com `
     -CertificatePath C:\certs\mail.pfx -LogRetentionDays 30 `
     -RelaySubnets '10.0.1.0/24' -ExternalRelaySubnets '10.0.2.5'
+
+# Generate a Word installation document on an existing server (no install required)
+.\Install-Exchange15.ps1 -StandaloneDocument -Language EN
+
+# Generate a customer-ready Word document with sensitive values redacted
+.\Install-Exchange15.ps1 -StandaloneDocument -Language DE -CustomerDocument
 ```
 
 ### Compile to .exe (optional)
@@ -136,7 +142,11 @@ Use `Build.ps1` to compile the script into a self-contained Windows executable v
 | `-RelaySubnets` | IP ranges for anonymous internal relay (accepted domains only, no external relay right) |
 | `-ExternalRelaySubnets` | IP ranges for anonymous external relay (any recipient); removes AnonymousUsers from Default Frontend on success |
 | `-StandaloneOptimize` | Run all post-install tasks on an already-installed Exchange server without running the full install flow |
+| `-StandaloneDocument` | Generate a Word installation document on an existing server (loads Exchange module, no install flow) |
 | `-SkipInstallReport` | Skip the HTML/PDF installation report generated at Phase 6 completion |
+| `-NoWordDoc` | Skip Word (.docx) installation document generation at Phase 6 |
+| `-CustomerDocument` | Redact RFC1918 IPs, certificate thumbprints, and passwords in the Word document |
+| `-Language` | Document language: `DE` (default) or `EN` |
 
 See `deploy-example.psd1` for a fully documented configuration file template.
 
@@ -154,7 +164,7 @@ Phase 2 → .NET Framework 4.8/4.8.1, OS hotfixes, Visual C++ Runtimes, URL Rewr
 Phase 3 → UCMA Runtime, Active Directory preparation (PrepareAD/PrepareSchema), AD replication check
 Phase 4 → Run Exchange Setup
 Phase 5 → Post-configuration (security hardening, performance tuning, certificate import, Exchange SU)
-Phase 6 → Start services, IIS health check, Virtual Directory URLs, DAG join, HealthChecker, Installation Report, cleanup
+Phase 6 → Start services, IIS health check, Virtual Directory URLs, DAG join, HealthChecker, HTML + PDF Installation Report, Word Installation Document, cleanup
 ```
 
 Recipient Management / Management Tools modes use phases 0–2 only.
@@ -225,8 +235,19 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v5.82 — April 2026
+- **Word Installation Document** (`New-InstallationDocument`) — generated automatically at Phase 6 completion alongside the HTML report; pure-PowerShell OpenXML engine, no Office dependency; 15 chapters: installation parameters, system details, network & DNS, Active Directory, Exchange configuration (DBs, VDirs, connectors, certificates, DAG, transport), hardening & tuning, backup readiness, HealthChecker reference, monitoring, hybrid status, public folders, executed cmdlets, runbooks and open items
+- **`-CustomerDocument`** — redacts RFC1918 IP addresses, certificate thumbprints, and passwords for sharing with external parties
+- **`-Language`** — selects document language: `DE` (default) or `EN`
+- **`-NoWordDoc`** — skip Word document generation when not needed
+- **`-StandaloneDocument`** (menu mode 7) — generates the Word document on an existing Exchange server without running the install flow; just loads the Exchange module and writes the document
+- **Konzept-/Freigabedokument templates** (`tools/Build-KonzeptTemplate.ps1`) — generates two static Word templates (`templates/Exchange-Konzept-Vorlage-DE.docx` + `-EN.docx`) covering 16 chapters: architecture, sizing, security, message hygiene, backup/DR, monitoring, migration, hybrid, public folders, compliance, mobile, questionnaire, and approval page; Exchange SE only (Exchange 2016/2019 are out-of-support since 14 October 2025)
+
+### v5.81 — April 2026
+- **Installation Report FormatException (complete fix)** — root cause was `New-HtmlSection`, `Format-Badge`, `Format-RefLink`, and all section assembly lines using `-f` with dynamic Exchange data; any user-defined value containing `{n}` (connector name, cert SAN, policy value) caused `String.Format` to throw; all formatting converted to string concatenation
+
 ### v5.80 — April 2026
-- **Installation Report FormatException** — `String.Format` index-out-of-range when collected HTML rows contained curly-brace sequences (e.g. CSS or Exchange policy values); `$exContent` section converted from `-f` formatting to string concatenation
+- **Installation Report FormatException** — `$exContent` HERE-STRING with `-f` partially fixed; `New-HtmlSection` root cause not yet addressed
 - **HealthChecker report name** — HC output now saved as `SERVER_HCExchangeServerReport-<timestamp>.html`
 
 ### v5.79 — April 2026
@@ -423,7 +444,8 @@ Code quality and robustness improvements; no new parameters.
 
 - State file: `<InstallPath>\<ComputerName>_Install-Exchange15_state.xml` (default: `C:\Install\`)
 - Log file: `<InstallPath>\reports\<ComputerName>_Install-Exchange15_<timestamp>.log` — always verbose; `[INFO]`, `[WARNING]`, `[ERROR]`, `[VERBOSE]` entries
-- Installation report: `<InstallPath>\reports\<ComputerName>_InstallationReport_<timestamp>.html` (+ `.pdf` if Edge available)
+- Installation report (HTML): `<InstallPath>\reports\<ComputerName>_InstallationReport_<timestamp>.html` (+ `.pdf` if Edge available)
+- Installation document (Word): `<InstallPath>\reports\<ComputerName>_InstallationDocument_<DE|EN>_<timestamp>.docx`
 - All reports (Preflight, Installation, RBAC, HealthChecker) written to `<InstallPath>\reports\`
 - With `-Autopilot`: AutoLogon is temporarily enabled and removed after next login
 - All downloads use BITS with `Invoke-WebDownload` fallback (PS 5.1-compatible, handles certificate bypass)

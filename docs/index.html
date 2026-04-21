@@ -268,7 +268,7 @@ footer a:hover { text-decoration: underline; }
     one script, one command, done.
   </p>
   <div class="badge-row">
-    <span class="badge"><span class="dot"></span> v5.74 — April 2026</span>
+    <span class="badge"><span class="dot"></span> v5.82 — April 2026</span>
     <span class="badge">⚡ Express deployment</span>
     <span class="badge">🛡 Exchange SE / 2019 / 2016</span>
     <span class="badge">🔄 AutoPilot — auto-reboot</span>
@@ -294,9 +294,9 @@ footer a:hover { text-decoration: underline; }
 <!-- ═══ DEPLOYMENT MODES ═════════════════════════════════════════════════ -->
 <div class="modes">
   <div class="container">
-    <div class="section-label">Six ways to use EXpress</div>
+    <div class="section-label">Seven ways to use EXpress</div>
     <h2 class="section-title">One script — <strong>every scenario</strong></h2>
-    <p class="section-sub">Full server farm, single admin workstation, or hardening an existing deployment — EXpress has a dedicated mode for each use case.</p>
+    <p class="section-sub">Full server farm, single admin workstation, hardening an existing deployment, or generating post-install documentation — EXpress has a dedicated mode for each use case.</p>
     <div class="grid">
 
       <div class="mode-card">
@@ -333,6 +333,12 @@ footer a:hover { text-decoration: underline; }
         <span class="mode-tag" style="background:#d83b01">StandaloneOptimize</span>
         <h3>Harden an Existing Server</h3>
         <p>Already running Exchange but installed without EXpress? <code>-StandaloneOptimize</code> applies the full hardening and performance stack to an existing server in one run — TLS, SMB, LSA, Extended Protection, AMSI, RSS, virtual directory URLs, certificate, log cleanup, HealthChecker, and a complete installation report. No reinstall required.</p>
+      </div>
+
+      <div class="mode-card">
+        <span class="mode-tag" style="background:#6b4e94">StandaloneDocument</span>
+        <h3>Word Installation Document</h3>
+        <p><code>-StandaloneDocument</code> (menu mode 7) generates a Word (.docx) installation report for an already-running Exchange server — no install flow required. 15 chapters covering configuration, hardening, certificates, connectors, runbooks, and open items. <code>-CustomerDocument</code> redacts IPs and sensitive values for external sharing. <code>-Language DE|EN</code> selects the document language.</p>
       </div>
 
     </div>
@@ -375,6 +381,12 @@ footer a:hover { text-decoration: underline; }
         <div class="feature-icon" style="background:#f3e5f5">📋</div>
         <h3>HTML + PDF Installation Report</h3>
         <p>Comprehensive post-install report: Exchange config, virtual directory URLs, certificates, security settings with best-practice comparison, HealthChecker results embedded.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#ede7f6">📄</div>
+        <h3>Word Installation Document</h3>
+        <p>Pure-PowerShell OpenXML engine — no Office required. 15-chapter .docx covering configuration, hardening, runbooks, and open items. DE/EN language selection. <code>-CustomerDocument</code> redacts sensitive values for external sharing.</p>
       </div>
 
       <div class="feature-card">
@@ -447,6 +459,7 @@ footer a:hover { text-decoration: underline; }
           <p>40+ hardening and performance settings applied in a single Phase 5 run — TLS, SMB, LSA, Extended Protection, AMSI, power plan, pagefile, RSS, NIC queues and more.</p>
           <p>HealthChecker runs automatically. Results are embedded in the installation report alongside every security setting and its best-practice recommendation.</p>
           <p>Complete HTML installation report generated at the end — proof of everything that was configured, no manual documentation required.</p>
+          <p>Word installation document (.docx) generated automatically alongside the HTML report — pure PowerShell, no Office required. DE/EN, customer-ready redaction mode included.</p>
           <code>.\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1</code>
         </div>
       </div>
@@ -507,7 +520,7 @@ footer a:hover { text-decoration: underline; }
         <div class="phase-num">6</div>
         <div class="phase-body">
           <h4>Finalization</h4>
-          <p>Start services, IIS health check, DAG join, RBAC report, anti-spam agents, send connector integration, log cleanup task, HealthChecker, HTML + PDF installation report.</p>
+          <p>Start services, IIS health check, DAG join, RBAC report, anti-spam agents, send connector integration, log cleanup task, HealthChecker, HTML + PDF installation report, Word installation document.</p>
         </div>
       </div>
     </div>
@@ -545,6 +558,12 @@ footer a:hover { text-decoration: underline; }
 <span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-StandaloneOptimize</span> <span class="param">-Namespace</span> <span class="val">mail.contoso.com</span> `
     <span class="param">-CertificatePath</span> <span class="val">C:\certs\mail.pfx</span> <span class="param">-LogRetentionDays</span> <span class="val">30</span>
 
+<span class="comment"># Generate Word installation document on an existing server (DE or EN)</span>
+<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-StandaloneDocument</span> <span class="param">-Language</span> <span class="val">EN</span>
+
+<span class="comment"># Customer-ready document — IPs and sensitive values redacted</span>
+<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-StandaloneDocument</span> <span class="param">-Language</span> <span class="val">DE</span> <span class="param">-CustomerDocument</span>
+
 <span class="comment"># Compile to self-contained .exe (PS2Exe)</span>
 <span class="cmd">.\Build.ps1</span>
     </div>
@@ -569,7 +588,7 @@ footer a:hover { text-decoration: underline; }
         <div class="mockup-logo">EX</div>
         <div>
           <div class="mockup-title">Exchange Server Installation Report</div>
-          <small>Generated by Install-Exchange15.ps1 v5.74</small>
+          <small>Generated by Install-Exchange15.ps1 v5.82</small>
         </div>
       </div>
       <div class="mockup-summary">

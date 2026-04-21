@@ -920,6 +920,22 @@
     Combine with -Namespace, -CertificatePath, -DAGName, -RelaySubnets,
     -LogRetentionDays, and -SkipHealthCheck as needed.
 
+    .PARAMETER NoWordDoc (optional, v5.82)
+    Suppresses generation of the Word installation document (.docx) at Phase 6 completion.
+
+    .PARAMETER StandaloneDocument (optional, v5.82)
+    Generates the Word installation document on an existing Exchange server without running
+    the full install flow. Loads the existing state file from -InstallPath.
+    Requires an active Exchange Management Shell or an installed Exchange server.
+    Combine with -Language and -CustomerDocument as needed.
+
+    .PARAMETER CustomerDocument (optional, v5.82)
+    Masks passwords and internal IP addresses in the generated Word document
+    for secure customer handover.
+
+    .PARAMETER Language (optional, v5.82)
+    Language of the generated Word installation document. Accepted values: DE (default), EN.
+
     .EXAMPLE
     # Start interactively — opens the installation menu (mode, toggles, inputs)
     .\Install-Exchange15.ps1
@@ -1002,6 +1018,7 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'R')]
     [parameter( Mandatory = $false, ParameterSetName = 'T')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    [parameter( Mandatory = $false, ParameterSetName = 'W')]
     [string]$InstallPath = 'C:\Install',
     [parameter( Mandatory = $true, ParameterSetName = 'E')]
     [parameter( Mandatory = $true, ParameterSetName = 'M')]
@@ -1205,12 +1222,32 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
     [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
-    [Switch]$SkipInstallReport
+    [Switch]$SkipInstallReport,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    [parameter( Mandatory = $false, ParameterSetName = 'W')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
+    [Switch]$NoWordDoc,
+    [parameter( Mandatory = $true, ParameterSetName = 'W')]
+    [switch]$StandaloneDocument,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    [parameter( Mandatory = $false, ParameterSetName = 'W')]
+    [switch]$CustomerDocument,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    [parameter( Mandatory = $false, ParameterSetName = 'W')]
+    [ValidateSet('DE', 'EN')]
+    [string]$Language = 'DE'
 )
 
 process {
 
-    $ScriptVersion = '5.80'
+    $ScriptVersion = '5.81'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -4449,10 +4486,10 @@ Write-Log 'Exchange log cleanup finished'
 
         function Format-Badge($text, $type) {
             $colors = @{ ok='background:#107c10;color:#fff'; warn='background:#d83b01;color:#fff'; fail='background:#c50f1f;color:#fff'; info='background:#0078d4;color:#fff'; na='background:#8a8886;color:#fff' }
-            '<span style="display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600;{0}">{1}</span>' -f $colors[$type.ToLower()], $text
+            '<span style="display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600;' + $colors[$type.ToLower()] + '">' + $text + '</span>'
         }
         function New-HtmlSection($id, $title, $content) {
-            '<section id="{0}" class="section"><h2 class="section-title">{1}</h2><div class="section-body">{2}</div></section>' -f $id, $title, $content
+            '<section id="' + $id + '" class="section"><h2 class="section-title">' + $title + '</h2><div class="section-body">' + $content + '</div></section>'
         }
 
         # ── 1. INSTALLATION PARAMETERS ────────────────────────────────────────
@@ -4528,7 +4565,7 @@ Write-Log 'Exchange log cleanup finished'
                 $sysRows.Add(('<tr><td>NIC: {0}</td><td>{1}</td><td>DNS: {2}</td></tr>' -f $nic, $nicIPs[$nic], $dns))
             }
         } catch { }
-        $sysContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Detail / Status</th></tr>{0}</table>' -f ($sysRows -join '')
+        $sysContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Detail / Status</th></tr>' + ($sysRows -join '') + '</table>'
 
         # ── 3. ACTIVE DIRECTORY ───────────────────────────────────────────────
         $adRows = [System.Collections.Generic.List[string]]::new()
@@ -4549,7 +4586,7 @@ Write-Log 'Exchange log cleanup finished'
             $exDL = Get-ExchangeDomainLevel
             $adRows.Add('<tr><td>Exchange Domain Level</td><td>{0}</td><td></td></tr>' -f $exDL)
         } catch { }
-        $adContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Status</th></tr>{0}</table>' -f ($adRows -join '')
+        $adContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Status</th></tr>' + ($adRows -join '') + '</table>'
 
         # ── 4. EXCHANGE CONFIGURATION ─────────────────────────────────────────
         $exRows    = [System.Collections.Generic.List[string]]::new()
@@ -4696,7 +4733,7 @@ Write-Log 'Exchange log cleanup finished'
         # ── 5. SECURITY SETTINGS (with Exchange best-practice + reference column) ─
         $secRows = [System.Collections.Generic.List[string]]::new()
         function Get-SecRegVal($path, $name) { try { (Get-ItemProperty -Path $path -Name $name -ErrorAction Stop).$name } catch { $null } }
-        function Format-RefLink($url, $label) { '<a href="{0}" target="_blank" style="font-size:0.85em;white-space:nowrap">{1} ↗</a>' -f $url, $label }
+        function Format-RefLink($url, $label) { '<a href="' + $url + '" target="_blank" style="font-size:0.85em;white-space:nowrap">' + $label + ' ↗</a>' }
 
         # TLS protocols — show current value + Exchange recommendation
         @(
@@ -4821,7 +4858,7 @@ Write-Log 'Exchange log cleanup finished'
             } catch { }
         }
 
-        $secContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th><th>Reference</th><th>CIS / BSI</th></tr>{0}</table>' -f ($secRows -join '')
+        $secContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th><th>Reference</th><th>CIS / BSI</th></tr>' + ($secRows -join '') + '</table>'
 
         # ── 6. PERFORMANCE SETTINGS (with best-practice column) ───────────────
         $perfRows = [System.Collections.Generic.List[string]]::new()
@@ -4893,7 +4930,7 @@ Write-Log 'Exchange log cleanup finished'
             $perfRows.Add(('<tr><td>NodeRunner Max Memory</td><td>{0}</td><td>0 = unlimited (Exchange Search best practice)</td><td>{1}</td></tr>' -f $nodeRunMem, $nrBadge))
         }
 
-        $perfContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th></tr>{0}</table>' -f ($perfRows -join '')
+        $perfContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th></tr>' + ($perfRows -join '') + '</table>'
 
         # ── 7. RBAC ROLE GROUP MEMBERSHIP ─────────────────────────────────────
         $rbacGroups = @(
@@ -4916,7 +4953,7 @@ Write-Log 'Exchange log cleanup finished'
                 $rbacRows.Add(('<tr><td>{0}</td><td style="color:#c50f1f"><em>Query failed: {1}</em></td></tr>' -f $group, $_.Exception.Message))
             }
         }
-        $rbacContent = '<table class="data-table">{0}</table>' -f ($rbacRows -join '')
+        $rbacContent = '<table class="data-table">' + ($rbacRows -join '') + '</table>'
 
         # ── 9. INSTALLATION LOG ───────────────────────────────────────────────
         # B16 fixes:
@@ -5070,11 +5107,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             '<p style="color:#107c10;font-size:13px;margin-top:12px">&#10003; No critical action items identified.</p>'
         }
 
-        $mgmtContent = '<table class="data-table"><tr><th>Item</th><th>Detail</th><th>Status</th></tr>{0}</table>{1}' -f ($mgmtRows -join ''), $actionHtml
+        $mgmtContent = '<table class="data-table"><tr><th>Item</th><th>Detail</th><th>Status</th></tr>' + ($mgmtRows -join '') + '</table>' + $actionHtml
 
         $sections = @(
             (New-HtmlSection 'summary'      'Management Summary'        $mgmtContent)
-            (New-HtmlSection 'params'       'Installation Parameters'   ('<table class="data-table">{0}</table>' -f ($instRows -join '')))
+            (New-HtmlSection 'params'       'Installation Parameters'   ('<table class="data-table">' + ($instRows -join '') + '</table>'))
             (New-HtmlSection 'system'       'System Information'        $sysContent)
             (New-HtmlSection 'ad'           'Active Directory'          $adContent)
             (New-HtmlSection 'exchange'     'Exchange Configuration'    $exContent)
@@ -5175,6 +5212,686 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         else {
             Write-MyVerbose 'Microsoft Edge not found — skipping PDF export. Open the HTML report in a browser and use File > Print > Save as PDF.'
         }
+    }
+
+    # ── OpenXML Engine (shared with tools/Build-KonzeptTemplate.ps1) ─────────────
+    # Pure PowerShell, no Office/COM required. PS2Exe-safe.
+
+    function Invoke-XmlEscape { param([string]$Text) [Security.SecurityElement]::Escape([string]$Text) }
+
+    function New-WdHeading {
+        param([string]$Text, [int]$Level = 1)
+        '<w:p><w:pPr><w:pStyle w:val="Heading{0}"/></w:pPr><w:r><w:t xml:space="preserve">{1}</w:t></w:r></w:p>' -f $Level, (Invoke-XmlEscape $Text)
+    }
+    function New-WdParagraph {
+        param([string]$Text)
+        if (-not $Text) { return '<w:p/>' }
+        '<w:p><w:r><w:t xml:space="preserve">{0}</w:t></w:r></w:p>' -f (Invoke-XmlEscape $Text)
+    }
+    function New-WdBullet {
+        param([string]$Text, [int]$Level = 0)
+        '<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="{0}"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t xml:space="preserve">{1}</w:t></w:r></w:p>' -f $Level, (Invoke-XmlEscape $Text)
+    }
+    function New-WdCode {
+        param([string]$Text)
+        '<w:p><w:pPr><w:pStyle w:val="Code"/></w:pPr><w:r><w:t xml:space="preserve">{0}</w:t></w:r></w:p>' -f (Invoke-XmlEscape $Text)
+    }
+    function New-WdTable {
+        param([string[]]$Headers, [object[][]]$Rows)
+        $sb = [System.Text.StringBuilder]::new()
+        $null = $sb.Append('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>')
+        if ($Headers) {
+            $null = $sb.Append('<w:tr><w:trPr><w:tblHeader/></w:trPr>')
+            foreach ($h in $Headers) {
+                $null = $sb.Append('<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="2F5496"/></w:tcPr>')
+                $null = $sb.Append('<w:p><w:r><w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr><w:t xml:space="preserve">{0}</w:t></w:r></w:p></w:tc>' -f (Invoke-XmlEscape $h))
+            }
+            $null = $sb.Append('</w:tr>')
+        }
+        foreach ($row in $Rows) {
+            $null = $sb.Append('<w:tr>')
+            foreach ($cell in $row) {
+                $null = $sb.Append('<w:tc><w:p><w:r><w:t xml:space="preserve">{0}</w:t></w:r></w:p></w:tc>' -f (Invoke-XmlEscape ([string]$cell)))
+            }
+            $null = $sb.Append('</w:tr>')
+        }
+        $null = $sb.Append('</w:tbl>')
+        $sb.ToString()
+    }
+    function New-WdDocumentXml {
+        param([string[]]$BodyParts)
+        $body = $BodyParts -join "`n"
+        @"
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+$body
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rId3"/>
+      <w:footerReference w:type="default" r:id="rId4"/>
+      <w:pgSz w:w="11906" w:h="16838"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1800" w:header="709" w:footer="709" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>
+"@
+    }
+    function New-WdFile {
+        param([string]$OutputPath, [string[]]$BodyParts, [string]$DocTitle = '', [string]$HeaderLabel = '')
+        Add-Type -AssemblyName System.IO.Compression
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+        $fs  = [System.IO.File]::Open($OutputPath, [System.IO.FileMode]::Create)
+        $zip = [System.IO.Compression.ZipArchive]::new($fs, [System.IO.Compression.ZipArchiveMode]::Create)
+        function Add-ZipEntry([string]$name, [string]$content) {
+            $entry  = $zip.CreateEntry($name, [System.IO.Compression.CompressionLevel]::Optimal)
+            $stream = $entry.Open()
+            $bytes  = $utf8NoBom.GetBytes($content)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Dispose()
+        }
+        $d    = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        $te   = Invoke-XmlEscape $DocTitle
+        $he   = Invoke-XmlEscape ($HeaderLabel ? $HeaderLabel : $DocTitle)
+        Add-ZipEntry '[Content_Types].xml' @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml"  ContentType="application/xml"/>
+  <Override PartName="/word/document.xml"  ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml"    ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+  <Override PartName="/word/header1.xml"   ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+  <Override PartName="/word/footer1.xml"   ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>
+  <Override PartName="/docProps/core.xml"  ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+</Types>
+'@
+        Add-ZipEntry '_rels/.rels' @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+</Relationships>
+'@
+        Add-ZipEntry 'docProps/core.xml' @"
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+                   xmlns:dc="http://purl.org/dc/elements/1.1/"
+                   xmlns:dcterms="http://purl.org/dc/terms/"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:title>$te</dc:title>
+  <dc:creator>EXpress v$ScriptVersion</dc:creator>
+  <dcterms:created xsi:type="dcterms:W3CDTF">$d</dcterms:created>
+  <dcterms:modified xsi:type="dcterms:W3CDTF">$d</dcterms:modified>
+</cp:coreProperties>
+"@
+        Add-ZipEntry 'word/_rels/document.xml.rels' @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"    Target="styles.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header"    Target="header1.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer"    Target="footer1.xml"/>
+</Relationships>
+'@
+        Add-ZipEntry 'word/styles.xml' @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr>
+      <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/>
+      <w:sz w:val="22"/><w:szCs w:val="22"/>
+    </w:rPr></w:rPrDefault>
+    <w:pPrDefault><w:pPr>
+      <w:spacing w:after="160" w:line="259" w:lineRule="auto"/>
+    </w:pPr></w:pPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="480" w:after="80"/><w:outlineLvl w:val="0"/></w:pPr>
+    <w:rPr><w:rFonts w:ascii="Calibri Light" w:hAnsi="Calibri Light"/><w:b/><w:color w:val="2F5496"/><w:sz w:val="40"/><w:szCs w:val="40"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="360" w:after="40"/><w:outlineLvl w:val="1"/></w:pPr>
+    <w:rPr><w:rFonts w:ascii="Calibri Light" w:hAnsi="Calibri Light"/><w:b/><w:color w:val="2E74B5"/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading3">
+    <w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="240" w:after="40"/><w:outlineLvl w:val="2"/></w:pPr>
+    <w:rPr><w:rFonts w:ascii="Calibri Light" w:hAnsi="Calibri Light"/><w:b/><w:color w:val="1F3864"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading4">
+    <w:name w:val="heading 4"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/>
+    <w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="160" w:after="20"/><w:outlineLvl w:val="3"/></w:pPr>
+    <w:rPr><w:i/><w:color w:val="2E74B5"/><w:sz w:val="22"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Code">
+    <w:name w:val="Code"/><w:basedOn w:val="Normal"/>
+    <w:pPr><w:spacing w:before="0" w:after="0"/><w:shd w:val="clear" w:color="auto" w:fill="F2F2F2"/></w:pPr>
+    <w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:cs="Courier New"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="ListParagraph">
+    <w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/>
+    <w:pPr><w:ind w:left="720"/></w:pPr>
+  </w:style>
+  <w:style w:type="table" w:default="1" w:styleId="TableNormal">
+    <w:name w:val="Normal Table"/>
+    <w:tblPr><w:tblCellMar>
+      <w:top w:w="0" w:type="dxa"/><w:left w:w="108" w:type="dxa"/>
+      <w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/>
+    </w:tblCellMar></w:tblPr>
+  </w:style>
+  <w:style w:type="table" w:styleId="TableGrid">
+    <w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/>
+    <w:tblPr><w:tblBorders>
+      <w:top    w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+      <w:left   w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+      <w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+      <w:right  w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+      <w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+      <w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>
+    </w:tblBorders></w:tblPr>
+  </w:style>
+</w:styles>
+'@
+        Add-ZipEntry 'word/numbering.xml' @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:multiLevelType w:val="hybridMultilevel"/>
+    <w:lvl w:ilvl="0">
+      <w:start w:val="1"/><w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="&#x2022;"/>
+      <w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>
+      <w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol" w:hint="default"/></w:rPr>
+    </w:lvl>
+    <w:lvl w:ilvl="1">
+      <w:start w:val="1"/><w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="o"/>
+      <w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>
+      <w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:hint="default"/></w:rPr>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>
+'@
+        Add-ZipEntry 'word/header1.xml' @"
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p>
+    <w:pPr><w:jc w:val="right"/>
+      <w:pBdr><w:bottom w:val="single" w:sz="6" w:space="1" w:color="2F5496"/></w:pBdr>
+      <w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr>
+    </w:pPr>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr>
+      <w:t>$he</w:t>
+    </w:r>
+  </w:p>
+</w:hdr>
+"@
+        Add-ZipEntry 'word/footer1.xml' @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p>
+    <w:pPr>
+      <w:pBdr><w:top w:val="single" w:sz="6" w:space="1" w:color="2F5496"/></w:pBdr>
+      <w:tabs><w:tab w:val="right" w:pos="9360"/></w:tabs>
+      <w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr>
+    </w:pPr>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:t>INTERN</w:t></w:r>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:tab/></w:r>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:fldChar w:fldCharType="begin"/></w:r>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:fldChar w:fldCharType="end"/></w:r>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:t xml:space="preserve"> / </w:t></w:r>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:fldChar w:fldCharType="begin"/></w:r>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:instrText xml:space="preserve"> NUMPAGES </w:instrText></w:r>
+    <w:r><w:rPr><w:color w:val="595959"/><w:sz w:val="18"/></w:rPr><w:fldChar w:fldCharType="end"/></w:r>
+  </w:p>
+</w:ftr>
+'@
+        Add-ZipEntry 'word/document.xml' (New-WdDocumentXml $BodyParts)
+        $zip.Dispose()
+        $fs.Dispose()
+    }
+
+    # ── New-InstallationDocument (F22) ────────────────────────────────────────────
+    function New-InstallationDocument {
+        $DE = ($State['Language'] -ne 'EN')
+        $cust = [bool]$State['CustomerDocument']
+        $ts   = Get-Date -Format 'yyyyMMddHHmmss'
+        $lang = if ($DE) { 'DE' } else { 'EN' }
+        $docPath = Join-Path $State['ReportsPath'] ('{0}_InstallationDocument_{1}_{2}.docx' -f $env:COMPUTERNAME, $lang, $ts)
+        $docTitle = if ($DE) { 'Exchange Server Installationsdokumentation' } else { 'Exchange Server Installation Documentation' }
+        Write-MyOutput ('Generating Word Installation Document ({0}): {1}' -f $lang, $docPath)
+
+        function Mask-Ip([string]$text) {
+            if (-not $cust) { return $text }
+            $text -replace '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b', 'x.x.x.x'
+        }
+        function Mask-Val([string]$text) { if ($cust -and $text) { '[redacted]' } else { $text } }
+        function SafeVal([object]$v, [string]$fallback = '') { if ($null -eq $v -or "$v" -eq '') { $fallback } else { "$v" } }
+
+        $parts = [System.Collections.Generic.List[string]]::new()
+
+        # ── 1. Titelblatt ────────────────────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '1. Titelblatt' : '1. Title Page') 1))
+        $instMode = if ($State['InstallEdge']) { 'Edge Transport' } elseif ($State['InstallRecipientManagement']) { 'Recipient Management Tools' } elseif ($State['InstallManagementTools']) { 'Management Tools' } elseif ($State['StandaloneOptimize']) { 'Standalone Optimize' } elseif ($State['NoSetup']) { 'Optimization Only' } else { 'Mailbox Server' }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Eigenschaft' : 'Property'), ($DE ? 'Wert' : 'Value')) -Rows @(
+            @(($DE ? 'Dokument' : 'Document'), $docTitle)
+            @('EXpress Version', "v$ScriptVersion")
+            @(($DE ? 'Server' : 'Server'), $env:COMPUTERNAME)
+            @(($DE ? 'Exchange-Organisation' : 'Exchange Organisation'), (SafeVal $State['OrganizationName'] ($DE ? '(nicht gesetzt)' : '(not set)')))
+            @(($DE ? 'Installationsmodus' : 'Installation mode'), $instMode)
+            @(($DE ? 'Erstellt am' : 'Generated on'), (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+            @(($DE ? 'Klassifizierung' : 'Classification'), ($cust ? 'CUSTOMER' : 'INTERN'))
+        )))
+
+        # ── 2. Installationsparameter ────────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '2. Installationsparameter' : '2. Installation Parameters') 1))
+        $modeText = if ($State['ConfigDriven']) { ($DE ? 'Autopilot (vollautomatisch)' : 'Autopilot (fully automated)') } else { ($DE ? 'Copilot (interaktiv)' : 'Copilot (interactive)') }
+        $paramRows = [System.Collections.Generic.List[object[]]]::new()
+        $paramRows.Add(@(($DE ? 'Setup-Version' : 'Setup version'), (SafeVal (& { try { (Get-SetupTextVersion $State['SetupVersion']) } catch { $State['SetupVersion'] } }))))
+        $paramRows.Add(@(($DE ? 'Installationspfad' : 'Install path'), (SafeVal $State['InstallPath'])))
+        if ($State['Namespace'])        { $paramRows.Add(@('Namespace', (SafeVal $State['Namespace']))) }
+        if ($State['DownloadDomain'])   { $paramRows.Add(@('OWA Download Domain', (SafeVal $State['DownloadDomain']))) }
+        if ($State['DAGName'])          { $paramRows.Add(@('DAG', (SafeVal $State['DAGName']))) }
+        if ($State['CertificatePath'])  { $paramRows.Add(@(($DE ? 'Zertifikatspfad' : 'Certificate path'), (Mask-Val (SafeVal $State['CertificatePath'])))) }
+        if ($State['LogRetentionDays']) { $paramRows.Add(@(($DE ? 'Log-Aufbewahrung' : 'Log retention'), ('{0} {1}' -f $State['LogRetentionDays'], ($DE ? 'Tage' : 'days')))) }
+        if ($State['RelaySubnets'])     { $paramRows.Add(@(($DE ? 'Relay-Subnetze' : 'Relay subnets'), (Mask-Ip (($State['RelaySubnets'] -join ', '))))) }
+        $paramRows.Add(@(($DE ? 'Modus' : 'Mode'), $modeText))
+        $paramRows.Add(@('TLS 1.2', (SafeVal $State['EnableTLS12'])))
+        $paramRows.Add(@('TLS 1.3', (SafeVal $State['EnableTLS13'])))
+        $paramRows.Add(@('TLS 1.0/1.1 disabled', (SafeVal $State['DisableSSL3'])))
+        $paramRows.Add(@(($DE ? 'Logdatei' : 'Log file'), (SafeVal $State['TranscriptFile'])))
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Parameter' : 'Parameter'), ($DE ? 'Wert' : 'Value')) -Rows $paramRows.ToArray()))
+
+        # ── 3. Systemdetails ──────────────────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '3. Systemdetails' : '3. System Details') 1))
+        $sysRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+            $sysRows.Add(@(($DE ? 'Betriebssystem' : 'Operating system'), $os.Caption))
+            $sysRows.Add(@(($DE ? 'OS-Build' : 'OS build'), $os.Version))
+            $sysRows.Add(@(($DE ? 'Letzter Neustart' : 'Last boot'), $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss')))
+            $sysRows.Add(@(($DE ? 'RAM gesamt' : 'Total RAM'), ('{0} GB' -f [math]::Round($os.TotalVisibleMemorySize / 1MB, 0))))
+        } catch { }
+        try {
+            $cpuList     = @(Get-CimInstance Win32_Processor -ErrorAction Stop)
+            $totalCores  = ($cpuList | Measure-Object NumberOfCores -Sum).Sum
+            $totalLogical= ($cpuList | Measure-Object NumberOfLogicalProcessors -Sum).Sum
+            $sysRows.Add(@('CPU', ('{0} — {1} Kerne / {2} logisch' -f $cpuList[0].Name.Trim(), $totalCores, $totalLogical)))
+        } catch { }
+        try {
+            $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+            $sysRows.Add(@(($DE ? 'Computername (FQDN)' : 'Computer name (FQDN)'), ('{0}.{1}' -f $cs.DNSHostName, $cs.Domain)))
+        } catch { }
+        try {
+            Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and $_.DriveType -notin 'CD-ROM','Removable' -and $_.Size -gt 0 } | ForEach-Object {
+                $freeGB = [math]::Round($_.SizeRemaining / 1GB, 1)
+                $totGB  = [math]::Round($_.Size / 1GB, 1)
+                $pct    = [math]::Round($_.SizeRemaining / $_.Size * 100, 0)
+                $au     = if ($_.AllocationUnitSize) { '{0} KB' -f ($_.AllocationUnitSize / 1KB) } else { '?' }
+                $sysRows.Add(@(('Volume {0}:' -f $_.DriveLetter), ('{0} GB {1} / {2} GB ({3}% free) — AU: {4}' -f $freeGB, $_.FileSystem, $totGB, $pct, $au)))
+            }
+        } catch { }
+        try {
+            $pf = Get-CimInstance Win32_PageFileSetting -ErrorAction SilentlyContinue
+            if ($pf) {
+                $ramGB = [math]::Round((Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).TotalVisibleMemorySize / 1MB, 0)
+                $recMB = $ramGB * 1024 + 10
+                $sysRows.Add(@(($DE ? 'Auslagerungsdatei' : 'Page file'), ('{0} — Init: {1} MB / Max: {2} MB — Empfehlung RAM+10MB: {3} MB' -f $pf.Name, $pf.InitialSize, $pf.MaximumSize, $recMB)))
+            }
+        } catch { }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Eigenschaft' : 'Property'), ($DE ? 'Wert' : 'Value')) -Rows $sysRows.ToArray()))
+
+        # ── 4. Netzwerk & DNS ─────────────────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '4. Netzwerk und DNS' : '4. Network and DNS') 1))
+        $netRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            $nicIPs = @{}; $nicDNS = @{}
+            Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notlike '*Loopback*' } | ForEach-Object { $nicIPs[$_.InterfaceAlias] = ('{0}/{1}' -f $_.IPAddress, $_.PrefixLength) }
+            Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notlike '*Loopback*' -and $_.ServerAddresses } | ForEach-Object { $nicDNS[$_.InterfaceAlias] = ($_.ServerAddresses -join ', ') }
+            foreach ($nic in ($nicIPs.Keys | Sort-Object)) {
+                $ip  = Mask-Ip $nicIPs[$nic]
+                $dns = if ($nicDNS[$nic]) { Mask-Ip $nicDNS[$nic] } else { ($DE ? '(nicht gesetzt)' : '(not set)') }
+                $netRows.Add(@(('NIC: {0}' -f $nic), ('{0} — DNS: {1}' -f $ip, $dns)))
+            }
+        } catch { }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'NIC / Eigenschaft' : 'NIC / Property'), ($DE ? 'Wert' : 'Value')) -Rows $netRows.ToArray()))
+
+        # ── 5. IST-Aufnahme Active Directory ─────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '5. Active Directory' : '5. Active Directory') 1))
+        $adRows = [System.Collections.Generic.List[object[]]]::new()
+        try { $cs2 = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue; $adRows.Add(@(($DE ? 'Domäne' : 'Domain'), $cs2.Domain)) } catch { }
+        try {
+            $ffl = Get-ForestFunctionalLevel
+            $adRows.Add(@(($DE ? 'Forest Functional Level' : 'Forest functional level'), ('{0} ({1})' -f $ffl, (Get-FFLText $ffl))))
+        } catch { }
+        try {
+            $exOrg = Get-ExchangeOrganization
+            if ($exOrg) { $adRows.Add(@(($DE ? 'Exchange-Organisation' : 'Exchange organisation'), $exOrg)) }
+            $adRows.Add(@(($DE ? 'Exchange Forest Schema' : 'Exchange forest schema'), (SafeVal (Get-ExchangeForestLevel))))
+            $adRows.Add(@(($DE ? 'Exchange Domain Level' : 'Exchange domain level'), (SafeVal (Get-ExchangeDomainLevel))))
+        } catch { }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Eigenschaft' : 'Property'), ($DE ? 'Wert' : 'Value')) -Rows $adRows.ToArray()))
+
+        # ── 6. Exchange-Installation ──────────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '6. Exchange-Installation' : '6. Exchange Installation') 1))
+        $exInstRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            $exSrv = Get-ExchangeServer $env:COMPUTERNAME -ErrorAction Stop
+            $exInstRows.Add(@(($DE ? 'Exchange-Version' : 'Exchange version'), $exSrv.AdminDisplayVersion.ToString()))
+            $exInstRows.Add(@(($DE ? 'Serverrolle' : 'Server role'), ($exSrv.ServerRole -join ', ')))
+            $exInstRows.Add(@(($DE ? 'Edition' : 'Edition'), $exSrv.Edition.ToString()))
+            $exInstRows.Add(@(($DE ? 'AD-Standort' : 'AD site'), $exSrv.Site.ToString()))
+        } catch { }
+        try {
+            $cas = Get-ClientAccessService -Identity $env:COMPUTERNAME -ErrorAction SilentlyContinue
+            if ($cas) { $exInstRows.Add(@('Autodiscover SCP', (SafeVal $cas.AutoDiscoverServiceInternalUri))) }
+        } catch { }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Eigenschaft' : 'Property'), ($DE ? 'Wert' : 'Value')) -Rows $exInstRows.ToArray()))
+
+        # ── 7. Konfiguration Exchange SE ──────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '7. Konfiguration Exchange SE' : '7. Exchange SE Configuration') 1))
+
+        # 7.1 Datenbanken
+        $null = $parts.Add((New-WdHeading ($DE ? '7.1 Postfachdatenbanken' : '7.1 Mailbox Databases') 2))
+        $dbRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            $dbs = Get-MailboxDatabase -Server $env:COMPUTERNAME -Status -ErrorAction SilentlyContinue
+            if (-not $dbs) { $dbs = Get-MailboxDatabase -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue }
+            if ($dbs) {
+                foreach ($db in $dbs) {
+                    $mounted = if ($null -ne $db.Mounted) { if ($db.Mounted) { ($DE ? 'Eingehängt' : 'Mounted') } else { ($DE ? 'Ausgehängt' : 'Dismounted') } } else { ($DE ? 'Unbekannt' : 'Unknown') }
+                    $dbRows.Add(@($db.Name, (SafeVal $db.EdbFilePath), (SafeVal $db.LogFolderPath), $mounted))
+                }
+            }
+        } catch { }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Datenbank' : 'Database'), ($DE ? 'DB-Pfad' : 'DB path'), ($DE ? 'Log-Pfad' : 'Log path'), ($DE ? 'Status' : 'Status')) -Rows $dbRows.ToArray()))
+
+        # 7.2 Virtuelle Verzeichnisse + SCP
+        $null = $parts.Add((New-WdHeading ($DE ? '7.2 Virtuelle Verzeichnisse' : '7.2 Virtual Directories') 2))
+        $vdirRows = [System.Collections.Generic.List[object[]]]::new()
+        @(
+            @{ Name='OWA';        Cmd={ Get-OwaVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
+            @{ Name='ECP';        Cmd={ Get-EcpVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
+            @{ Name='EWS';        Cmd={ Get-WebServicesVirtualDirectory  -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
+            @{ Name='OAB';        Cmd={ Get-OabVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
+            @{ Name='ActiveSync'; Cmd={ Get-ActiveSyncVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
+            @{ Name='MAPI';       Cmd={ Get-MapiVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
+        ) | ForEach-Object {
+            try {
+                $vd = & $_.Cmd
+                if ($vd) {
+                    $int = if ($vd.InternalUrl) { $vd.InternalUrl.AbsoluteUri } else { ($DE ? '(nicht gesetzt)' : '(not set)') }
+                    $ext = if ($vd.ExternalUrl) { $vd.ExternalUrl.AbsoluteUri } else { ($DE ? '(nicht gesetzt)' : '(not set)') }
+                    $vdirRows.Add(@($_.Name, (Mask-Ip $int), (Mask-Ip $ext)))
+                }
+            } catch { }
+        }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Dienst' : 'Service'), ($DE ? 'Intern' : 'Internal'), ($DE ? 'Extern' : 'External')) -Rows $vdirRows.ToArray()))
+
+        # 7.3 Konnektoren
+        $null = $parts.Add((New-WdHeading ($DE ? '7.3 Konnektoren' : '7.3 Connectors') 2))
+        $conRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            Get-ReceiveConnector -Server $env:COMPUTERNAME -ErrorAction Stop | ForEach-Object {
+                $conRows.Add(@($_.Name, (Mask-Ip ($_.Bindings -join ', ')), (Mask-Ip ($_.RemoteIPRanges -join ', ')), $_.AuthMechanism, $_.PermissionGroups))
+            }
+        } catch { }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Connector' : 'Connector'), ($DE ? 'Bindings' : 'Bindings'), ($DE ? 'Remote-IPs' : 'Remote IPs'), ($DE ? 'Auth' : 'Auth'), ($DE ? 'Berechtigungen' : 'Permissions')) -Rows $conRows.ToArray()))
+        $sendConRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            Get-SendConnector -ErrorAction SilentlyContinue | ForEach-Object {
+                $sendConRows.Add(@($_.Name, ($_.AddressSpaces -join ', '), (Mask-Ip (SafeVal ($_.SmartHosts -join ', '))), ($DE ? (if ($_.Enabled) {'Aktiv'} else {'Inaktiv'}) : (if ($_.Enabled) {'Active'} else {'Inactive'}))))
+            }
+        } catch { }
+        if ($sendConRows.Count -gt 0) {
+            $null = $parts.Add((New-WdHeading ($DE ? 'Send Connectors' : 'Send Connectors') 3))
+            $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Name' : 'Name'), ($DE ? 'Adressraum' : 'Address space'), 'Smarthost', ($DE ? 'Status' : 'Status')) -Rows $sendConRows.ToArray()))
+        }
+
+        # 7.4 Zertifikate
+        $null = $parts.Add((New-WdHeading ($DE ? '7.4 Zertifikate' : '7.4 Certificates') 2))
+        $certRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | ForEach-Object {
+                $daysLeft = ($_.NotAfter - (Get-Date)).Days
+                $tp = if ($cust) { ('{0}...' -f $_.Thumbprint.Substring(0,[Math]::Min(8,$_.Thumbprint.Length))) } else { $_.Thumbprint }
+                $certRows.Add(@($_.Subject, $_.NotAfter.ToString('yyyy-MM-dd'), ('{0}d' -f $daysLeft), $_.Services, $tp))
+            }
+        } catch { }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Subject' : 'Subject'), ($DE ? 'Ablauf' : 'Expiry'), ($DE ? 'Verbleibend' : 'Remaining'), ($DE ? 'Dienste' : 'Services'), ($DE ? 'Fingerabdruck' : 'Thumbprint')) -Rows $certRows.ToArray()))
+        try {
+            $authCfg = Get-AuthConfig -ErrorAction SilentlyContinue
+            if ($authCfg) {
+                $tp = if ($cust) { ('{0}...' -f $authCfg.CurrentCertificateThumbprint.Substring(0,[Math]::Min(8,$authCfg.CurrentCertificateThumbprint.Length))) } else { $authCfg.CurrentCertificateThumbprint }
+                $null = $parts.Add((New-WdParagraph (($DE ? 'Auth-Zertifikat (Fingerabdruck): ' : 'Auth certificate (thumbprint): ') + $tp)))
+            }
+        } catch { }
+
+        # 7.5 DAG-Status (conditional)
+        try {
+            $dag = Get-DatabaseAvailabilityGroup -ErrorAction SilentlyContinue | Where-Object { $env:COMPUTERNAME -in ($_.Servers | ForEach-Object { $_.Name }) }
+            if ($dag) {
+                $null = $parts.Add((New-WdHeading ($DE ? '7.5 DAG-Status' : '7.5 DAG Status') 2))
+                $dagRows = @(
+                    @(($DE ? 'DAG-Name' : 'DAG name'), $dag.Name)
+                    @(($DE ? 'Mitglieder' : 'Members'), ($dag.Servers -join ', '))
+                    @('FSW', (Mask-Ip (SafeVal $dag.WitnessServer)))
+                    @('Alternate FSW', (Mask-Ip (SafeVal $dag.AlternateWitnessServer)))
+                    @('DAC Mode', (SafeVal $dag.DatacenterActivationMode))
+                )
+                $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Eigenschaft' : 'Property'), ($DE ? 'Wert' : 'Value')) -Rows $dagRows))
+                $copyRows = [System.Collections.Generic.List[object[]]]::new()
+                try {
+                    Get-MailboxDatabaseCopyStatus -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | ForEach-Object {
+                        $copyRows.Add(@($_.Name, $_.Status, $_.CopyQueueLength, $_.ReplayQueueLength, (SafeVal $_.ContentIndexState)))
+                    }
+                } catch { }
+                if ($copyRows.Count -gt 0) {
+                    $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Kopie' : 'Copy'), ($DE ? 'Status' : 'Status'), ($DE ? 'Copy-Queue' : 'Copy queue'), ($DE ? 'Replay-Queue' : 'Replay queue'), ($DE ? 'Suchindex' : 'Content index')) -Rows $copyRows.ToArray()))
+                }
+            }
+        } catch { }
+
+        # 7.6 Transport-Konfiguration
+        $null = $parts.Add((New-WdHeading ($DE ? '7.6 Transport-Konfiguration' : '7.6 Transport Configuration') 2))
+        $transRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            $tc = Get-TransportConfig -ErrorAction SilentlyContinue
+            if ($tc) {
+                $transRows.Add(@(($DE ? 'Max. Sendegröße' : 'Max send size'), ('{0} MB' -f [math]::Round($tc.MaxSendSize.Value.ToBytes()/1MB,0))))
+                $transRows.Add(@(($DE ? 'Max. Empfangsgröße' : 'Max receive size'), ('{0} MB' -f [math]::Round($tc.MaxReceiveSize.Value.ToBytes()/1MB,0))))
+                $transRows.Add(@('Safety Net Hold Time', $tc.SafetyNetHoldTime))
+                $transRows.Add(@(($DE ? 'HTML-NDRs' : 'HTML NDRs'), ('{0} / {1}' -f $tc.InternalDsnSendHtml, $tc.ExternalDsnSendHtml)))
+            }
+        } catch { }
+        try {
+            $ruleCount = @(Get-TransportRule -ErrorAction SilentlyContinue).Count
+            $transRows.Add(@(($DE ? 'Transport-Regeln' : 'Transport rules'), $ruleCount))
+        } catch { }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Einstellung' : 'Setting'), ($DE ? 'Wert' : 'Value')) -Rows $transRows.ToArray()))
+
+        # 7.7 Anti-Spam / Agents
+        $null = $parts.Add((New-WdHeading ($DE ? '7.7 Transport-Agents' : '7.7 Transport Agents') 2))
+        $agentRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            Get-TransportAgent -ErrorAction SilentlyContinue | ForEach-Object {
+                $agentRows.Add(@($_.Name, ($DE ? (if ($_.Enabled) {'Aktiv'} else {'Inaktiv'}) : (if ($_.Enabled) {'Enabled'} else {'Disabled'})), $_.Priority))
+            }
+        } catch { }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Agent' : 'Agent'), ($DE ? 'Status' : 'Status'), ($DE ? 'Priorität' : 'Priority')) -Rows $agentRows.ToArray()))
+
+        # ── 8. Optimierungen und Härtungen ────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '8. Optimierungen und Härtungen' : '8. Optimisations and Hardening') 1))
+        function Get-SecReg($path, $name) { try { (Get-ItemProperty -Path $path -Name $name -ErrorAction Stop).$name } catch { $null } }
+        $hardRows = [System.Collections.Generic.List[object[]]]::new()
+        $hardRows.Add(@('TLS 1.0 Server Disabled', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Server' 'Enabled') '(default)')))
+        $hardRows.Add(@('TLS 1.1 Server Disabled', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.1\Server' 'Enabled') '(default)')))
+        $hardRows.Add(@('TLS 1.2 Enabled', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server' 'Enabled') '(default)')))
+        $hardRows.Add(@('TLS 1.3 Enabled', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server' 'Enabled') '(default)')))
+        $hardRows.Add(@('.NET Strong Crypto', (SafeVal (Get-SecReg 'HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319' 'SchUseStrongCrypto') '(not set)')))
+        try { $hardRows.Add(@('SMBv1', (SafeVal ((Get-SmbServerConfiguration -ErrorAction Stop).EnableSMB1Protocol) '?'))) } catch { }
+        $hardRows.Add(@('WDigest UseLogonCredential', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' 'UseLogonCredential') '(not set)')))
+        $hardRows.Add(@('LSA RunAsPPL', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RunAsPPL') '(not set)')))
+        $hardRows.Add(@('LM Compatibility Level', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LmCompatibilityLevel') '(default)')))
+        $hardRows.Add(@('Credential Guard (VBS)', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity') '(not set)')))
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Maßnahme' : 'Measure'), ($DE ? 'Registrierungswert / Status' : 'Registry value / status')) -Rows $hardRows.ToArray()))
+        try {
+            $orgCfg = Get-OrganizationConfig -ErrorAction SilentlyContinue
+            if ($orgCfg) {
+                $orgRows = @(
+                    @(($DE ? 'CEIP deaktiviert' : 'CEIP disabled'), (SafeVal (-not $orgCfg.CustomerFeedbackEnabled)))
+                    @(($DE ? 'Modern Auth (OAuth2)' : 'Modern Auth (OAuth2)'), (SafeVal $orgCfg.OAuth2ClientProfileEnabled))
+                    @(($DE ? 'MAPI/HTTP' : 'MAPI/HTTP'), (SafeVal $orgCfg.MapiHttpEnabled))
+                )
+                $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Optimierung' : 'Optimisation'), ($DE ? 'Wert' : 'Value')) -Rows $orgRows))
+            }
+        } catch { }
+
+        # ── 9. Backup- & DR-Readiness ─────────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '9. Backup- und DR-Readiness' : '9. Backup and DR Readiness') 1))
+        $null = $parts.Add((New-WdHeading ($DE ? '9.1 VSS Writer Status' : '9.1 VSS Writer Status') 2))
+        $vssRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            $vssOut = (vssadmin list writers 2>&1) -join "`n"
+            $currentWriter = ''
+            foreach ($line in ($vssOut -split "`n")) {
+                if ($line -match "Writer name:\s+'(.+)'") { $currentWriter = $Matches[1] }
+                elseif ($line -match 'State:\s*\[\d+\]\s+(.+)') {
+                    $vssRows.Add(@($currentWriter, $Matches[1].Trim()))
+                }
+            }
+        } catch { $vssRows.Add(@(($DE ? 'VSS-Abfrage fehlgeschlagen' : 'VSS query failed'), '')) }
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'VSS Writer' : 'VSS Writer'), ($DE ? 'Zustand' : 'State')) -Rows $vssRows.ToArray()))
+
+        # ── 10. HealthChecker ──────────────────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '10. HealthChecker' : '10. HealthChecker') 1))
+        $hcPath = SafeVal $State['HCReportPath']
+        if ($hcPath) {
+            $null = $parts.Add((New-WdParagraph (($DE ? 'HealthChecker-HTML-Report: ' : 'HealthChecker HTML report: ') + $hcPath)))
+        } else {
+            $null = $parts.Add((New-WdParagraph ($DE ? 'HealthChecker wurde nicht ausgeführt oder Pfad nicht verfügbar. Bitte manuell unter https://aka.ms/ExchangeHealthChecker ausführen.' : 'HealthChecker was not run or path unavailable. Please run manually from https://aka.ms/ExchangeHealthChecker.')))
+        }
+
+        # ── 11. Monitoring-Readiness ───────────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '11. Monitoring-Readiness' : '11. Monitoring Readiness') 1))
+        $monRows = [System.Collections.Generic.List[object[]]]::new()
+        try {
+            $svc = Get-Service MSExchangeMitigation -ErrorAction SilentlyContinue
+            if ($svc) { $monRows.Add(@('EEMS (MSExchangeMitigation)', $svc.Status.ToString())) }
+        } catch { }
+        try {
+            $evtLogs = @('Application','System','MSExchange Management') | ForEach-Object {
+                $log = Get-EventLog -LogName $_ -Newest 1 -ErrorAction SilentlyContinue
+                if ($log) { '{0}: MaxSize={1}MB' -f $_, [math]::Round((Get-EventLog -LogName $_ -ErrorAction SilentlyContinue | Select-Object -ExpandProperty MaximumKilobytes -First 1) / 1024, 0) }
+            }
+            if ($evtLogs) { $monRows.Add(@(($DE ? 'Event-Logs' : 'Event logs'), ($evtLogs -join '; '))) }
+        } catch { }
+        $monRows.Add(@(($DE ? 'Empfehlung' : 'Recommendation'), ($DE ? 'Perfmon-Baseline innerhalb 4 Wochen nach Go-Live aufzeichnen.' : 'Record Perfmon baseline within 4 weeks of go-live.')))
+        $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Eigenschaft' : 'Property'), ($DE ? 'Wert / Status' : 'Value / status')) -Rows $monRows.ToArray()))
+
+        # ── 12. Hybrid-Status (conditional) ───────────────────────────────────────
+        try {
+            $hyb = Get-HybridConfiguration -ErrorAction SilentlyContinue
+            if ($hyb) {
+                $null = $parts.Add((New-WdHeading ($DE ? '12. Hybrid-Status' : '12. Hybrid Status') 1))
+                $hybRows = @(
+                    @(($DE ? 'Hybrid-Features' : 'Hybrid features'), (SafeVal ($hyb.Features -join ', ')))
+                    @(($DE ? 'On-Premises SMTP-Domänen' : 'On-premises SMTP domains'), (SafeVal ($hyb.OnPremisesSMTPDomains -join ', ')))
+                    @(($DE ? 'Edge-Transport-Server' : 'Edge Transport servers'), (SafeVal ($hyb.EdgeTransportServers -join ', ')))
+                )
+                $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Eigenschaft' : 'Property'), ($DE ? 'Wert' : 'Value')) -Rows $hybRows))
+            }
+        } catch { }
+
+        # ── 13. Public Folders (conditional) ──────────────────────────────────────
+        try {
+            $pfMailboxes = @(Get-Mailbox -PublicFolder -ErrorAction SilentlyContinue)
+            if ($pfMailboxes -and $pfMailboxes.Count -gt 0) {
+                $null = $parts.Add((New-WdHeading ($DE ? '13. Öffentliche Ordner' : '13. Public Folders') 1))
+                $pfRows = $pfMailboxes | ForEach-Object {
+                    @($_.Name, (SafeVal $_.PrimarySmtpAddress), (SafeVal $_.Database))
+                }
+                $null = $parts.Add((New-WdTable -Headers @(($DE ? 'Name' : 'Name'), 'SMTP', ($DE ? 'Datenbank' : 'Database')) -Rows $pfRows))
+            } else {
+                $null = $parts.Add((New-WdHeading ($DE ? '13. Öffentliche Ordner' : '13. Public Folders') 1))
+                $null = $parts.Add((New-WdParagraph ($DE ? 'Public Folders werden nicht eingesetzt. Moderne Ablösung über Shared Mailboxes (gemeinsamer Posteingang, Kalender) und Microsoft Teams (Dokumentenablage, Zusammenarbeit).' : 'Public folders are not in use. Modern replacement via Shared Mailboxes (shared inbox, calendar) and Microsoft Teams (document storage, collaboration).')))
+            }
+        } catch {
+            $null = $parts.Add((New-WdHeading ($DE ? '13. Öffentliche Ordner' : '13. Public Folders') 1))
+            $null = $parts.Add((New-WdParagraph ($DE ? 'Abfrage nicht möglich (Edge/Management-Tools-Modus oder keine Exchange-Session).' : 'Query not possible (Edge/Management Tools mode or no Exchange session).')))
+        }
+
+        # ── 14. Ausgeführte CMDLets ────────────────────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '14. Ausgeführte CMDLets' : '14. Executed Cmdlets') 1))
+        $null = $parts.Add((New-WdHeading ($DE ? '14.1 Vom Skript aufgerufen' : '14.1 Called by the script') 2))
+        $scriptCmds = @(
+            'Install-WindowsFeature','Set-NetFrameworkStrongCrypto','Set-TLSSettings','Set-SchannelProtocol',
+            'Enable-WindowsDefenderExclusions','Enable-HighPerformancePowerPlan','Enable-RSSOnAllNICs',
+            'Disable-SMBv1','Disable-WDigestCredentialCaching','Disable-HTTP2','Enable-LSAProtection',
+            'Disable-UnnecessaryServices','Set-LmCompatibilityLevel','Set-MaxConcurrentAPI',
+            'Enable-SerializedDataSigning','Disable-CredentialGuard','Disable-SSLOffloading',
+            'Enable-ExtendedProtection','Enable-AMSI','Enable-IanaTimeZoneMappings',
+            'Enable-RootCertificateAutoUpdate','Disable-MRSProxy','Set-MAPIEncryptionRequired',
+            'Set-VirtualDirectoryURLs','New-AnonymousRelayConnector','Import-ExchangeCertificateFromPFX',
+            'Join-DAG','Invoke-HealthChecker','New-InstallationReport','New-InstallationDocument'
+        )
+        foreach ($cmd in $scriptCmds) { $null = $parts.Add((New-WdBullet $cmd)) }
+        $null = $parts.Add((New-WdHeading ($DE ? '14.2 Exchange-CMDLets aus Transcript (max. 200)' : '14.2 Exchange cmdlets from transcript (max. 200)') 2))
+        $exCmds = @()
+        try {
+            $transcript = SafeVal $State['TranscriptFile']
+            if ($transcript -and (Test-Path $transcript)) {
+                $exCmds = (Get-Content $transcript -ErrorAction SilentlyContinue |
+                    Where-Object { $_ -match '\b(Get|Set|New|Remove|Enable|Disable|Add|Test|Start|Stop|Move|Export|Import|Invoke)-(?:Mailbox|ExchangeServer|MailboxDatabase|ReceiveConnector|SendConnector|TransportRule|TransportAgent|OwaVirtualDirectory|EcpVirtualDirectory|WebServicesVirtualDirectory|ActiveSyncVirtualDirectory|OabVirtualDirectory|MapiVirtualDirectory|ClientAccessService|ExchangeCertificate|DatabaseAvailabilityGroup|MailboxDatabaseCopyStatus|TransportConfig|TransportService|AuthConfig|OrganizationConfig|AcceptedDomain|HybridConfiguration)\b' } |
+                    ForEach-Object { if ($_ -match '\b((Get|Set|New|Remove|Enable|Disable|Add|Test|Start|Stop|Move|Export|Import|Invoke)-\w+)') { $Matches[1] } } |
+                    Sort-Object -Unique | Select-Object -First 200)
+            }
+        } catch { }
+        if ($exCmds) {
+            foreach ($cmd in $exCmds) { $null = $parts.Add((New-WdBullet $cmd)) }
+        } else {
+            $null = $parts.Add((New-WdParagraph ($DE ? '(Transcript nicht verfügbar oder keine Exchange-Cmdlets gefunden)' : '(Transcript not available or no Exchange cmdlets found)')))
+        }
+
+        # ── 15. Operative Runbooks + Offene Punkte ────────────────────────────────
+        $null = $parts.Add((New-WdHeading ($DE ? '15. Operative Runbooks und offene Punkte' : '15. Operational Runbooks and Open Items') 1))
+        $null = $parts.Add((New-WdHeading ($DE ? '15.1 DAG-Wartungsmodus' : '15.1 DAG Maintenance Mode') 2))
+        $null = $parts.Add((New-WdCode 'Set-ServerComponentState <Server> -Component ServerWideOffline -State Inactive -Requester Maintenance'))
+        $null = $parts.Add((New-WdCode 'Suspend-MailboxDatabaseCopy <DB>\<Server> -SuspendComment "Wartung"'))
+        $null = $parts.Add((New-WdCode '# Wartung durchführen'))
+        $null = $parts.Add((New-WdCode 'Resume-MailboxDatabaseCopy <DB>\<Server>'))
+        $null = $parts.Add((New-WdCode 'Set-ServerComponentState <Server> -Component ServerWideOffline -State Active -Requester Maintenance'))
+        $null = $parts.Add((New-WdHeading ($DE ? '15.2 CU/SU-Update' : '15.2 CU/SU Update') 2))
+        $null = $parts.Add((New-WdCode '# SU: Run as SYSTEM via PSExec or scheduled task'))
+        $null = $parts.Add((New-WdCode 'setup.exe /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF /PrepareAllDomains'))
+        $null = $parts.Add((New-WdCode 'setup.exe /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF /Mode:Upgrade'))
+        $null = $parts.Add((New-WdHeading ($DE ? '15.3 Zertifikatstausch' : '15.3 Certificate Replacement') 2))
+        $null = $parts.Add((New-WdCode 'Import-ExchangeCertificate -FileName <pfx> -Password <pwd> -Server <srv>'))
+        $null = $parts.Add((New-WdCode 'Enable-ExchangeCertificate -Thumbprint <tp> -Services IIS,SMTP,POP,IMAP -Server <srv>'))
+        $null = $parts.Add((New-WdHeading ($DE ? '15.4 Datenbank-Verschiebung (Move-ActiveMailboxDatabase)' : '15.4 Database Move') 2))
+        $null = $parts.Add((New-WdCode 'Move-ActiveMailboxDatabase <DB> -ActivateOnServer <Target> -Confirm:$false'))
+        $null = $parts.Add((New-WdHeading ($DE ? '15.5 Datenbank-Reseed' : '15.5 Database Reseed') 2))
+        $null = $parts.Add((New-WdCode 'Update-MailboxDatabaseCopy <DB>\<Server> -DeleteExistingFiles'))
+        $null = $parts.Add((New-WdHeading ($DE ? '15.6 Offene Punkte' : '15.6 Open Items') 2))
+        $null = $parts.Add((New-WdTable -Headers @('Nr.', ($DE ? 'Offener Punkt' : 'Open item'), ($DE ? 'Verantwortlich' : 'Owner'), ($DE ? 'Fällig am' : 'Due date'), ($DE ? 'Status' : 'Status')) -Rows @(
+            @('1', '', '', '', '')
+            @('2', '', '', '', '')
+            @('3', '', '', '', '')
+        )))
+
+        # Write document
+        $headerLabel = if ($DE) { 'EXCHANGE SERVER INSTALLATIONSDOKUMENTATION' } else { 'EXCHANGE SERVER INSTALLATION DOCUMENTATION' }
+        New-WdFile -OutputPath $docPath -BodyParts $parts.ToArray() -DocTitle $docTitle -HeaderLabel $headerLabel
+        $State['WordDocPath'] = $docPath
+        Write-MyOutput ('Word Installation Document: {0}' -f $docPath)
     }
 
     function Get-RBACReport {
@@ -7341,6 +8058,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             4 = 'Exchange Management Tools only     [not tested]'
             5 = 'Recovery Mode                      [not tested]'
             6 = 'Standalone Optimize                [not tested]'
+            7 = 'Generate Installation Document     [not tested]'
         }
 
         # Toggle definitions: Key=letter, Name=parameter name, Default=initial state
@@ -7381,6 +8099,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             4 = @('B','I','G','S','T')
             5 = @()
             6 = @('B','I','K','M','N','Q','R','T')                                        # Standalone: no setup, no PrepareAD
+            7 = @('A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T') # Document only: all toggles irrelevant
         }
 
         # Initialize toggle states from defaults
@@ -7412,7 +8131,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             Write-MenuLine ('=' * 60) Cyan
             Write-Host ''
             Write-MenuLine '  Installation Mode:' Yellow
-            for ($i = 1; $i -le 6; $i++) {
+            for ($i = 1; $i -le 7; $i++) {
                 $marker = if ($Mode -eq $i) { '>' } else { ' ' }
                 $color  = if ($Mode -eq $i) { [System.ConsoleColor]::Green } else { [System.ConsoleColor]::Gray }
                 Write-Host ('    [{0}] {1}  {2}' -f $i, $marker, $modes[$i]) -ForegroundColor $color
@@ -7443,16 +8162,17 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         }
 
         # --- Step 1: Mode selection ---
-        while ($selectedMode -lt 1 -or $selectedMode -gt 6) {
+        while ($selectedMode -lt 1 -or $selectedMode -gt 7) {
             Draw-Menu -Mode $selectedMode -ToggState $toggleState
-            $raw = Read-Host '  Mode [1-6]'
-            if ($raw -match '^[1-6]$') {
+            $raw = Read-Host '  Mode [1-7]'
+            if ($raw -match '^[1-7]$') {
                 $selectedMode = [int]$raw
                 # Apply mode-specific toggle defaults
                 switch ($selectedMode) {
                     2 { $toggleState['G'] = $false; $toggleState['I'] = $false }
                     3 { foreach ($k in $disabledToggles[3]) { $toggleState[$k] = $false } }
                     6 { foreach ($k in $disabledToggles[6]) { $toggleState[$k] = $false } }
+                    7 { foreach ($k in $disabledToggles[7]) { $toggleState[$k] = $false } }
                 }
             }
         }
@@ -7555,7 +8275,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $cfg = @{}
         $cfg['Mode']       = $selectedMode
         $defaultIso = Join-Path (Split-Path $ScriptFullName -Parent) 'ExchangeServerSE-x64.iso'
-        if ($selectedMode -ne 6) {
+        if ($selectedMode -notin @(6, 7)) {
             $cfg['SourcePath'] = Read-MenuInput -Prompt 'Exchange source (folder or .iso)' -Default $defaultIso -Required $true
         }
         $cfg['InstallPath'] = Read-MenuInput -Prompt 'Working/log folder' -Default 'C:\Install'
@@ -7640,6 +8360,12 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         elseif ($selectedMode -eq 3) {
             $cfg['RecipientMgmtCleanup'] = (Read-MenuInput -Prompt 'Run AD cleanup after install? [Y/N]' -Default 'N') -imatch '^[Yy]'
         }
+        elseif ($selectedMode -eq 7) {
+            $langInput = Read-MenuInput -Prompt 'Document language [DE/EN]' -Default 'DE'
+            $cfg['Language'] = if ($langInput -imatch '^EN$') { 'EN' } else { 'DE' }
+            $custInput = Read-MenuInput -Prompt 'Redact sensitive values for customer? [Y/N]' -Default 'N'
+            $cfg['CustomerDocument'] = ($custInput -imatch '^[Yy]$')
+        }
         elseif ($selectedMode -eq 6) {
             $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
@@ -7690,10 +8416,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             if ($confirm -imatch '^[Qq]') { return $null }
             # N or anything else = restart from mode selection
             $selectedMode = 0
-            while ($selectedMode -lt 1 -or $selectedMode -gt 6) {
+            while ($selectedMode -lt 1 -or $selectedMode -gt 7) {
                 Draw-Menu -Mode $selectedMode -ToggState $toggleState
-                $raw = Read-Host '  Mode [1-6]'
-                if ($raw -match '^[1-6]$') { $selectedMode = [int]$raw }
+                $raw = Read-Host '  Mode [1-7]'
+                if ($raw -match '^[1-7]$') { $selectedMode = [int]$raw }
             }
         }
     }
@@ -7811,6 +8537,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             $InstallEdge         = [switch]($mode -eq 2)
             $Recover             = [switch]($mode -eq 5)
             $StandaloneOptimize  = [switch]($mode -eq 6)
+            $StandaloneDocument  = [switch]($mode -eq 7)
+            $Language            = if ($menuResult['Language']) { $menuResult['Language'] } else { 'DE' }
+            $CustomerDocument    = [switch]([bool]$menuResult['CustomerDocument'])
             $NoSetup             = [switch]($false)
             $InstallRecipientManagement = [switch]($mode -eq 3)
             $InstallManagementTools     = [switch]($mode -eq 4)
@@ -7886,6 +8615,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             $LogRetentionDays     = Get-CfgValue 'LogRetentionDays' $LogRetentionDays
             $RelaySubnets         = Get-CfgValue 'RelaySubnets'         $RelaySubnets
             $ExternalRelaySubnets = Get-CfgValue 'ExternalRelaySubnets' $ExternalRelaySubnets
+            $NoWordDoc            = [switch](Get-CfgValue 'NoWordDoc'        ([bool]$NoWordDoc))
+            $CustomerDocument     = [switch](Get-CfgValue 'CustomerDocument' ([bool]$CustomerDocument))
+            $Language             = Get-CfgValue 'Language' $Language
 
             # Recalculate state file path with potentially overridden InstallPath
             $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
@@ -7980,8 +8712,12 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $State["LogRetentionDays"] = $LogRetentionDays
         $State["RelaySubnets"]         = $RelaySubnets
         $State["ExternalRelaySubnets"] = $ExternalRelaySubnets
-        $State["StandaloneOptimize"] = [bool]$StandaloneOptimize
-        $State["SkipInstallReport"] = [bool]$SkipInstallReport
+        $State["StandaloneOptimize"]  = [bool]$StandaloneOptimize
+        $State["SkipInstallReport"]   = [bool]$SkipInstallReport
+        $State["StandaloneDocument"]  = [bool]$StandaloneDocument
+        $State["NoWordDoc"]           = [bool]$NoWordDoc
+        $State["CustomerDocument"]    = [bool]$CustomerDocument
+        $State["Language"]            = if ($Language) { $Language } else { 'DE' }
 
         # Prompt for PFX password at startup if certificate path specified
         if ($CertificatePath) {
@@ -8038,6 +8774,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $MAX_PHASE = 3
     }
     elseif ( $State["StandaloneOptimize"]) {
+        $MAX_PHASE = 1
+    }
+    elseif ( $State["StandaloneDocument"]) {
         $MAX_PHASE = 1
     }
     else {
@@ -8164,6 +8903,19 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 }
                 default {
                     Write-MyError "Unknown phase ($($State["InstallPhase"])) in ManagementTools mode"
+                }
+            }
+        }
+        elseif ($State["StandaloneDocument"]) {
+            switch ($State["InstallPhase"]) {
+                1 {
+                    Write-MyOutput 'Standalone Document — generating Word installation document for existing Exchange server'
+                    Import-ExchangeModule
+                    try { New-InstallationDocument } catch { Write-MyWarning ('Word document failed: {0}' -f $_.Exception.Message) }
+                    Write-MyOutput 'Installation document generation complete.'
+                }
+                default {
+                    Write-MyError "Unknown phase ($($State["InstallPhase"])) in StandaloneDocument mode"
                 }
             }
         }
@@ -8734,6 +9486,11 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     # propagate to the global trap { break } and kill the script before the
                     # "We're good to go" message and phase-end reboot logic run.
                     try { New-InstallationReport } catch { Write-MyWarning ('Installation Report failed: {0}' -f $_.Exception.Message) }
+
+                    if (-not $State['NoWordDoc']) {
+                        Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: Word Installation Document' -PercentComplete 85
+                        try { New-InstallationDocument } catch { Write-MyWarning ('Word document failed: {0}' -f $_.Exception.Message) }
+                    }
                 }
 
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
