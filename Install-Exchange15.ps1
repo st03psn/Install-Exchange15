@@ -1247,7 +1247,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.82'
+    $ScriptVersion = '5.83'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -1432,10 +1432,48 @@ process {
     }
 
     function Write-ToTranscript( $Level, $Text) {
+        # Three tiers (single log file):
+        #   Default     : INFO / WARNING / ERROR / EXE
+        #   -Verbose    : + VERBOSE
+        #   -Debug      : + DEBUG + SUPPRESSED-ERROR diff from $Error
+        # Encoding note: PS 5.1 `Out-File` defaults to Unicode (UTF-16LE w/ BOM); mixing that
+        # with the UTF-8 header produces "strange font" output in viewers. We pin UTF-8 (no BOM)
+        # via [IO.File]::AppendAllText so every line in the file has the same encoding.
         if (-not $State['TranscriptFile']) { return }
         $Location = Split-Path $State['TranscriptFile'] -Parent
-        if ( Test-Path $Location) {
-            "$(Get-Date -Format u): [$Level] $Text" | Out-File $State['TranscriptFile'] -Append -ErrorAction SilentlyContinue
+        if (-not (Test-Path $Location)) { return }
+        $verboseOn = [bool]$State['LogVerbose']
+        $debugOn   = [bool]$State['LogDebug']
+        $shouldWrite = switch ($Level) {
+            'VERBOSE' { $verboseOn -or $debugOn }
+            'DEBUG'   { $debugOn }
+            default   { $true }
+        }
+        $utf8 = [System.Text.UTF8Encoding]::new($false)
+        if ($shouldWrite) {
+            try {
+                [System.IO.File]::AppendAllText($State['TranscriptFile'], ("{0}: [{1}] {2}`r`n" -f (Get-Date -Format u), $Level, $Text), $utf8)
+            } catch { }
+        }
+        if ($debugOn) {
+            try {
+                $cur = $Error.Count
+                if ($cur -gt $script:lastErrorCount) {
+                    $newCount = $cur - $script:lastErrorCount
+                    for ($i = $newCount - 1; $i -ge 0; $i--) {
+                        $e = $Error[$i]
+                        if (-not $e) { continue }
+                        $inv = $e.InvocationInfo
+                        $ln  = if ($inv) { $inv.ScriptLineNumber } else { '?' }
+                        $cmd = if ($inv) { ($inv.Line -replace '\s+', ' ').Trim() } else { '' }
+                        $typ = if ($e.Exception) { $e.Exception.GetType().FullName } else { 'Error' }
+                        $msg = if ($e.Exception) { $e.Exception.Message } else { [string]$e }
+                        $line = '{0}: [SUPPRESSED-ERROR] ({1}) at line {2}: {3} :: {4}' -f (Get-Date -Format u), $typ, $ln, $cmd, $msg
+                        [System.IO.File]::AppendAllText($State['TranscriptFile'], ($line + "`r`n"), $utf8)
+                    }
+                    $script:lastErrorCount = $cur
+                }
+            } catch { }
         }
     }
 
@@ -1457,6 +1495,34 @@ process {
     function Write-MyVerbose( $Text) {
         Write-Verbose $Text
         Write-ToTranscript 'VERBOSE' $Text
+    }
+
+    function Write-MyDebug( $Text) {
+        # Console stays silent; log line appears only when -Debug tier active.
+        Write-ToTranscript 'DEBUG' $Text
+    }
+
+    # Native-exe invoker that preserves stdout+stderr for the log. In normal mode output
+    # is discarded (same as the old `$null = … 2>$null` pattern). With -Debug, the merged
+    # output is written to the main log tagged [EXE] so nothing is hidden.
+    function Invoke-NativeCommand {
+        param(
+            [Parameter(Mandatory)][string]$FilePath,
+            [string[]]$Arguments = @(),
+            [string]$Tag = ''
+        )
+        $label = if ($Tag) { $Tag } else { Split-Path $FilePath -Leaf }
+        $out = & $FilePath @Arguments 2>&1
+        $rc  = $LASTEXITCODE
+        if ($State['LogDebug']) {
+            Write-ToTranscript 'EXE' ('{0} exit={1} args=[{2}]' -f $label, $rc, ($Arguments -join ' '))
+            foreach ($line in $out) {
+                if ($null -eq $line) { continue }
+                $text = if ($line -is [System.Management.Automation.ErrorRecord]) { 'stderr: ' + $line.Exception.Message } else { [string]$line }
+                if ($text) { Write-ToTranscript 'EXE' ('  {0}' -f $text) }
+            }
+        }
+        return $rc
     }
 
     function Set-RegistryValue {
@@ -1619,12 +1685,15 @@ process {
         # When compiled with PS2Exe the script runs as a standalone .exe — invoke it directly.
         # Otherwise use the current PowerShell interpreter (powershell.exe or pwsh.exe).
         $isExe = $ScriptFullName -imatch '\.exe$'
+        $logFlags = ''
+        if ($State['LogVerbose']) { $logFlags += ' -Verbose' }
+        if ($State['LogDebug'])   { $logFlags += ' -Debug' }
         if ($isExe) {
-            $RunOnce = "`"$ScriptFullName`" -InstallPath `"$InstallPath`""
+            $RunOnce = "`"$ScriptFullName`" -InstallPath `"$InstallPath`"$logFlags"
         }
         else {
             $PSExe = (Get-Process -Id $PID).Path
-            $RunOnce = "`"$PSExe`" -NoProfile -ExecutionPolicy Unrestricted -Command `"& `'$ScriptFullName`' -InstallPath `'$InstallPath`'`""
+            $RunOnce = "`"$PSExe`" -NoProfile -ExecutionPolicy Unrestricted -Command `"& `'$ScriptFullName`' -InstallPath `'$InstallPath`'$logFlags`""
         }
         Write-MyVerbose "RunOnce: $RunOnce"
         Set-RegistryValue -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name $ScriptName -Value $RunOnce -PropertyType String
@@ -1738,16 +1807,30 @@ process {
         # Interactive credential prompt with validation retry loop (max 3 attempts).
         # Returns $true when valid credentials are stored in State, $false if all attempts fail.
         # Only call this when [Environment]::UserInteractive is $true.
+        #
+        # GUI detection: Get-Credential shows a Win32 dialog only when all three hold:
+        #   1. ConsoleHost (not ISE, not PS2Exe, not a remote host)
+        #   2. UserInteractive (not a service / scheduled-task session)
+        #   3. A real desktop session (SESSIONNAME = Console or RDP-*; empty = Session 0 / no window station)
+        # When any condition is false we go straight to Read-Host to avoid the silent-$null fallback.
+        $sessionName = [string]$env:SESSIONNAME
+        $useGui = (-not $IsPS2Exe) -and
+                  ($Host.Name -eq 'ConsoleHost') -and
+                  [Environment]::UserInteractive -and
+                  ($sessionName -match '^(Console|RDP)')
+
         $maxAttempts = 3
         for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
             try {
                 $defaultUser = if ($State['AdminAccount']) { $State['AdminAccount'] } else { [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
-                $rawCred = Get-Credential -UserName $defaultUser -Message ('Enter credentials for Autopilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
-                # Get-Credential can return a PSObject wrapper in some terminal environments; unwrap before assigning to the typed $Credentials parameter variable.
-                $Script:Credentials = if ($rawCred -is [pscredential]) { $rawCred }
-                                      elseif ($rawCred -and $rawCred.PSObject.BaseObject -is [pscredential]) { $rawCred.PSObject.BaseObject }
-                                      else { $null }
-                # Fallback: Get-Credential returns $null silently in PS2Exe/compiled-exe and some RDP/Hyper-V console sessions.
+                $Script:Credentials = $null
+                if ($useGui) {
+                    $rawCred = Get-Credential -UserName $defaultUser -Message ('Enter credentials for Autopilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                    # Get-Credential can return a PSObject wrapper in some terminal environments; unwrap before assigning to typed variable.
+                    $Script:Credentials = if ($rawCred -is [pscredential]) { $rawCred }
+                                          elseif ($rawCred -and $rawCred.PSObject.BaseObject -is [pscredential]) { $rawCred.PSObject.BaseObject }
+                                          else { $null }
+                }
                 if (-not $Script:Credentials) {
                     Write-MyOutput ('Enter credentials for Autopilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
                     $fbUser = Read-Host -Prompt ('Username [{0}]' -f $defaultUser)
@@ -1976,6 +2059,18 @@ process {
             $rval = $null
         }
         return $rval
+    }
+
+    function Get-ExchangeDAGNames {
+        try {
+            $CNC  = Get-ForestConfigurationNC
+            $exOrg = Get-ExchangeOrganization
+            if (-not $exOrg) { return @() }
+            $root   = [ADSI]"LDAP://CN=$exOrg,CN=Microsoft Exchange,CN=Services,$CNC"
+            $result = $root.PSBase.Children | Where-Object { $_.objectClass -contains 'msExchMDBAvailabilityGroup' } |
+                      ForEach-Object { [string]$_.Name }
+            return @($result | Where-Object { $_ })
+        } catch { return @() }
     }
 
     function Test-ExchangeOrganization( $Organization) {
@@ -3101,7 +3196,7 @@ process {
         }
 
         # Generate HTML report
-        $reportPath = Join-Path $State['ReportsPath'] ('PreflightReport_{0}.html' -f $env:COMPUTERNAME)
+        $reportPath = Join-Path $State['ReportsPath'] ('{0}_Preflight_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $failCount = ($results | Where-Object { $_.Status -eq 'FAIL' }).Count
         $warnCount = ($results | Where-Object { $_.Status -eq 'WARN' }).Count
         $statusColor = if ($failCount -gt 0) { '#dc3545' } elseif ($warnCount -gt 0) { '#ffc107' } else { '#28a745' }
@@ -3147,7 +3242,7 @@ $($htmlRows -join "`n")
     function Export-SourceServerConfig {
         param([string]$SourceServer)
         Write-MyOutput ('Exporting configuration from source server {0}' -f $SourceServer)
-        $configPath = Join-Path $State['InstallPath'] ('ServerConfig_{0}.xml' -f $SourceServer)
+        $configPath = Join-Path $State['InstallPath'] ('{0}_Config.xml' -f $SourceServer)
 
         try {
             $session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri ('http://{0}/PowerShell/' -f $SourceServer) -Authentication Kerberos -ErrorAction Stop
@@ -3485,7 +3580,7 @@ param([int]`$DaysToKeep = $days)
 
 `$ScriptDir  = Split-Path -Path `$MyInvocation.MyCommand.Path
 `$LogFolder  = Join-Path `$ScriptDir 'logs'
-`$LogFile    = Join-Path `$LogFolder ('ExchangeLogCleanup-{0}.log' -f (Get-Date -Format 'yyyyMM'))
+`$LogFile    = Join-Path `$LogFolder ('LogCleanup_{0}.log' -f (Get-Date -Format 'yyyyMM'))
 `$cutoff     = (Get-Date).AddDays(-`$DaysToKeep)
 
 if (-not (Test-Path `$LogFolder)) { New-Item -Path `$LogFolder -ItemType Directory | Out-Null }
@@ -3960,6 +4055,7 @@ Write-Log 'Exchange log cleanup finished'
         # preference variables. Add a temporary hosts entry if needed and remove it afterwards.
         $hostsFile      = "$env:SystemRoot\System32\drivers\etc\hosts"
         $tempHostsMark  = '# EXpress-temp-vdir'
+        $hostsBackup    = $null
         $dlDomain       = $State['DownloadDomain']
         $nsResolves     = $false
         $dlResolves     = $false
@@ -3967,10 +4063,12 @@ Write-Log 'Exchange log cleanup finished'
         if ($dlDomain) { try { [System.Net.Dns]::GetHostEntry($dlDomain) | Out-Null; $dlResolves = $true } catch { } }
         if (-not $nsResolves) {
             Write-MyVerbose ('Namespace {0} not resolvable — adding temporary hosts entry to suppress VDir confirmation prompt' -f $ns)
+            $hostsBackup = [System.IO.File]::ReadAllBytes($hostsFile)
             "`r`n127.0.0.1`t$ns`t$tempHostsMark" | Add-Content -Path $hostsFile -Encoding ASCII -ErrorAction SilentlyContinue
         }
         if ($dlDomain -and -not $dlResolves) {
             Write-MyVerbose ('Download domain {0} not resolvable — adding temporary hosts entry' -f $dlDomain)
+            if (-not $hostsBackup) { $hostsBackup = [System.IO.File]::ReadAllBytes($hostsFile) }
             "`r`n127.0.0.1`t$dlDomain`t$tempHostsMark" | Add-Content -Path $hostsFile -Encoding ASCII -ErrorAction SilentlyContinue
         }
 
@@ -4118,15 +4216,13 @@ Write-Log 'Exchange log cleanup finished'
         }
         catch { Write-MyWarning ('Autodiscover SCP: {0}' -f $_.Exception.Message); $errors++ }
 
-        # Remove temporary hosts entries if any were added
-        if (-not $nsResolves -or ($dlDomain -and -not $dlResolves)) {
+        # Restore hosts file to exact pre-modification state using the binary backup.
+        if ($hostsBackup) {
             try {
-                $hostsLines = Get-Content $hostsFile -ErrorAction Stop
-                $hostsLines = $hostsLines | Where-Object { $_ -notlike "*$tempHostsMark*" }
-                Set-Content $hostsFile $hostsLines -Encoding ASCII -ErrorAction Stop
-                Write-MyVerbose 'Temporary hosts entries removed'
+                [System.IO.File]::WriteAllBytes($hostsFile, $hostsBackup)
+                Write-MyVerbose 'Temporary hosts entries removed (hosts file restored from backup)'
             }
-            catch { Write-MyVerbose ('Could not remove temporary hosts entries: {0}' -f $_.Exception.Message) }
+            catch { Write-MyVerbose ('Could not restore hosts file: {0}' -f $_.Exception.Message) }
         }
 
         if ($errors -eq 0) {
@@ -4217,6 +4313,18 @@ Write-Log 'Exchange log cleanup finished'
 
         if (Test-Path $hcPath) {
             try {
+                # Refresh Kerberos tickets so HC's "Exchange Server Membership" check sees
+                # up-to-date AD group membership for both the current user and LocalSystem.
+                # Without this, a fresh-reboot token may have stale/blank tokenGroups and HC
+                # reports "Unable to determine Local System Membership as the results were blank".
+                try {
+                    Invoke-NativeCommand -FilePath 'klist.exe' -Arguments @('purge')                -Tag 'klist (user)'        | Out-Null
+                    Invoke-NativeCommand -FilePath 'klist.exe' -Arguments @('-li','0x3e7','purge') -Tag 'klist (LocalSystem)' | Out-Null
+                    Write-MyVerbose 'Kerberos ticket cache purged for current user and LocalSystem'
+                } catch {
+                    Write-MyVerbose ('klist purge failed (non-fatal): {0}' -f $_.Exception.Message)
+                }
+
                 # HC writes ExchangeAllServersReport-*.html to the *current directory*, not -OutputFilePath.
                 # Push-Location so both the XML (-OutputFilePath) and the HTML land in ReportsPath.
                 Push-Location $State['ReportsPath']
@@ -4481,7 +4589,7 @@ Write-Log 'Exchange log cleanup finished'
 
     function New-InstallationReport {
         Write-MyOutput 'Generating Installation Report'
-        $reportPath = Join-Path $State['ReportsPath'] ('{0}_InstallationReport_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMddHHmmss'))
+        $reportPath = Join-Path $State['ReportsPath'] ('{0}_Report_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $reportDate = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
         function Format-Badge($text, $type) {
@@ -5081,13 +5189,14 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $hcStatus   = if ($State['SkipHealthCheck']) { Format-Badge 'Skipped' 'na' } elseif ($State['HCReportPath']) { Format-Badge 'Completed — see section below' 'ok' } else { Format-Badge 'Failed / not found' 'warn' }
         $modeStatus = if ($State['ConfigDriven']) { Format-Badge 'Autopilot (fully automated)' 'info' } else { Format-Badge 'Copilot (interactive)' 'info' }
 
-        $mgmtRows.Add('<tr><td style="width:220px"><strong>Exchange Version</strong></td><td>{0}</td><td>{1}</td></tr>' -f $exVersion, (Format-Badge 'Installed' 'ok'))
-        $mgmtRows.Add('<tr><td><strong>Server</strong></td><td>{0}</td><td>{1}</td></tr>' -f ('{0} ({1})' -f $env:COMPUTERNAME, (try { '{0}.{1}' -f (Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue).DNSHostName, (Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue).Domain } catch { '' })), (Format-Badge 'OK' 'ok'))
+        $mgmtRows.Add(('<tr><td style="width:220px"><strong>Exchange Version</strong></td><td>{0}</td><td>{1}</td></tr>' -f $exVersion, (Format-Badge 'Installed' 'ok')))
+        $serverFqdn = try { '{0}.{1}' -f (Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue).DNSHostName, (Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue).Domain } catch { '' }
+        $mgmtRows.Add(('<tr><td><strong>Server</strong></td><td>{0}</td><td>{1}</td></tr>' -f ('{0} ({1})' -f $env:COMPUTERNAME, $serverFqdn), (Format-Badge 'OK' 'ok')))
         $mgmtRows.Add('<tr><td><strong>Organization</strong></td><td>{0}</td><td></td></tr>' -f $State['OrganizationName'])
-        $mgmtRows.Add('<tr><td><strong>Installation Mode</strong></td><td>{0}</td><td>{1}</td></tr>' -f $instMode, $modeStatus)
-        $mgmtRows.Add('<tr><td><strong>Virtual Directory URLs</strong></td><td>{0}</td><td>{1}</td></tr>' -f $State['Namespace'], $vdirStatus)
-        $mgmtRows.Add('<tr><td><strong>Security Hardening</strong></td><td>{0} OK / {1} warnings / {2} critical</td><td>{3}</td></tr>' -f $secOK, $secWarn, $secFail, $secStatusBadge)
-        $mgmtRows.Add('<tr><td><strong>Performance Settings</strong></td><td>{0} OK / {1} to review</td><td>{2}</td></tr>' -f $perfOK, $perfWarn, $perfStatusBadge)
+        $mgmtRows.Add(('<tr><td><strong>Installation Mode</strong></td><td>{0}</td><td>{1}</td></tr>' -f $instMode, $modeStatus))
+        $mgmtRows.Add(('<tr><td><strong>Virtual Directory URLs</strong></td><td>{0}</td><td>{1}</td></tr>' -f $State['Namespace'], $vdirStatus))
+        $mgmtRows.Add(('<tr><td><strong>Security Hardening</strong></td><td>{0} OK / {1} warnings / {2} critical</td><td>{3}</td></tr>' -f $secOK, $secWarn, $secFail, $secStatusBadge))
+        $mgmtRows.Add(('<tr><td><strong>Performance Settings</strong></td><td>{0} OK / {1} to review</td><td>{2}</td></tr>' -f $perfOK, $perfWarn, $perfStatusBadge))
         $mgmtRows.Add('<tr><td><strong>Certificates</strong></td><td></td><td>{0}</td></tr>' -f $certStatus)
         $mgmtRows.Add('<tr><td><strong>Security Updates</strong></td><td></td><td>{0}</td></tr>' -f $suStatus)
         $mgmtRows.Add('<tr><td><strong>HealthChecker</strong></td><td></td><td>{0}</td></tr>' -f $hcStatus)
@@ -5292,7 +5401,8 @@ $body
         }
         $d    = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
         $te   = Invoke-XmlEscape $DocTitle
-        $he   = Invoke-XmlEscape (if ($HeaderLabel) { $HeaderLabel } else { $DocTitle })
+        $heSrc = if ($HeaderLabel) { $HeaderLabel } else { $DocTitle }
+        $he   = Invoke-XmlEscape $heSrc
         Add-ZipEntry '[Content_Types].xml' @'
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -5463,9 +5573,8 @@ $body
     function New-InstallationDocument {
         $DE = ($State['Language'] -ne 'EN')
         $cust = [bool]$State['CustomerDocument']
-        $ts   = Get-Date -Format 'yyyyMMddHHmmss'
         $lang = if ($DE) { 'DE' } else { 'EN' }
-        $docPath = Join-Path $State['ReportsPath'] ('{0}_InstallationDocument_{1}_{2}.docx' -f $env:COMPUTERNAME, $lang, $ts)
+        $docPath = Join-Path $State['ReportsPath'] ('{0}_Document_{1}_{2}.docx' -f $env:COMPUTERNAME, $lang, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $docTitle = if ($DE) { 'Exchange Server Installationsdokumentation' } else { 'Exchange Server Installation Documentation' }
         Write-MyOutput ('Generating Word Installation Document ({0}): {1}' -f $lang, $docPath)
 
@@ -5475,50 +5584,53 @@ $body
         }
         function Mask-Val([string]$text) { if ($cust -and $text) { '[redacted]' } else { $text } }
         function SafeVal([object]$v, [string]$fallback = '') { if ($null -eq $v -or "$v" -eq '') { $fallback } else { "$v" } }
+        # L = Language helper; Lc = Conditional helper. PS 5.1 does not allow `(if ...)` as a command argument (only `$(if ...)`); these helpers sidestep that parser limitation and keep call sites compact.
+        function L([string]$d, [string]$e) { if ($DE) { $d } else { $e } }
+        function Lc([bool]$c, [string]$a, [string]$b) { if ($c) { $a } else { $b } }
 
         $parts = [System.Collections.Generic.List[string]]::new()
 
         # ── 1. Titelblatt ────────────────────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '1. Titelblatt' } else { '1. Title Page' }) 1))
+        $null = $parts.Add((New-WdHeading (L '1. Titelblatt' '1. Title Page') 1))
         $instMode = if ($State['InstallEdge']) { 'Edge Transport' } elseif ($State['InstallRecipientManagement']) { 'Recipient Management Tools' } elseif ($State['InstallManagementTools']) { 'Management Tools' } elseif ($State['StandaloneOptimize']) { 'Standalone Optimize' } elseif ($State['NoSetup']) { 'Optimization Only' } else { 'Mailbox Server' }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Eigenschaft' } else { 'Property' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows @(
-            @((if ($DE) { 'Dokument' } else { 'Document' }), $docTitle)
+        $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows @(
+            @((L 'Dokument' 'Document'), $docTitle)
             @('EXpress Version', "v$ScriptVersion")
-            @((if ($DE) { 'Server' } else { 'Server' }), $env:COMPUTERNAME)
-            @((if ($DE) { 'Exchange-Organisation' } else { 'Exchange Organisation' }), (SafeVal $State['OrganizationName'] (if ($DE) { '(nicht gesetzt)' } else { '(not set)' })))
-            @((if ($DE) { 'Installationsmodus' } else { 'Installation mode' }), $instMode)
-            @((if ($DE) { 'Erstellt am' } else { 'Generated on' }), (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
-            @((if ($DE) { 'Klassifizierung' } else { 'Classification' }), (if ($cust) { 'CUSTOMER' } else { 'INTERN' }))
+            @((L 'Server' 'Server'), $env:COMPUTERNAME)
+            @((L 'Exchange-Organisation' 'Exchange Organisation'), (SafeVal $State['OrganizationName'] (L '(nicht gesetzt)' '(not set)')))
+            @((L 'Installationsmodus' 'Installation mode'), $instMode)
+            @((L 'Erstellt am' 'Generated on'), (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+            @((L 'Klassifizierung' 'Classification'), (Lc $cust 'CUSTOMER' 'INTERN'))
         )))
 
         # ── 2. Installationsparameter ────────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '2. Installationsparameter' } else { '2. Installation Parameters' }) 1))
-        $modeText = if ($State['ConfigDriven']) { (if ($DE) { 'Autopilot (vollautomatisch)' } else { 'Autopilot (fully automated)' }) } else { (if ($DE) { 'Copilot (interaktiv)' } else { 'Copilot (interactive)' }) }
+        $null = $parts.Add((New-WdHeading (L '2. Installationsparameter' '2. Installation Parameters') 1))
+        $modeText = if ($State['ConfigDriven']) { (L 'Autopilot (vollautomatisch)' 'Autopilot (fully automated)') } else { (L 'Copilot (interaktiv)' 'Copilot (interactive)') }
         $paramRows = [System.Collections.Generic.List[object[]]]::new()
-        $paramRows.Add(@((if ($DE) { 'Setup-Version' } else { 'Setup version' }), (SafeVal (& { try { (Get-SetupTextVersion $State['SetupVersion']) } catch { $State['SetupVersion'] } }))))
-        $paramRows.Add(@((if ($DE) { 'Installationspfad' } else { 'Install path' }), (SafeVal $State['InstallPath'])))
+        $paramRows.Add(@((L 'Setup-Version' 'Setup version'), (SafeVal (& { try { (Get-SetupTextVersion $State['SetupVersion']) } catch { $State['SetupVersion'] } }))))
+        $paramRows.Add(@((L 'Installationspfad' 'Install path'), (SafeVal $State['InstallPath'])))
         if ($State['Namespace'])        { $paramRows.Add(@('Namespace', (SafeVal $State['Namespace']))) }
         if ($State['DownloadDomain'])   { $paramRows.Add(@('OWA Download Domain', (SafeVal $State['DownloadDomain']))) }
         if ($State['DAGName'])          { $paramRows.Add(@('DAG', (SafeVal $State['DAGName']))) }
-        if ($State['CertificatePath'])  { $paramRows.Add(@((if ($DE) { 'Zertifikatspfad' } else { 'Certificate path' }), (Mask-Val (SafeVal $State['CertificatePath'])))) }
-        if ($State['LogRetentionDays']) { $paramRows.Add(@((if ($DE) { 'Log-Aufbewahrung' } else { 'Log retention' }), ('{0} {1}' -f $State['LogRetentionDays'], (if ($DE) { 'Tage' } else { 'days' })))) }
-        if ($State['RelaySubnets'])     { $paramRows.Add(@((if ($DE) { 'Relay-Subnetze' } else { 'Relay subnets' }), (Mask-Ip (($State['RelaySubnets'] -join ', '))))) }
-        $paramRows.Add(@((if ($DE) { 'Modus' } else { 'Mode' }), $modeText))
+        if ($State['CertificatePath'])  { $paramRows.Add(@((L 'Zertifikatspfad' 'Certificate path'), (Mask-Val (SafeVal $State['CertificatePath'])))) }
+        if ($State['LogRetentionDays']) { $paramRows.Add(@((L 'Log-Aufbewahrung' 'Log retention'), ('{0} {1}' -f $State['LogRetentionDays'], (L 'Tage' 'days')))) }
+        if ($State['RelaySubnets'])     { $paramRows.Add(@((L 'Relay-Subnetze' 'Relay subnets'), (Mask-Ip (($State['RelaySubnets'] -join ', '))))) }
+        $paramRows.Add(@((L 'Modus' 'Mode'), $modeText))
         $paramRows.Add(@('TLS 1.2', (SafeVal $State['EnableTLS12'])))
         $paramRows.Add(@('TLS 1.3', (SafeVal $State['EnableTLS13'])))
         $paramRows.Add(@('TLS 1.0/1.1 disabled', (SafeVal $State['DisableSSL3'])))
-        $paramRows.Add(@((if ($DE) { 'Logdatei' } else { 'Log file' }), (SafeVal $State['TranscriptFile'])))
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Parameter' } else { 'Parameter' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows $paramRows.ToArray()))
+        $paramRows.Add(@((L 'Logdatei' 'Log file'), (SafeVal $State['TranscriptFile'])))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Parameter' 'Parameter'), (L 'Wert' 'Value')) -Rows $paramRows.ToArray()))
 
         # ── 3. Systemdetails ──────────────────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '3. Systemdetails' } else { '3. System Details' }) 1))
+        $null = $parts.Add((New-WdHeading (L '3. Systemdetails' '3. System Details') 1))
         $sysRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-            $sysRows.Add(@((if ($DE) { 'Betriebssystem' } else { 'Operating system' }), $os.Caption))
-            $sysRows.Add(@((if ($DE) { 'OS-Build' } else { 'OS build' }), $os.Version))
-            $sysRows.Add(@((if ($DE) { 'Letzter Neustart' } else { 'Last boot' }), $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss')))
-            $sysRows.Add(@((if ($DE) { 'RAM gesamt' } else { 'Total RAM' }), ('{0} GB' -f [math]::Round($os.TotalVisibleMemorySize / 1MB, 0))))
+            $sysRows.Add(@((L 'Betriebssystem' 'Operating system'), $os.Caption))
+            $sysRows.Add(@((L 'OS-Build' 'OS build'), $os.Version))
+            $sysRows.Add(@((L 'Letzter Neustart' 'Last boot'), $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss')))
+            $sysRows.Add(@((L 'RAM gesamt' 'Total RAM'), ('{0} GB' -f [math]::Round($os.TotalVisibleMemorySize / 1MB, 0))))
         } catch { }
         try {
             $cpuList     = @(Get-CimInstance Win32_Processor -ErrorAction Stop)
@@ -5528,7 +5640,7 @@ $body
         } catch { }
         try {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
-            $sysRows.Add(@((if ($DE) { 'Computername (FQDN)' } else { 'Computer name (FQDN)' }), ('{0}.{1}' -f $cs.DNSHostName, $cs.Domain)))
+            $sysRows.Add(@((L 'Computername (FQDN)' 'Computer name (FQDN)'), ('{0}.{1}' -f $cs.DNSHostName, $cs.Domain)))
         } catch { }
         try {
             Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and $_.DriveType -notin 'CD-ROM','Removable' -and $_.Size -gt 0 } | ForEach-Object {
@@ -5544,13 +5656,13 @@ $body
             if ($pf) {
                 $ramGB = [math]::Round((Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).TotalVisibleMemorySize / 1MB, 0)
                 $recMB = $ramGB * 1024 + 10
-                $sysRows.Add(@((if ($DE) { 'Auslagerungsdatei' } else { 'Page file' }), ('{0} — Init: {1} MB / Max: {2} MB — Empfehlung RAM+10MB: {3} MB' -f $pf.Name, $pf.InitialSize, $pf.MaximumSize, $recMB)))
+                $sysRows.Add(@((L 'Auslagerungsdatei' 'Page file'), ('{0} — Init: {1} MB / Max: {2} MB — Empfehlung RAM+10MB: {3} MB' -f $pf.Name, $pf.InitialSize, $pf.MaximumSize, $recMB)))
             }
         } catch { }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Eigenschaft' } else { 'Property' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows $sysRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $sysRows.ToArray()))
 
         # ── 4. Netzwerk & DNS ─────────────────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '4. Netzwerk und DNS' } else { '4. Network and DNS' }) 1))
+        $null = $parts.Add((New-WdHeading (L '4. Netzwerk und DNS' '4. Network and DNS') 1))
         $netRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             $nicIPs = @{}; $nicDNS = @{}
@@ -5558,64 +5670,64 @@ $body
             Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notlike '*Loopback*' -and $_.ServerAddresses } | ForEach-Object { $nicDNS[$_.InterfaceAlias] = ($_.ServerAddresses -join ', ') }
             foreach ($nic in ($nicIPs.Keys | Sort-Object)) {
                 $ip  = Mask-Ip $nicIPs[$nic]
-                $dns = if ($nicDNS[$nic]) { Mask-Ip $nicDNS[$nic] } else { (if ($DE) { '(nicht gesetzt)' } else { '(not set)' }) }
+                $dns = if ($nicDNS[$nic]) { Mask-Ip $nicDNS[$nic] } else { (L '(nicht gesetzt)' '(not set)') }
                 $netRows.Add(@(('NIC: {0}' -f $nic), ('{0} — DNS: {1}' -f $ip, $dns)))
             }
         } catch { }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'NIC / Eigenschaft' } else { 'NIC / Property' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows $netRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'NIC / Eigenschaft' 'NIC / Property'), (L 'Wert' 'Value')) -Rows $netRows.ToArray()))
 
         # ── 5. IST-Aufnahme Active Directory ─────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '5. Active Directory' } else { '5. Active Directory' }) 1))
+        $null = $parts.Add((New-WdHeading (L '5. Active Directory' '5. Active Directory') 1))
         $adRows = [System.Collections.Generic.List[object[]]]::new()
-        try { $cs2 = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue; $adRows.Add(@((if ($DE) { 'Domäne' } else { 'Domain' }), $cs2.Domain)) } catch { }
+        try { $cs2 = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue; $adRows.Add(@((L 'Domäne' 'Domain'), $cs2.Domain)) } catch { }
         try {
             $ffl = Get-ForestFunctionalLevel
-            $adRows.Add(@((if ($DE) { 'Forest Functional Level' } else { 'Forest functional level' }), ('{0} ({1})' -f $ffl, (Get-FFLText $ffl))))
+            $adRows.Add(@((L 'Forest Functional Level' 'Forest functional level'), ('{0} ({1})' -f $ffl, (Get-FFLText $ffl))))
         } catch { }
         try {
             $exOrg = Get-ExchangeOrganization
-            if ($exOrg) { $adRows.Add(@((if ($DE) { 'Exchange-Organisation' } else { 'Exchange organisation' }), $exOrg)) }
-            $adRows.Add(@((if ($DE) { 'Exchange Forest Schema' } else { 'Exchange forest schema' }), (SafeVal (Get-ExchangeForestLevel))))
-            $adRows.Add(@((if ($DE) { 'Exchange Domain Level' } else { 'Exchange domain level' }), (SafeVal (Get-ExchangeDomainLevel))))
+            if ($exOrg) { $adRows.Add(@((L 'Exchange-Organisation' 'Exchange organisation'), $exOrg)) }
+            $adRows.Add(@((L 'Exchange Forest Schema' 'Exchange forest schema'), (SafeVal (Get-ExchangeForestLevel))))
+            $adRows.Add(@((L 'Exchange Domain Level' 'Exchange domain level'), (SafeVal (Get-ExchangeDomainLevel))))
         } catch { }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Eigenschaft' } else { 'Property' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows $adRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $adRows.ToArray()))
 
         # ── 6. Exchange-Installation ──────────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '6. Exchange-Installation' } else { '6. Exchange Installation' }) 1))
+        $null = $parts.Add((New-WdHeading (L '6. Exchange-Installation' '6. Exchange Installation') 1))
         $exInstRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             $exSrv = Get-ExchangeServer $env:COMPUTERNAME -ErrorAction Stop
-            $exInstRows.Add(@((if ($DE) { 'Exchange-Version' } else { 'Exchange version' }), $exSrv.AdminDisplayVersion.ToString()))
-            $exInstRows.Add(@((if ($DE) { 'Serverrolle' } else { 'Server role' }), ($exSrv.ServerRole -join ', ')))
-            $exInstRows.Add(@((if ($DE) { 'Edition' } else { 'Edition' }), $exSrv.Edition.ToString()))
-            $exInstRows.Add(@((if ($DE) { 'AD-Standort' } else { 'AD site' }), $exSrv.Site.ToString()))
+            $exInstRows.Add(@((L 'Exchange-Version' 'Exchange version'), $exSrv.AdminDisplayVersion.ToString()))
+            $exInstRows.Add(@((L 'Serverrolle' 'Server role'), ($exSrv.ServerRole -join ', ')))
+            $exInstRows.Add(@((L 'Edition' 'Edition'), $exSrv.Edition.ToString()))
+            $exInstRows.Add(@((L 'AD-Standort' 'AD site'), $exSrv.Site.ToString()))
         } catch { }
         try {
             $cas = Get-ClientAccessService -Identity $env:COMPUTERNAME -ErrorAction SilentlyContinue
             if ($cas) { $exInstRows.Add(@('Autodiscover SCP', (SafeVal $cas.AutoDiscoverServiceInternalUri))) }
         } catch { }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Eigenschaft' } else { 'Property' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows $exInstRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $exInstRows.ToArray()))
 
         # ── 7. Konfiguration Exchange SE ──────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '7. Konfiguration Exchange SE' } else { '7. Exchange SE Configuration' }) 1))
+        $null = $parts.Add((New-WdHeading (L '7. Konfiguration Exchange SE' '7. Exchange SE Configuration') 1))
 
         # 7.1 Datenbanken
-        $null = $parts.Add((New-WdHeading (if ($DE) { '7.1 Postfachdatenbanken' } else { '7.1 Mailbox Databases' }) 2))
+        $null = $parts.Add((New-WdHeading (L '7.1 Postfachdatenbanken' '7.1 Mailbox Databases') 2))
         $dbRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             $dbs = Get-MailboxDatabase -Server $env:COMPUTERNAME -Status -ErrorAction SilentlyContinue
             if (-not $dbs) { $dbs = Get-MailboxDatabase -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue }
             if ($dbs) {
                 foreach ($db in $dbs) {
-                    $mounted = if ($null -ne $db.Mounted) { if ($db.Mounted) { (if ($DE) { 'Eingehängt' } else { 'Mounted' }) } else { (if ($DE) { 'Ausgehängt' } else { 'Dismounted' }) } } else { (if ($DE) { 'Unbekannt' } else { 'Unknown' }) }
+                    $mounted = if ($null -ne $db.Mounted) { if ($db.Mounted) { (L 'Eingehängt' 'Mounted') } else { (L 'Ausgehängt' 'Dismounted') } } else { (L 'Unbekannt' 'Unknown') }
                     $dbRows.Add(@($db.Name, (SafeVal $db.EdbFilePath), (SafeVal $db.LogFolderPath), $mounted))
                 }
             }
         } catch { }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Datenbank' } else { 'Database' }), (if ($DE) { 'DB-Pfad' } else { 'DB path' }), (if ($DE) { 'Log-Pfad' } else { 'Log path' }), (if ($DE) { 'Status' } else { 'Status' })) -Rows $dbRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Datenbank' 'Database'), (L 'DB-Pfad' 'DB path'), (L 'Log-Pfad' 'Log path'), (L 'Status' 'Status')) -Rows $dbRows.ToArray()))
 
         # 7.2 Virtuelle Verzeichnisse + SCP
-        $null = $parts.Add((New-WdHeading (if ($DE) { '7.2 Virtuelle Verzeichnisse' } else { '7.2 Virtual Directories' }) 2))
+        $null = $parts.Add((New-WdHeading (L '7.2 Virtuelle Verzeichnisse' '7.2 Virtual Directories') 2))
         $vdirRows = [System.Collections.Generic.List[object[]]]::new()
         @(
             @{ Name='OWA';        Cmd={ Get-OwaVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
@@ -5628,36 +5740,37 @@ $body
             try {
                 $vd = & $_.Cmd
                 if ($vd) {
-                    $int = if ($vd.InternalUrl) { $vd.InternalUrl.AbsoluteUri } else { (if ($DE) { '(nicht gesetzt)' } else { '(not set)' }) }
-                    $ext = if ($vd.ExternalUrl) { $vd.ExternalUrl.AbsoluteUri } else { (if ($DE) { '(nicht gesetzt)' } else { '(not set)' }) }
+                    $int = if ($vd.InternalUrl) { $vd.InternalUrl.AbsoluteUri } else { (L '(nicht gesetzt)' '(not set)') }
+                    $ext = if ($vd.ExternalUrl) { $vd.ExternalUrl.AbsoluteUri } else { (L '(nicht gesetzt)' '(not set)') }
                     $vdirRows.Add(@($_.Name, (Mask-Ip $int), (Mask-Ip $ext)))
                 }
             } catch { }
         }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Dienst' } else { 'Service' }), (if ($DE) { 'Intern' } else { 'Internal' }), (if ($DE) { 'Extern' } else { 'External' })) -Rows $vdirRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Dienst' 'Service'), (L 'Intern' 'Internal'), (L 'Extern' 'External')) -Rows $vdirRows.ToArray()))
 
         # 7.3 Konnektoren
-        $null = $parts.Add((New-WdHeading (if ($DE) { '7.3 Konnektoren' } else { '7.3 Connectors' }) 2))
+        $null = $parts.Add((New-WdHeading (L '7.3 Konnektoren' '7.3 Connectors') 2))
         $conRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             Get-ReceiveConnector -Server $env:COMPUTERNAME -ErrorAction Stop | ForEach-Object {
                 $conRows.Add(@($_.Name, (Mask-Ip ($_.Bindings -join ', ')), (Mask-Ip ($_.RemoteIPRanges -join ', ')), $_.AuthMechanism, $_.PermissionGroups))
             }
         } catch { }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Connector' } else { 'Connector' }), (if ($DE) { 'Bindings' } else { 'Bindings' }), (if ($DE) { 'Remote-IPs' } else { 'Remote IPs' }), (if ($DE) { 'Auth' } else { 'Auth' }), (if ($DE) { 'Berechtigungen' } else { 'Permissions' })) -Rows $conRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Connector' 'Connector'), (L 'Bindings' 'Bindings'), (L 'Remote-IPs' 'Remote IPs'), (L 'Auth' 'Auth'), (L 'Berechtigungen' 'Permissions')) -Rows $conRows.ToArray()))
         $sendConRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             Get-SendConnector -ErrorAction SilentlyContinue | ForEach-Object {
-                $sendConRows.Add(@($_.Name, ($_.AddressSpaces -join ', '), (Mask-Ip (SafeVal ($_.SmartHosts -join ', '))), (if ($DE) { if ($_.Enabled) {'Aktiv'} else {'Inaktiv'} } else { if ($_.Enabled) {'Active'} else {'Inactive'} })))
+                $enabledText = if ($_.Enabled) { (L 'Aktiv' 'Active') } else { (L 'Inaktiv' 'Inactive') }
+                $sendConRows.Add(@($_.Name, ($_.AddressSpaces -join ', '), (Mask-Ip (SafeVal ($_.SmartHosts -join ', '))), $enabledText))
             }
         } catch { }
         if ($sendConRows.Count -gt 0) {
-            $null = $parts.Add((New-WdHeading (if ($DE) { 'Send Connectors' } else { 'Send Connectors' }) 3))
-            $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Name' } else { 'Name' }), (if ($DE) { 'Adressraum' } else { 'Address space' }), 'Smarthost', (if ($DE) { 'Status' } else { 'Status' })) -Rows $sendConRows.ToArray()))
+            $null = $parts.Add((New-WdHeading (L 'Send Connectors' 'Send Connectors') 3))
+            $null = $parts.Add((New-WdTable -Headers @((L 'Name' 'Name'), (L 'Adressraum' 'Address space'), 'Smarthost', (L 'Status' 'Status')) -Rows $sendConRows.ToArray()))
         }
 
         # 7.4 Zertifikate
-        $null = $parts.Add((New-WdHeading (if ($DE) { '7.4 Zertifikate' } else { '7.4 Certificates' }) 2))
+        $null = $parts.Add((New-WdHeading (L '7.4 Zertifikate' '7.4 Certificates') 2))
         $certRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | ForEach-Object {
@@ -5666,12 +5779,12 @@ $body
                 $certRows.Add(@($_.Subject, $_.NotAfter.ToString('yyyy-MM-dd'), ('{0}d' -f $daysLeft), $_.Services, $tp))
             }
         } catch { }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Subject' } else { 'Subject' }), (if ($DE) { 'Ablauf' } else { 'Expiry' }), (if ($DE) { 'Verbleibend' } else { 'Remaining' }), (if ($DE) { 'Dienste' } else { 'Services' }), (if ($DE) { 'Fingerabdruck' } else { 'Thumbprint' })) -Rows $certRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Subject' 'Subject'), (L 'Ablauf' 'Expiry'), (L 'Verbleibend' 'Remaining'), (L 'Dienste' 'Services'), (L 'Fingerabdruck' 'Thumbprint')) -Rows $certRows.ToArray()))
         try {
             $authCfg = Get-AuthConfig -ErrorAction SilentlyContinue
             if ($authCfg) {
                 $tp = if ($cust) { ('{0}...' -f $authCfg.CurrentCertificateThumbprint.Substring(0,[Math]::Min(8,$authCfg.CurrentCertificateThumbprint.Length))) } else { $authCfg.CurrentCertificateThumbprint }
-                $null = $parts.Add((New-WdParagraph ((if ($DE) { 'Auth-Zertifikat (Fingerabdruck): ' } else { 'Auth certificate (thumbprint): ' }) + $tp)))
+                $null = $parts.Add((New-WdParagraph ((L 'Auth-Zertifikat (Fingerabdruck): ' 'Auth certificate (thumbprint): ') + $tp)))
             }
         } catch { }
 
@@ -5679,15 +5792,15 @@ $body
         try {
             $dag = Get-DatabaseAvailabilityGroup -ErrorAction SilentlyContinue | Where-Object { $env:COMPUTERNAME -in ($_.Servers | ForEach-Object { $_.Name }) }
             if ($dag) {
-                $null = $parts.Add((New-WdHeading (if ($DE) { '7.5 DAG-Status' } else { '7.5 DAG Status' }) 2))
+                $null = $parts.Add((New-WdHeading (L '7.5 DAG-Status' '7.5 DAG Status') 2))
                 $dagRows = @(
-                    @((if ($DE) { 'DAG-Name' } else { 'DAG name' }), $dag.Name)
-                    @((if ($DE) { 'Mitglieder' } else { 'Members' }), ($dag.Servers -join ', '))
+                    @((L 'DAG-Name' 'DAG name'), $dag.Name)
+                    @((L 'Mitglieder' 'Members'), ($dag.Servers -join ', '))
                     @('FSW', (Mask-Ip (SafeVal $dag.WitnessServer)))
                     @('Alternate FSW', (Mask-Ip (SafeVal $dag.AlternateWitnessServer)))
                     @('DAC Mode', (SafeVal $dag.DatacenterActivationMode))
                 )
-                $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Eigenschaft' } else { 'Property' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows $dagRows))
+                $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $dagRows))
                 $copyRows = [System.Collections.Generic.List[object[]]]::new()
                 try {
                     Get-MailboxDatabaseCopyStatus -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | ForEach-Object {
@@ -5695,41 +5808,42 @@ $body
                     }
                 } catch { }
                 if ($copyRows.Count -gt 0) {
-                    $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Kopie' } else { 'Copy' }), (if ($DE) { 'Status' } else { 'Status' }), (if ($DE) { 'Copy-Queue' } else { 'Copy queue' }), (if ($DE) { 'Replay-Queue' } else { 'Replay queue' }), (if ($DE) { 'Suchindex' } else { 'Content index' })) -Rows $copyRows.ToArray()))
+                    $null = $parts.Add((New-WdTable -Headers @((L 'Kopie' 'Copy'), (L 'Status' 'Status'), (L 'Copy-Queue' 'Copy queue'), (L 'Replay-Queue' 'Replay queue'), (L 'Suchindex' 'Content index')) -Rows $copyRows.ToArray()))
                 }
             }
         } catch { }
 
         # 7.6 Transport-Konfiguration
-        $null = $parts.Add((New-WdHeading (if ($DE) { '7.6 Transport-Konfiguration' } else { '7.6 Transport Configuration' }) 2))
+        $null = $parts.Add((New-WdHeading (L '7.6 Transport-Konfiguration' '7.6 Transport Configuration') 2))
         $transRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             $tc = Get-TransportConfig -ErrorAction SilentlyContinue
             if ($tc) {
-                $transRows.Add(@((if ($DE) { 'Max. Sendegröße' } else { 'Max send size' }), ('{0} MB' -f [math]::Round($tc.MaxSendSize.Value.ToBytes()/1MB,0))))
-                $transRows.Add(@((if ($DE) { 'Max. Empfangsgröße' } else { 'Max receive size' }), ('{0} MB' -f [math]::Round($tc.MaxReceiveSize.Value.ToBytes()/1MB,0))))
+                $transRows.Add(@((L 'Max. Sendegröße' 'Max send size'), ('{0} MB' -f [math]::Round($tc.MaxSendSize.Value.ToBytes()/1MB,0))))
+                $transRows.Add(@((L 'Max. Empfangsgröße' 'Max receive size'), ('{0} MB' -f [math]::Round($tc.MaxReceiveSize.Value.ToBytes()/1MB,0))))
                 $transRows.Add(@('Safety Net Hold Time', $tc.SafetyNetHoldTime))
-                $transRows.Add(@((if ($DE) { 'HTML-NDRs' } else { 'HTML NDRs' }), ('{0} / {1}' -f $tc.InternalDsnSendHtml, $tc.ExternalDsnSendHtml)))
+                $transRows.Add(@((L 'HTML-NDRs' 'HTML NDRs'), ('{0} / {1}' -f $tc.InternalDsnSendHtml, $tc.ExternalDsnSendHtml)))
             }
         } catch { }
         try {
             $ruleCount = @(Get-TransportRule -ErrorAction SilentlyContinue).Count
-            $transRows.Add(@((if ($DE) { 'Transport-Regeln' } else { 'Transport rules' }), $ruleCount))
+            $transRows.Add(@((L 'Transport-Regeln' 'Transport rules'), $ruleCount))
         } catch { }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Einstellung' } else { 'Setting' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows $transRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Einstellung' 'Setting'), (L 'Wert' 'Value')) -Rows $transRows.ToArray()))
 
         # 7.7 Anti-Spam / Agents
-        $null = $parts.Add((New-WdHeading (if ($DE) { '7.7 Transport-Agents' } else { '7.7 Transport Agents' }) 2))
+        $null = $parts.Add((New-WdHeading (L '7.7 Transport-Agents' '7.7 Transport Agents') 2))
         $agentRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             Get-TransportAgent -ErrorAction SilentlyContinue | ForEach-Object {
-                $agentRows.Add(@($_.Name, (if ($DE) { if ($_.Enabled) {'Aktiv'} else {'Inaktiv'} } else { if ($_.Enabled) {'Enabled'} else {'Disabled'} }), $_.Priority))
+                $agentState = if ($_.Enabled) { (L 'Aktiv' 'Enabled') } else { (L 'Inaktiv' 'Disabled') }
+                $agentRows.Add(@($_.Name, $agentState, $_.Priority))
             }
         } catch { }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Agent' } else { 'Agent' }), (if ($DE) { 'Status' } else { 'Status' }), (if ($DE) { 'Priorität' } else { 'Priority' })) -Rows $agentRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Agent' 'Agent'), (L 'Status' 'Status'), (L 'Priorität' 'Priority')) -Rows $agentRows.ToArray()))
 
         # ── 8. Optimierungen und Härtungen ────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '8. Optimierungen und Härtungen' } else { '8. Optimisations and Hardening' }) 1))
+        $null = $parts.Add((New-WdHeading (L '8. Optimierungen und Härtungen' '8. Optimisations and Hardening') 1))
         function Get-SecReg($path, $name) { try { (Get-ItemProperty -Path $path -Name $name -ErrorAction Stop).$name } catch { $null } }
         $hardRows = [System.Collections.Generic.List[object[]]]::new()
         $hardRows.Add(@('TLS 1.0 Server Disabled', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.0\Server' 'Enabled') '(default)')))
@@ -5742,22 +5856,22 @@ $body
         $hardRows.Add(@('LSA RunAsPPL', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RunAsPPL') '(not set)')))
         $hardRows.Add(@('LM Compatibility Level', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LmCompatibilityLevel') '(default)')))
         $hardRows.Add(@('Credential Guard (VBS)', (SafeVal (Get-SecReg 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity') '(not set)')))
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Maßnahme' } else { 'Measure' }), (if ($DE) { 'Registrierungswert / Status' } else { 'Registry value / status' })) -Rows $hardRows.ToArray()))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Maßnahme' 'Measure'), (L 'Registrierungswert / Status' 'Registry value / status')) -Rows $hardRows.ToArray()))
         try {
             $orgCfg = Get-OrganizationConfig -ErrorAction SilentlyContinue
             if ($orgCfg) {
                 $orgRows = @(
-                    @((if ($DE) { 'CEIP deaktiviert' } else { 'CEIP disabled' }), (SafeVal (-not $orgCfg.CustomerFeedbackEnabled)))
-                    @((if ($DE) { 'Modern Auth (OAuth2)' } else { 'Modern Auth (OAuth2)' }), (SafeVal $orgCfg.OAuth2ClientProfileEnabled))
-                    @((if ($DE) { 'MAPI/HTTP' } else { 'MAPI/HTTP' }), (SafeVal $orgCfg.MapiHttpEnabled))
+                    @((L 'CEIP deaktiviert' 'CEIP disabled'), (SafeVal (-not $orgCfg.CustomerFeedbackEnabled)))
+                    @((L 'Modern Auth (OAuth2)' 'Modern Auth (OAuth2)'), (SafeVal $orgCfg.OAuth2ClientProfileEnabled))
+                    @((L 'MAPI/HTTP' 'MAPI/HTTP'), (SafeVal $orgCfg.MapiHttpEnabled))
                 )
-                $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Optimierung' } else { 'Optimisation' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows $orgRows))
+                $null = $parts.Add((New-WdTable -Headers @((L 'Optimierung' 'Optimisation'), (L 'Wert' 'Value')) -Rows $orgRows))
             }
         } catch { }
 
         # ── 9. Backup- & DR-Readiness ─────────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '9. Backup- und DR-Readiness' } else { '9. Backup and DR Readiness' }) 1))
-        $null = $parts.Add((New-WdHeading (if ($DE) { '9.1 VSS Writer Status' } else { '9.1 VSS Writer Status' }) 2))
+        $null = $parts.Add((New-WdHeading (L '9. Backup- und DR-Readiness' '9. Backup and DR Readiness') 1))
+        $null = $parts.Add((New-WdHeading (L '9.1 VSS Writer Status' '9.1 VSS Writer Status') 2))
         $vssRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             $vssOut = (vssadmin list writers 2>&1) -join "`n"
@@ -5768,20 +5882,20 @@ $body
                     $vssRows.Add(@($currentWriter, $Matches[1].Trim()))
                 }
             }
-        } catch { $vssRows.Add(@((if ($DE) { 'VSS-Abfrage fehlgeschlagen' } else { 'VSS query failed' }), '')) }
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'VSS Writer' } else { 'VSS Writer' }), (if ($DE) { 'Zustand' } else { 'State' })) -Rows $vssRows.ToArray()))
+        } catch { $vssRows.Add(@((L 'VSS-Abfrage fehlgeschlagen' 'VSS query failed'), '')) }
+        $null = $parts.Add((New-WdTable -Headers @((L 'VSS Writer' 'VSS Writer'), (L 'Zustand' 'State')) -Rows $vssRows.ToArray()))
 
         # ── 10. HealthChecker ──────────────────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '10. HealthChecker' } else { '10. HealthChecker' }) 1))
+        $null = $parts.Add((New-WdHeading (L '10. HealthChecker' '10. HealthChecker') 1))
         $hcPath = SafeVal $State['HCReportPath']
         if ($hcPath) {
-            $null = $parts.Add((New-WdParagraph ((if ($DE) { 'HealthChecker-HTML-Report: ' } else { 'HealthChecker HTML report: ' }) + $hcPath)))
+            $null = $parts.Add((New-WdParagraph ((L 'HealthChecker-HTML-Report: ' 'HealthChecker HTML report: ') + $hcPath)))
         } else {
-            $null = $parts.Add((New-WdParagraph (if ($DE) { 'HealthChecker wurde nicht ausgeführt oder Pfad nicht verfügbar. Bitte manuell unter https://aka.ms/ExchangeHealthChecker ausführen.' } else { 'HealthChecker was not run or path unavailable. Please run manually from https://aka.ms/ExchangeHealthChecker.' })))
+            $null = $parts.Add((New-WdParagraph (L 'HealthChecker wurde nicht ausgeführt oder Pfad nicht verfügbar. Bitte manuell unter https://aka.ms/ExchangeHealthChecker ausführen.' 'HealthChecker was not run or path unavailable. Please run manually from https://aka.ms/ExchangeHealthChecker.')))
         }
 
         # ── 11. Monitoring-Readiness ───────────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '11. Monitoring-Readiness' } else { '11. Monitoring Readiness' }) 1))
+        $null = $parts.Add((New-WdHeading (L '11. Monitoring-Readiness' '11. Monitoring Readiness') 1))
         $monRows = [System.Collections.Generic.List[object[]]]::new()
         try {
             $svc = Get-Service MSExchangeMitigation -ErrorAction SilentlyContinue
@@ -5792,22 +5906,22 @@ $body
                 $log = Get-EventLog -LogName $_ -Newest 1 -ErrorAction SilentlyContinue
                 if ($log) { '{0}: MaxSize={1}MB' -f $_, [math]::Round((Get-EventLog -LogName $_ -ErrorAction SilentlyContinue | Select-Object -ExpandProperty MaximumKilobytes -First 1) / 1024, 0) }
             }
-            if ($evtLogs) { $monRows.Add(@((if ($DE) { 'Event-Logs' } else { 'Event logs' }), ($evtLogs -join '; '))) }
+            if ($evtLogs) { $monRows.Add(@((L 'Event-Logs' 'Event logs'), ($evtLogs -join '; '))) }
         } catch { }
-        $monRows.Add(@((if ($DE) { 'Empfehlung' } else { 'Recommendation' }), (if ($DE) { 'Perfmon-Baseline innerhalb 4 Wochen nach Go-Live aufzeichnen.' } else { 'Record Perfmon baseline within 4 weeks of go-live.' })))
-        $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Eigenschaft' } else { 'Property' }), (if ($DE) { 'Wert / Status' } else { 'Value / status' })) -Rows $monRows.ToArray()))
+        $monRows.Add(@((L 'Empfehlung' 'Recommendation'), (L 'Perfmon-Baseline innerhalb 4 Wochen nach Go-Live aufzeichnen.' 'Record Perfmon baseline within 4 weeks of go-live.')))
+        $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert / Status' 'Value / status')) -Rows $monRows.ToArray()))
 
         # ── 12. Hybrid-Status (conditional) ───────────────────────────────────────
         try {
             $hyb = Get-HybridConfiguration -ErrorAction SilentlyContinue
             if ($hyb) {
-                $null = $parts.Add((New-WdHeading (if ($DE) { '12. Hybrid-Status' } else { '12. Hybrid Status' }) 1))
+                $null = $parts.Add((New-WdHeading (L '12. Hybrid-Status' '12. Hybrid Status') 1))
                 $hybRows = @(
-                    @((if ($DE) { 'Hybrid-Features' } else { 'Hybrid features' }), (SafeVal ($hyb.Features -join ', ')))
-                    @((if ($DE) { 'On-Premises SMTP-Domänen' } else { 'On-premises SMTP domains' }), (SafeVal ($hyb.OnPremisesSMTPDomains -join ', ')))
-                    @((if ($DE) { 'Edge-Transport-Server' } else { 'Edge Transport servers' }), (SafeVal ($hyb.EdgeTransportServers -join ', ')))
+                    @((L 'Hybrid-Features' 'Hybrid features'), (SafeVal ($hyb.Features -join ', ')))
+                    @((L 'On-Premises SMTP-Domänen' 'On-premises SMTP domains'), (SafeVal ($hyb.OnPremisesSMTPDomains -join ', ')))
+                    @((L 'Edge-Transport-Server' 'Edge Transport servers'), (SafeVal ($hyb.EdgeTransportServers -join ', ')))
                 )
-                $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Eigenschaft' } else { 'Property' }), (if ($DE) { 'Wert' } else { 'Value' })) -Rows $hybRows))
+                $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $hybRows))
             }
         } catch { }
 
@@ -5815,23 +5929,23 @@ $body
         try {
             $pfMailboxes = @(Get-Mailbox -PublicFolder -ErrorAction SilentlyContinue)
             if ($pfMailboxes -and $pfMailboxes.Count -gt 0) {
-                $null = $parts.Add((New-WdHeading (if ($DE) { '13. Öffentliche Ordner' } else { '13. Public Folders' }) 1))
+                $null = $parts.Add((New-WdHeading (L '13. Öffentliche Ordner' '13. Public Folders') 1))
                 $pfRows = $pfMailboxes | ForEach-Object {
                     @($_.Name, (SafeVal $_.PrimarySmtpAddress), (SafeVal $_.Database))
                 }
-                $null = $parts.Add((New-WdTable -Headers @((if ($DE) { 'Name' } else { 'Name' }), 'SMTP', (if ($DE) { 'Datenbank' } else { 'Database' })) -Rows $pfRows))
+                $null = $parts.Add((New-WdTable -Headers @((L 'Name' 'Name'), 'SMTP', (L 'Datenbank' 'Database')) -Rows $pfRows))
             } else {
-                $null = $parts.Add((New-WdHeading (if ($DE) { '13. Öffentliche Ordner' } else { '13. Public Folders' }) 1))
-                $null = $parts.Add((New-WdParagraph (if ($DE) { 'Public Folders werden nicht eingesetzt. Moderne Ablösung über Shared Mailboxes (gemeinsamer Posteingang, Kalender) und Microsoft Teams (Dokumentenablage, Zusammenarbeit).' } else { 'Public folders are not in use. Modern replacement via Shared Mailboxes (shared inbox, calendar) and Microsoft Teams (document storage, collaboration).' })))
+                $null = $parts.Add((New-WdHeading (L '13. Öffentliche Ordner' '13. Public Folders') 1))
+                $null = $parts.Add((New-WdParagraph (L 'Public Folders werden nicht eingesetzt. Moderne Ablösung über Shared Mailboxes (gemeinsamer Posteingang, Kalender) und Microsoft Teams (Dokumentenablage, Zusammenarbeit).' 'Public folders are not in use. Modern replacement via Shared Mailboxes (shared inbox, calendar) and Microsoft Teams (document storage, collaboration).')))
             }
         } catch {
-            $null = $parts.Add((New-WdHeading (if ($DE) { '13. Öffentliche Ordner' } else { '13. Public Folders' }) 1))
-            $null = $parts.Add((New-WdParagraph (if ($DE) { 'Abfrage nicht möglich (Edge/Management-Tools-Modus oder keine Exchange-Session).' } else { 'Query not possible (Edge/Management Tools mode or no Exchange session).' })))
+            $null = $parts.Add((New-WdHeading (L '13. Öffentliche Ordner' '13. Public Folders') 1))
+            $null = $parts.Add((New-WdParagraph (L 'Abfrage nicht möglich (Edge/Management-Tools-Modus oder keine Exchange-Session).' 'Query not possible (Edge/Management Tools mode or no Exchange session).')))
         }
 
         # ── 14. Ausgeführte CMDLets ────────────────────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '14. Ausgeführte CMDLets' } else { '14. Executed Cmdlets' }) 1))
-        $null = $parts.Add((New-WdHeading (if ($DE) { '14.1 Vom Skript aufgerufen' } else { '14.1 Called by the script' }) 2))
+        $null = $parts.Add((New-WdHeading (L '14. Ausgeführte CMDLets' '14. Executed Cmdlets') 1))
+        $null = $parts.Add((New-WdHeading (L '14.1 Vom Skript aufgerufen' '14.1 Called by the script') 2))
         $scriptCmds = @(
             'Install-WindowsFeature','Set-NetFrameworkStrongCrypto','Set-TLSSettings','Set-SchannelProtocol',
             'Enable-WindowsDefenderExclusions','Enable-HighPerformancePowerPlan','Enable-RSSOnAllNICs',
@@ -5844,7 +5958,7 @@ $body
             'Join-DAG','Invoke-HealthChecker','New-InstallationReport','New-InstallationDocument'
         )
         foreach ($cmd in $scriptCmds) { $null = $parts.Add((New-WdBullet $cmd)) }
-        $null = $parts.Add((New-WdHeading (if ($DE) { '14.2 Exchange-CMDLets aus Transcript (max. 200)' } else { '14.2 Exchange cmdlets from transcript (max. 200)' }) 2))
+        $null = $parts.Add((New-WdHeading (L '14.2 Exchange-CMDLets aus Transcript (max. 200)' '14.2 Exchange cmdlets from transcript (max. 200)') 2))
         $exCmds = @()
         try {
             $transcript = SafeVal $State['TranscriptFile']
@@ -5858,30 +5972,30 @@ $body
         if ($exCmds) {
             foreach ($cmd in $exCmds) { $null = $parts.Add((New-WdBullet $cmd)) }
         } else {
-            $null = $parts.Add((New-WdParagraph (if ($DE) { '(Transcript nicht verfügbar oder keine Exchange-Cmdlets gefunden)' } else { '(Transcript not available or no Exchange cmdlets found)' })))
+            $null = $parts.Add((New-WdParagraph (L '(Transcript nicht verfügbar oder keine Exchange-Cmdlets gefunden)' '(Transcript not available or no Exchange cmdlets found)')))
         }
 
         # ── 15. Operative Runbooks + Offene Punkte ────────────────────────────────
-        $null = $parts.Add((New-WdHeading (if ($DE) { '15. Operative Runbooks und offene Punkte' } else { '15. Operational Runbooks and Open Items' }) 1))
-        $null = $parts.Add((New-WdHeading (if ($DE) { '15.1 DAG-Wartungsmodus' } else { '15.1 DAG Maintenance Mode' }) 2))
+        $null = $parts.Add((New-WdHeading (L '15. Operative Runbooks und offene Punkte' '15. Operational Runbooks and Open Items') 1))
+        $null = $parts.Add((New-WdHeading (L '15.1 DAG-Wartungsmodus' '15.1 DAG Maintenance Mode') 2))
         $null = $parts.Add((New-WdCode 'Set-ServerComponentState <Server> -Component ServerWideOffline -State Inactive -Requester Maintenance'))
         $null = $parts.Add((New-WdCode 'Suspend-MailboxDatabaseCopy <DB>\<Server> -SuspendComment "Wartung"'))
         $null = $parts.Add((New-WdCode '# Wartung durchführen'))
         $null = $parts.Add((New-WdCode 'Resume-MailboxDatabaseCopy <DB>\<Server>'))
         $null = $parts.Add((New-WdCode 'Set-ServerComponentState <Server> -Component ServerWideOffline -State Active -Requester Maintenance'))
-        $null = $parts.Add((New-WdHeading (if ($DE) { '15.2 CU/SU-Update' } else { '15.2 CU/SU Update' }) 2))
+        $null = $parts.Add((New-WdHeading (L '15.2 CU/SU-Update' '15.2 CU/SU Update') 2))
         $null = $parts.Add((New-WdCode '# SU: Run as SYSTEM via PSExec or scheduled task'))
         $null = $parts.Add((New-WdCode 'setup.exe /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF /PrepareAllDomains'))
         $null = $parts.Add((New-WdCode 'setup.exe /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF /Mode:Upgrade'))
-        $null = $parts.Add((New-WdHeading (if ($DE) { '15.3 Zertifikatstausch' } else { '15.3 Certificate Replacement' }) 2))
+        $null = $parts.Add((New-WdHeading (L '15.3 Zertifikatstausch' '15.3 Certificate Replacement') 2))
         $null = $parts.Add((New-WdCode 'Import-ExchangeCertificate -FileName <pfx> -Password <pwd> -Server <srv>'))
         $null = $parts.Add((New-WdCode 'Enable-ExchangeCertificate -Thumbprint <tp> -Services IIS,SMTP,POP,IMAP -Server <srv>'))
-        $null = $parts.Add((New-WdHeading (if ($DE) { '15.4 Datenbank-Verschiebung (Move-ActiveMailboxDatabase)' } else { '15.4 Database Move' }) 2))
+        $null = $parts.Add((New-WdHeading (L '15.4 Datenbank-Verschiebung (Move-ActiveMailboxDatabase)' '15.4 Database Move') 2))
         $null = $parts.Add((New-WdCode 'Move-ActiveMailboxDatabase <DB> -ActivateOnServer <Target> -Confirm:$false'))
-        $null = $parts.Add((New-WdHeading (if ($DE) { '15.5 Datenbank-Reseed' } else { '15.5 Database Reseed' }) 2))
+        $null = $parts.Add((New-WdHeading (L '15.5 Datenbank-Reseed' '15.5 Database Reseed') 2))
         $null = $parts.Add((New-WdCode 'Update-MailboxDatabaseCopy <DB>\<Server> -DeleteExistingFiles'))
-        $null = $parts.Add((New-WdHeading (if ($DE) { '15.6 Offene Punkte' } else { '15.6 Open Items' }) 2))
-        $null = $parts.Add((New-WdTable -Headers @('Nr.', (if ($DE) { 'Offener Punkt' } else { 'Open item' }), (if ($DE) { 'Verantwortlich' } else { 'Owner' }), (if ($DE) { 'Fällig am' } else { 'Due date' }), (if ($DE) { 'Status' } else { 'Status' })) -Rows @(
+        $null = $parts.Add((New-WdHeading (L '15.6 Offene Punkte' '15.6 Open Items') 2))
+        $null = $parts.Add((New-WdTable -Headers @('Nr.', (L 'Offener Punkt' 'Open item'), (L 'Verantwortlich' 'Owner'), (L 'Fällig am' 'Due date'), (L 'Status' 'Status')) -Rows @(
             @('1', '', '', '', '')
             @('2', '', '', '', '')
             @('3', '', '', '', '')
@@ -5896,8 +6010,7 @@ $body
 
     function Get-RBACReport {
         Write-MyOutput 'Generating RBAC role group membership report'
-        $ts = Get-Date -Format 'yyyyMMddHHmmss'
-        $reportPath = Join-Path $State['ReportsPath'] "${env:COMPUTERNAME}_RBACReport_${ts}.txt"
+        $reportPath = Join-Path $State['ReportsPath'] ('{0}_RBAC_{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
 
         $roleGroups = @(
             'Organization Management',
@@ -7140,9 +7253,9 @@ $body
         # Microsoft recommends disabling TCP offload features on Exchange servers
         Write-MyOutput 'Disabling TCP Chimney and Task Offload settings'
         try {
-            $null = netsh.exe int tcp set global chimney=disabled 2>&1
+            Invoke-NativeCommand -FilePath 'netsh.exe' -Arguments @('int','tcp','set','global','chimney=disabled')          -Tag 'netsh chimney'          | Out-Null
             if ($LASTEXITCODE -ne 0) { Write-MyWarning ('netsh chimney=disabled exited with code {0}' -f $LASTEXITCODE) }
-            $null = netsh.exe int tcp set global autotuninglevel=restricted 2>&1
+            Invoke-NativeCommand -FilePath 'netsh.exe' -Arguments @('int','tcp','set','global','autotuninglevel=restricted') -Tag 'netsh autotuninglevel' | Out-Null
             if ($LASTEXITCODE -ne 0) { Write-MyWarning ('netsh autotuninglevel=restricted exited with code {0}' -f $LASTEXITCODE) }
             Set-NetOffloadGlobalSetting -TaskOffload Disabled -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
             Write-MyVerbose 'TCP offload settings configured'
@@ -7217,7 +7330,7 @@ $body
         $defaultHive    = 'C:\Users\Default\NTUSER.DAT'
         $defaultHiveKey = 'HKU\ExchangeInstallDefault'
         if (Test-Path $defaultHive) {
-            $null = reg load $defaultHiveKey $defaultHive 2>$null
+            Invoke-NativeCommand -FilePath 'reg.exe' -Arguments @('load', $defaultHiveKey, $defaultHive) -Tag 'reg load default hive' | Out-Null
             if (Test-Path "Registry::$defaultHiveKey\Software\Microsoft\ServerManager") {
                 Set-ItemProperty -Path "Registry::$defaultHiveKey\Software\Microsoft\ServerManager" -Name 'DoNotOpenServerManagerAtLogon' -Value 1 -Type DWord -ErrorAction SilentlyContinue
             }
@@ -7225,7 +7338,7 @@ $body
                 New-Item -Path "Registry::$defaultHiveKey\Software\Microsoft\ServerManager" -Force -ErrorAction SilentlyContinue | Out-Null
                 New-ItemProperty -Path "Registry::$defaultHiveKey\Software\Microsoft\ServerManager" -Name 'DoNotOpenServerManagerAtLogon' -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
             }
-            $null = reg unload $defaultHiveKey 2>$null
+            Invoke-NativeCommand -FilePath 'reg.exe' -Arguments @('unload', $defaultHiveKey) -Tag 'reg unload default hive' | Out-Null
         }
 
         # Layer 3: Disable the ServerManager scheduled task (machine-wide)
@@ -7493,8 +7606,7 @@ $body
             Write-MyVerbose ('Override for ECC found, removing (obsolete)')
             $Override | Remove-SettingOverride
             Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh | Out-Null
-            Write-MyVerbose 'Restarting W3SVC and WAS'
-            Restart-Service -Name W3SVC, WAS -Force -WarningAction SilentlyContinue
+            $script:p5NeedsIisRestart = $true
         }
         else {
             Write-MyVerbose ('No override configuration for ECC found')
@@ -7512,8 +7624,7 @@ $body
         else {
             New-SettingOverride -Name "EnableEncryptionAlgorithmCBC" -Parameters @("Enabled=True") -Component Encryption -Reason "Enable CBC encryption" -Section EnableEncryptionAlgorithmCBC | Out-Null
             Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh | Out-Null
-            Write-MyVerbose 'Restarting W3SVC and WAS'
-            Restart-Service -Name W3SVC, WAS -Force -WarningAction SilentlyContinue
+            $script:p5NeedsIisRestart = $true
         }
     }
 
@@ -7526,10 +7637,15 @@ $body
         if ($State['InstallEdge']) { Write-MyVerbose 'Enable-AMSI: skipped (Edge Transport — no org connection)'; return }
         Write-MyVerbose 'Enabling AMSI body scanning for OWA, ECP, EWS and PowerShell'
 
-        New-SettingOverride -Name "EnableAMSIBodyScan" -Component Cafe -Section AmsiRequestBodyScanning -Parameters $ConfigParam -Reason "Enabling AMSI body Scan"
-        Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh
-        Write-MyVerbose 'Restarting W3SVC and WAS'
-        Restart-Service -Name W3SVC, WAS -Force -WarningAction SilentlyContinue
+        $amsiOverride = Get-SettingOverride | Where-Object { $_.SectionName -eq 'AmsiRequestBodyScanning' }
+        if ($amsiOverride) {
+            Write-MyVerbose 'AMSI body scanning override already configured'
+        }
+        else {
+            New-SettingOverride -Name "EnableAMSIBodyScan" -Component Cafe -Section AmsiRequestBodyScanning -Parameters $ConfigParam -Reason "Enabling AMSI body Scan" | Out-Null
+            Get-ExchangeDiagnosticInfo -Process Microsoft.Exchange.Directory.TopologyService -Component VariantConfiguration -Argument Refresh | Out-Null
+            $script:p5NeedsIisRestart = $true
+        }
     }
 
     function Enable-IanaTimeZoneMappings {
@@ -8161,12 +8277,15 @@ $body
             if ($StatusMsg) { Write-Host "  $StatusMsg" -ForegroundColor Yellow }
         }
 
+        Write-MyVerbose 'Menu: Show-InstallationMenu started'
+
         # --- Step 1: Mode selection ---
         while ($selectedMode -lt 1 -or $selectedMode -gt 7) {
             Draw-Menu -Mode $selectedMode -ToggState $toggleState
             $raw = Read-Host '  Mode [1-7]'
             if ($raw -match '^[1-7]$') {
                 $selectedMode = [int]$raw
+                Write-MyVerbose ('Menu: Mode {0} selected ({1})' -f $selectedMode, $modes[$selectedMode])
                 # Apply mode-specific toggle defaults
                 switch ($selectedMode) {
                     2 { $toggleState['G'] = $false; $toggleState['I'] = $false }
@@ -8220,10 +8339,15 @@ $body
                 }
                 else {
                     $toggleState[$raw] = -not $toggleState[$raw]
+                    $toggState = if ($toggleState[$raw]) { 'ON' } else { 'OFF' }
+                    Write-MyVerbose ('Menu: Toggle [{0}] {1} -> {2}' -f $raw, $toggleDefs[$raw].Label, $toggState)
                     # Reset any toggles that became disabled by this change
                     $dynAfter = Get-DynamicDisabled $toggleState
                     foreach ($x in $dynAfter) {
-                        if ($toggleState[$x]) { $toggleState[$x] = $false }
+                        if ($toggleState[$x]) {
+                            $toggleState[$x] = $false
+                            Write-MyVerbose ('Menu: Toggle [{0}] auto-cleared (now disabled)' -f $x)
+                        }
                     }
                 }
             }
@@ -8330,7 +8454,13 @@ $body
                 $cfg['SCP']          = Read-MenuInput -Prompt 'Autodiscover SCP URL   (blank = let Setup set, - = remove)'
             }
             $cfg['TargetPath']       = Read-MenuInput -Prompt 'Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'
-            $cfg['DAGName']          = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join) [not tested]'
+            $knownDAGs = Get-ExchangeDAGNames
+            if ($knownDAGs.Count -gt 0) {
+                Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs -join ', ')) -ForegroundColor DarkGray
+                $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs -join ' / ')) -Default ($knownDAGs[0])
+            } else {
+                $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+            }
             $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none) [not tested]' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. ex01.contoso.com)'
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
             $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
@@ -8372,7 +8502,13 @@ $body
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
-            $cfg['DAGName']          = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join) [not tested]'
+            $knownDAGs2 = Get-ExchangeDAGNames
+            if ($knownDAGs2.Count -gt 0) {
+                Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs2 -join ', ')) -ForegroundColor DarkGray
+                $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs2 -join ' / ')) -Default ($knownDAGs2[0])
+            } else {
+                $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+            }
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
@@ -8414,6 +8550,7 @@ $body
             $confirm = Read-Host '  Start installation? [Y=yes / N=back to menu / Q=quit]'
             if ($confirm -imatch '^[Yy]') { return $cfg }
             if ($confirm -imatch '^[Qq]') { return $null }
+            Write-MyVerbose 'Menu: Back to mode selection'
             # N or anything else = restart from mode selection
             $selectedMode = 0
             while ($selectedMode -lt 1 -or $selectedMode -gt 7) {
@@ -8446,7 +8583,7 @@ $body
     $FullOSVersion  = '{0}.{1}' -f $MajorOSVersion, $MinorOSVersion
 
     $State = @{}
-    $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
+    $StateFile = "$InstallPath\$($env:computerName)_State.xml"
     $State = Restore-State
     # Ensure reports folder exists on Autopilot resume (state restored from XML)
     if ($State['ReportsPath'] -and -not (Test-Path $State['ReportsPath'])) {
@@ -8464,14 +8601,64 @@ $body
         break
     }
 
-    if ($State.Count -gt 0 -and -not $ParameterString) {
+    # --- Logging bootstrap (must run BEFORE any Write-MyOutput/Write-MyVerbose so pre-menu
+    #     messages land in the single log file).
+    $script:lastErrorCount = $Error.Count
+    # Capture fresh-vs-resume BEFORE we populate $State; otherwise the later `if ($script:isFreshStart)`
+    # check would mis-classify a fresh start as a resume once LogVerbose/LogDebug/TranscriptFile
+    # have been seeded.
+    $script:isFreshStart = ($State.Count -eq 0)
+    $boundVerbose = $PSBoundParameters.ContainsKey('Verbose') -and [bool]$PSBoundParameters['Verbose']
+    $boundDebug   = $PSBoundParameters.ContainsKey('Debug')   -and [bool]$PSBoundParameters['Debug']
+    # Keep console clean: -Verbose / -Debug auto-set $VerbosePreference='Continue' /
+    # $DebugPreference='Inquire', which floods the console (and prompts). We pin both to
+    # SilentlyContinue so `Write-Verbose`/`Write-Debug` stay off console, while our
+    # Write-MyVerbose / Write-MyDebug wrappers still append to the log via State flags.
+    $VerbosePreference = 'SilentlyContinue'
+    $DebugPreference   = 'SilentlyContinue'
+    $State['LogVerbose'] = $boundVerbose -or $boundDebug -or [bool]$State['LogVerbose']
+    $State['LogDebug']   = $boundDebug   -or [bool]$State['LogDebug']
+
+    # Seed TranscriptFile early so pre-menu / Test-Preflight lines land in the same file.
+    # On Autopilot resume the restored state already carries TranscriptFile; the init block
+    # below reuses it instead of creating a second timestamped file.
+    $earlyReports = if ($State['ReportsPath']) { $State['ReportsPath'] } else { Join-Path $InstallPath 'reports' }
+    if (-not (Test-Path $earlyReports)) { New-Item -Path $earlyReports -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null }
+    if (-not $State['TranscriptFile']) {
+        $State['TranscriptFile'] = Join-Path $earlyReports ('{0}_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    }
+    if ($State['LogVerbose'] -or $State['LogDebug']) {
+        $tier = if ($State['LogDebug']) { 'DEBUG' } else { 'VERBOSE' }
+        try {
+            $hdr = @(
+                '',
+                '==================================================================',
+                ('  {0} session start: {1}' -f $tier, (Get-Date -Format u)),
+                ('  PID {0}  User {1}\{2}  PS {3}  Host {4}' -f $PID, $env:USERDOMAIN, $env:USERNAME, $PSVersionTable.PSVersion, $Host.Name),
+                ('  Invocation: {0}' -f ($MyInvocation.Line -replace '\s+', ' ').Trim()),
+                '=================================================================='
+            ) -join [Environment]::NewLine
+            [System.IO.File]::AppendAllText($State['TranscriptFile'], ($hdr + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+        } catch {
+            Write-Warning ('Could not write log header: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    # Now everything is in place: start normal logging (console + file).
+    if ($State.Count -gt 0 -and -not $ParameterString -and -not $script:isFreshStart) {
         $ParameterString = '[resuming from phase {0}]' -f $State['InstallPhase']
     }
-    Write-Output "Script $ScriptFullName v$ScriptVersion called using $ParameterString"
-    Write-Verbose "Using parameterSet $($PsCmdlet.ParameterSetName)"
-    Write-Output ('Running on OS build {0}' -f $FullOSVersion)
+    Write-MyOutput  "Script $ScriptFullName v$ScriptVersion called using $ParameterString"
+    # ParameterSetName is the internal binding set name — always "Autopilot" as default even
+    # in Copilot launches. Keep for forensics but at DEBUG tier so it doesn't confuse normal logs.
+    Write-MyDebug   "ParameterSet used for binding: $($PsCmdlet.ParameterSetName)"
+    Write-MyOutput  ('Running on OS build {0}' -f $FullOSVersion)
+    if ($State['LogVerbose'] -or $State['LogDebug']) {
+        $tierLabel = if ($State['LogDebug']) { 'DEBUG' } else { 'VERBOSE' }
+        Write-MyOutput ('Log tier: {0} - file: {1}' -f $tierLabel, $State['TranscriptFile'])
+    }
 
-    if (! $State.Count) {
+    if ($script:isFreshStart) {
         # No state, initialize settings from parameters.
         # When started interactively with no meaningful parameters (default Autopilot set, no bound params
         # other than the defaults), show the interactive installation menu.
@@ -8550,7 +8737,35 @@ $body
             $RelaySubnets        = $menuResult['RelaySubnets']
             $ExternalRelaySubnets = $menuResult['ExternalRelaySubnets']
             # Reload state file path with potentially updated InstallPath
-            $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
+            $StateFile = "$InstallPath\$($env:computerName)_State.xml"
+
+            # Log confirmed menu selection (here in the caller so Write-MyOutput / Write-MyVerbose
+            # don't pollute Show-InstallationMenu's return pipeline with extra string values).
+            $modeLabel = @{1='Exchange Server (Mailbox)';2='Edge Transport';3='Recipient Mgmt';4='Mgmt Tools';5='Recovery';6='Standalone Optimize';7='Installation Document'}
+            Write-MyOutput '================ Menu selection confirmed ================'
+            Write-MyOutput ('Menu: Mode     : {0}' -f $modeLabel[$menuResult['Mode']])
+            Write-MyOutput ('Menu: Source   : {0}' -f $SourcePath)
+            Write-MyOutput ('Menu: Install  : {0}' -f $InstallPath)
+            if ($Organization)    { Write-MyOutput ('Menu: Org      : {0}' -f $Organization) }
+            if ($Namespace)       { Write-MyOutput ('Menu: Namespace: {0}' -f $Namespace) }
+            if ($DAGName)         { Write-MyOutput ('Menu: DAG      : {0}' -f $DAGName) }
+            if ($CertificatePath) { Write-MyOutput ('Menu: Cert PFX : {0}' -f $CertificatePath) }
+            # Active switch labels (same computation the menu summary used)
+            $menuSwitchMap = @{
+                'Autopilot'=$Autopilot;'IncludeFixes'=$IncludeFixes;'DisableSSL3'=$DisableSSL3;
+                'DisableRC4'=$DisableRC4;'EnableECC'=$EnableECC;'EnableAMSI'=$EnableAMSI;
+                'EnableTLS12'=$EnableTLS12;'EnableTLS13'=$EnableTLS13;'InstallWindowsUpdates'=$InstallWindowsUpdates
+            }
+            $activeSwitches = ($menuSwitchMap.Keys | Where-Object { $menuSwitchMap[$_] }) -join ', '
+            if ($activeSwitches) { Write-MyOutput ('Menu: Switches : {0}' -f $activeSwitches) }
+            # Full cfg dump at verbose/debug tier (credentials redacted)
+            $safeDump = @{}
+            foreach ($k in $menuResult.Keys) {
+                $safeDump[$k] = if ($k -in 'Credentials','CertificatePassword','AdminPassword') { '<redacted>' } else { $menuResult[$k] }
+            }
+            foreach ($k in ($safeDump.Keys | Sort-Object)) {
+                Write-MyVerbose ('Menu: cfg[{0}] = {1}' -f $k, $safeDump[$k])
+            }
         }
         elseif ($ConfigFile) {
             # Headless mode: load all parameters from a .psd1 config file.
@@ -8620,7 +8835,7 @@ $body
             $Language             = Get-CfgValue 'Language' $Language
 
             # Recalculate state file path with potentially overridden InstallPath
-            $StateFile = "$InstallPath\$($env:computerName)_$($ScriptName)_state.xml"
+            $StateFile = "$InstallPath\$($env:computerName)_State.xml"
             Write-MyOutput "Configuration loaded: mode=$(if ($InstallEdge){'Edge'}elseif($Recover){'Recovery'}else{'Mailbox'}), source=$SourcePath, org=$Organization"
         }
         elseif ( $($PsCmdlet.ParameterSetName) -eq "Autopilot") {
@@ -8661,6 +8876,10 @@ $body
         $State["TargetPath"] = $TargetPath
         $State["Autopilot"] = $Autopilot
         $State["ConfigDriven"] = [bool]$ConfigFile
+        # Persist absolute ConfigFile path so reboot-resume can still log which config drove the run
+        $State["ConfigFile"] = if ($ConfigFile) {
+            try { (Resolve-Path -Path $ConfigFile -ErrorAction Stop).Path } catch { [string]$ConfigFile }
+        } else { $null }
         $State["IncludeFixes"] = $IncludeFixes
         $State["NoSetup"] = $NoSetup
         $State["Recover"] = $Recover
@@ -8688,7 +8907,11 @@ $body
         $State["InstallPath"]  = $InstallPath
         $State["ReportsPath"]  = Join-Path $InstallPath 'reports'
         if (-not (Test-Path $State["ReportsPath"])) { New-Item -Path $State["ReportsPath"] -ItemType Directory -Force | Out-Null }
-        $State["TranscriptFile"] = Join-Path $State["ReportsPath"] ('{0}_{1}_{2}.log' -f $env:computerName, $ScriptName, (Get-Date -Format 'yyyyMMddHHmmss'))
+        # TranscriptFile may have been pre-seeded by the early block; keep that so pre-menu
+        # messages end up in the same single log file.
+        if (-not $State["TranscriptFile"]) {
+            $State["TranscriptFile"] = Join-Path $State["ReportsPath"] ('{0}_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        }
         $State["PreflightOnly"] = $PreflightOnly
         $State["CopyServerConfig"] = $CopyServerConfig
         $State["CertificatePath"] = $CertificatePath
@@ -8785,6 +9008,22 @@ $body
 
     $runMode = if ($State['ConfigDriven']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
     Write-MyOutput ('Mode: {0}' -f $runMode)
+    if ($State['ConfigDriven']) {
+        # Resolve and log the configuration file actually used (absolute path + metadata)
+        $cfgResolved = if ($ConfigFile) { $ConfigFile } else { $State['ConfigFile'] }
+        if ($cfgResolved) {
+            try {
+                $cfgItem = Get-Item -Path $cfgResolved -ErrorAction Stop
+                $State['ConfigFile'] = $cfgItem.FullName
+                Write-MyOutput ('Configuration: {0}' -f $cfgItem.FullName)
+                Write-MyVerbose ('Configuration details: size={0} bytes, modified={1:u}' -f $cfgItem.Length, $cfgItem.LastWriteTimeUtc)
+            } catch {
+                Write-MyWarning ('Configuration file cannot be resolved: {0} ({1})' -f $cfgResolved, $_.Exception.Message)
+            }
+        } else {
+            Write-MyWarning 'Autopilot mode active but no configuration file path recorded.'
+        }
+    }
 
     if ( $Autopilot -and $State["InstallPhase"] -gt 1) {
         # Wait a little before proceeding
@@ -8812,6 +9051,11 @@ $body
     Test-Preflight
 
     Write-MyVerbose "Logging to $($State["TranscriptFile"])"
+
+    if ($State['LogDebug']) {
+        Write-MyVerbose ('PS {0} on {1} (64-bit: {2}) - PID {3} - User {4}\{5}' -f $PSVersionTable.PSVersion, [Environment]::OSVersion.VersionString, [Environment]::Is64BitProcess, $PID, $env:USERDOMAIN, $env:USERNAME)
+        Write-MyVerbose 'Suppressed errors (-ErrorAction SilentlyContinue, 2>$null) will be flushed to the log tagged [SUPPRESSED-ERROR].'
+    }
 
     # Get rid of the security dialog when spawning exe's etc.
     Disable-OpenFileSecurityWarning
@@ -8997,20 +9241,20 @@ $body
                     exit $ERR_UNEXPECTEDOS
                 }
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Windows Features + .NET' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 7: Windows Features + .NET' -PercentComplete 0
                 Disable-IEESC
                 Disable-ServerManagerAtLogon
                 Write-MyOutput "Installing Operating System prerequisites"
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Installing Windows Features' -PercentComplete 10
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 7: Installing Windows Features' -PercentComplete 10
                 Install-WindowsFeatures $MajorOSVersion
 
                 if ($State['CopyServerConfig']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Exporting source server config' -PercentComplete 80
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 7: Exporting source server config' -PercentComplete 80
                     Export-SourceServerConfig $State['CopyServerConfig']
                 }
 
                 # Install pending Windows Updates before rebooting (if requested)
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Windows Updates' -PercentComplete 90
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 7: Windows Updates' -PercentComplete 90
                 Install-PendingWindowsUpdates
                 Write-MyVerbose ('Phase 1 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
@@ -9018,12 +9262,12 @@ $body
 
             2 {
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Prerequisites' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 7: Prerequisites' -PercentComplete 0
                 Write-MyOutput "Installing BITS module"
                 Import-Module BITSTransfer
 
                 # Check .NET FrameWork 4.8.1 needs to be installed
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: .NET Framework' -PercentComplete 10
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 7: .NET Framework' -PercentComplete 10
                 if ( $State["Install481"]) {
 
                     Remove-NETFrameworkInstallBlock '4.8.1' '-' '481'
@@ -9056,7 +9300,7 @@ $body
                 }
 
                 # Check if need to install VC++ Runtimes
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Visual C++ Runtimes' -PercentComplete 50
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 7: Visual C++ Runtimes' -PercentComplete 50
                 # VC++ 2012 (v11.0): required for Exchange 2016 CU23, Exchange 2019, SE and Edge Transport role (flagged by HealthChecker)
                 if ( -not (Get-VCRuntime -version '11.0') -and $State["VCRedist2012"] ) {
                     Install-MyPackage "" "Visual C++ 2012 Redistributable" "vcredist_x64_2012.exe" "https://download.microsoft.com/download/1/6/B/16B06F60-3B20-4FF2-B699-5E9B7962F9AE/VSU_4/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
@@ -9077,7 +9321,7 @@ $body
                 }
 
                 # URL Rewrite module
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: URL Rewrite Module' -PercentComplete 80
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 7: URL Rewrite Module' -PercentComplete 80
                 Install-MyPackage "{9BCA2118-F753-4A1E-BCF3-5A820729965C}" "URL Rewrite Module 2.1" "rewrite_amd64_en-US.msi" "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi" ("/quiet", "/norestart")
                 Write-MyVerbose ('Phase 2 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
@@ -9086,10 +9330,10 @@ $body
 
             3 {
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: Prerequisites (continued)' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 7: Prerequisites (continued)' -PercentComplete 0
                 if ( !($State['InstallEdge'])) {
                     Write-MyOutput "Installing Exchange prerequisites (continued)"
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: UCMA Runtime' -PercentComplete 20
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 7: UCMA Runtime' -PercentComplete 20
                     if ( [System.Version]$FullOSVersion -ge [System.Version]$WS2019_PREFULL -and (Test-ServerCore) ) {
                         Install-MyPackage "{41D635FE-4F9D-47F7-8230-9B29D6D42D31}" "Unified Communications Managed API 4.0 Runtime (Core)" "Setup.exe" (Join-Path -Path $State['SourcePath'] -ChildPath 'UcmaRedist\Setup.exe') ("/passive", "/norestart") -NoDownload
                     }
@@ -9102,7 +9346,7 @@ $body
                     Set-EdgeDNSSuffix -DNSSuffix $State['EdgeDNSSuffix']
                 }
                 if ($State["OrganizationName"]) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: Checking Active Directory' -PercentComplete 60
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 7: Checking Active Directory' -PercentComplete 60
                     $adPrepRan = Initialize-Exchange
                     if ($adPrepRan) {
                         Wait-ADReplication
@@ -9115,7 +9359,7 @@ $body
             4 {
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
                 Write-MyOutput "Installing Exchange"
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 6: Running Exchange Setup (this may take 30-60 min)' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 7: Running Exchange Setup (this may take 30-60 min)' -PercentComplete 0
 
                 switch ( $State["SCP"]) {
                     '' {
@@ -9135,7 +9379,7 @@ $body
 
                 # Cleanup any background jobs
                 Stop-BackgroundJobs
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 6: Configuring transport services' -PercentComplete 95
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 7: Configuring transport services' -PercentComplete 95
 
                 if ( Get-Service MSExchangeTransport -ErrorAction SilentlyContinue) {
                     Write-MyOutput "Configuring MSExchangeTransport startup to Manual"
@@ -9165,10 +9409,12 @@ $body
                     'CRL timeout', 'TLS / Schannel', 'Root CA auto-update', 'Exchange module + search tuning',
                     'Security hardening', 'Org/Transport optimizations', 'IANA timezone mapping',
                     'SSL offloading', 'Extended Protection', 'MRS Proxy', 'MAPI encryption',
-                    'Exchange SU', 'Server config import', 'Certificate', 'HSTS header', 'EOMT'
+                    'Certificate', 'HSTS header', 'Exchange SU', 'Server config import', 'EOMT'
                 )
                 $p5Total = $p5Steps.Count; $p5Step = 0
                 $p5Sw = [Diagnostics.Stopwatch]::new(); $p5LastDesc = $null
+                $script:p5NeedsIisRestart = $false   # set to $true by Enable-ECC/CBC/AMSI if they change anything; cleared after batched restart
+                $p5DidIisRestart = $false            # latched true when the batched restart actually fires; used to gate Reconnect-ExchangeSession
                 function Step-P5($desc) {
                     if ($script:p5LastDesc) {
                         Write-MyVerbose ('{0} took {1:F1}s' -f $script:p5LastDesc, $script:p5Sw.Elapsed.TotalSeconds)
@@ -9176,10 +9422,10 @@ $body
                     $script:p5LastDesc = $desc
                     $script:p5Sw.Restart()
                     $script:p5Step++
-                    Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 6: Post-configuration' -Status $desc -PercentComplete ($script:p5Step * 100 / $script:p5Total)
+                    Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 7: Post-configuration' -Status $desc -PercentComplete ($script:p5Step * 100 / $script:p5Total)
                 }
 
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 5 of 6: Post-configuration' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 5 of 7: Post-configuration' -PercentComplete 0
                 Step-P5 'Windows Defender exclusions';  Enable-WindowsDefenderExclusions
                 Step-P5 'Power plan';                   Enable-HighPerformancePowerPlan
                 Step-P5 'NIC power management';         Disable-NICPowerManagement
@@ -9233,6 +9479,16 @@ $body
                     Enable-AMSI
                 }
 
+                # ECC / CBC / AMSI each set $p5NeedsIisRestart instead of restarting W3SVC/WAS
+                # themselves so that at most ONE restart + ONE reconnect is needed regardless of
+                # how many of the three settings were actually changed.
+                if ($script:p5NeedsIisRestart) {
+                    Write-MyVerbose 'Restarting W3SVC and WAS (batched: ECC/CBC/AMSI SettingOverride changes)'
+                    Restart-Service -Name W3SVC, WAS -Force -WarningAction SilentlyContinue
+                    $script:p5NeedsIisRestart = $false
+                    $p5DidIisRestart = $true
+                }
+
                 if ( $State["InstallMailbox"] ) {
                     # Insert your own Mailbox Server code here
                 }
@@ -9244,8 +9500,10 @@ $body
                 # Org / Transport optimizations (interactive menu or Autopilot defaults)
                 if (-not $State['InstallEdge']) {
                     Step-P5 'Org/Transport optimizations'
-                    # ECC/CBC/AMSI above may have restarted W3SVC, killing the implicit-remoting session.
-                    if ($State['EnableECC'] -or $State['EnableCBC'] -or $State['EnableAMSI']) {
+                    # Reconnect only when W3SVC/WAS was actually restarted above — not on every run.
+                    # Reconnect-ExchangeSession tears down the existing session unconditionally and
+                    # waits up to 90 s for the endpoint; calling it without a restart wastes that time.
+                    if ($p5DidIisRestart) {
                         Reconnect-ExchangeSession
                     }
                     Invoke-ExchangeOptimizations
@@ -9269,6 +9527,28 @@ $body
                     Set-MAPIEncryptionRequired
                 }
 
+                # Import PFX certificate — must run BEFORE Exchange SU; the SU installer restarts
+                # Exchange services (and possibly W3SVC) which kills the EMS session. Certificate
+                # import uses Import-ExchangeCertificate / Enable-ExchangeCertificate (EMS cmdlets)
+                # so it must complete while the session established above is still alive.
+                Step-P5 'PFX certificate import'
+                if ($State['CertificatePath']) {
+                    Import-ExchangeCertificateFromPFX
+                }
+
+                # HSTS header — only when a certificate was imported (avoid browser lockout with self-signed cert)
+                # Kept immediately after cert import; no EMS required (WebAdministration module).
+                Step-P5 'HSTS header'
+                if ($State['CertificatePath']) {
+                    Set-HSTSHeader
+                }
+                else {
+                    Write-MyVerbose 'No CertificatePath specified — skipping HSTS (requires valid certificate to avoid browser lockout)'
+                }
+
+                # Exchange Security Updates — installer restarts Exchange services (and may restart
+                # W3SVC), which kills the EMS session. All EMS-dependent operations above must be
+                # complete before this block. No EMS required after this point in Phase 5.
                 Step-P5 'Exchange Security Updates'
                 if ( $State["IncludeFixes"]) {
                     Write-MyOutput "Installing additional recommended hotfixes and security updates for Exchange"
@@ -9296,33 +9576,18 @@ $body
                 # Install Exchange Security Update if available and requested
                 Install-ExchangeSecurityUpdate
 
-                # Import server configuration from source server
+                # Import server configuration from source server (no EMS required)
                 Step-P5 'Server configuration import'
                 if ($State['CopyServerConfig'] -and $State['ServerConfigExportPath']) {
                     Import-ServerConfig
                 }
 
-                # Import PFX certificate
-                Step-P5 'PFX certificate import'
-                if ($State['CertificatePath']) {
-                    Import-ExchangeCertificateFromPFX
-                }
-
-                # HSTS header — only when a certificate was imported (avoid browser lockout with self-signed cert)
-                Step-P5 'HSTS header'
-                if ($State['CertificatePath']) {
-                    Set-HSTSHeader
-                }
-                else {
-                    Write-MyVerbose 'No CertificatePath specified — skipping HSTS (requires valid certificate to avoid browser lockout)'
-                }
-
-                # EOMT — optional CVE mitigation tool
+                # EOMT — optional CVE mitigation tool (no EMS required)
                 Step-P5 'EOMT'
                 Invoke-EOMT
                 if ($p5LastDesc) { Write-MyVerbose ('{0} took {1:F1}s' -f $p5LastDesc, $p5Sw.Elapsed.TotalSeconds) }
 
-                Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 6: Post-configuration' -Completed
+                Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 7: Post-configuration' -Completed
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
@@ -9485,7 +9750,13 @@ $body
                     # B16: wrap in try/catch so a crash inside New-InstallationReport does not
                     # propagate to the global trap { break } and kill the script before the
                     # "We're good to go" message and phase-end reboot logic run.
-                    try { New-InstallationReport } catch { Write-MyWarning ('Installation Report failed: {0}' -f $_.Exception.Message) }
+                    try { New-InstallationReport } catch {
+                        $ierr = $_
+                        Write-MyWarning ('Installation Report failed: ' + $ierr.Exception.Message)
+                        $sln = if ($ierr.InvocationInfo) { $ierr.InvocationInfo.ScriptLineNumber } else { '?' }
+                        $sli = if ($ierr.InvocationInfo) { ($ierr.InvocationInfo.Line -replace '\s+', ' ').Trim() } else { '' }
+                        Write-MyWarning ('  at line ' + $sln + ': ' + $sli)
+                    }
 
                     if (-not $State['NoWordDoc']) {
                         Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: Word Installation Document' -PercentComplete 85
