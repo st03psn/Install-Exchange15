@@ -5644,7 +5644,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         }
     }
 
-    # ── OpenXML Engine (shared with tools/Build-KonzeptTemplate.ps1) ─────────────
+    # ── OpenXML Engine (shared with tools/Build-ConceptTemplate.ps1) ─────────────
     # Pure PowerShell, no Office/COM required. PS2Exe-safe.
 
     function Invoke-XmlEscape { param([string]$Text) [Security.SecurityElement]::Escape([string]$Text) }

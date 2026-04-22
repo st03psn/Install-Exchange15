@@ -100,7 +100,7 @@ Consistent sorting in Explorer; all artefacts from a single installation run are
 - F22: `New-InstallationDocument` — generates a Word (.docx) installation report after Phase 6 using a pure-PowerShell OpenXML engine (no Office/COM); 15 chapters covering installation parameters, system details, network, AD, Exchange configuration, hardening, backup readiness, HealthChecker, monitoring, hybrid, public folders, executed cmdlets, and runbooks; CustomerDocument mode redacts RFC1918 IPs, certificate thumbprints, and passwords
 - F22: New parameters `–NoWordDoc`, `–StandaloneDocument`, `–CustomerDocument`, `–Language` (DE/EN)
 - F22: `–StandaloneDocument` mode (menu mode 7) runs Phase 1-only: loads Exchange module and generates document on existing servers without full install
-- F23: `tools/Build-KonzeptTemplate.ps1` — pure-PowerShell OpenXML generator for DE + EN concept / approval document templates; 16 chapters (architecture, sizing, security, migration, hybrid, compliance, questionnaire, approval page); output: `templates/Exchange-concept-template-DE.docx` + `…-EN.docx`; Exchange SE only (2016/2019 out-of-support since 14.10.2025)
+- F23: `tools/Build-ConceptTemplate.ps1` — pure-PowerShell OpenXML generator for DE + EN concept / approval document templates; 16 chapters (architecture, sizing, security, migration, hybrid, compliance, questionnaire, approval page); output: `templates/Exchange-concept-template-DE.docx` + `…-EN.docx`; Exchange SE only (2016/2019 out-of-support since 14.10.2025)
 
 ---
 

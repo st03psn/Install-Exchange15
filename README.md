@@ -282,7 +282,7 @@ The following best-practice configurations are automatically applied after Excha
 - **`-Language`** — selects document language: `DE` (default) or `EN`
 - **`-NoWordDoc`** — skip Word document generation when not needed
 - **`-StandaloneDocument`** (menu mode 7) — generates the Word document on an existing Exchange server without running the install flow; just loads the Exchange module and writes the document
-- **Concept / approval document templates** (`tools/Build-KonzeptTemplate.ps1`) — generates two static Word templates (`templates/Exchange-concept-template-DE.docx` + `-EN.docx`) covering 16 chapters: architecture, sizing, security, message hygiene, backup/DR, monitoring, migration, hybrid, public folders, compliance, mobile, questionnaire, and approval page; Exchange SE only (Exchange 2016/2019 are out-of-support since 14 October 2025)
+- **Concept / approval document templates** (`tools/Build-ConceptTemplate.ps1`) — generates two static Word templates (`templates/Exchange-concept-template-DE.docx` + `-EN.docx`) covering 16 chapters: architecture, sizing, security, message hygiene, backup/DR, monitoring, migration, hybrid, public folders, compliance, mobile, questionnaire, and approval page; Exchange SE only (Exchange 2016/2019 are out-of-support since 14 October 2025)
 
 ### v5.81 — April 2026
 - **Installation Report FormatException (complete fix)** — root cause was `New-HtmlSection`, `Format-Badge`, `Format-RefLink`, and all section assembly lines using `-f` with dynamic Exchange data; any user-defined value containing `{n}` (connector name, cert SAN, policy value) caused `String.Format` to throw; all formatting converted to string concatenation

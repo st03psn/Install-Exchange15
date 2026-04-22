@@ -9,7 +9,7 @@
     Uses pure PowerShell OpenXML-ZIP — no Office/COM dependencies.
 
     .EXAMPLE
-    .\tools\Build-KonzeptTemplate.ps1
+    .\tools\Build-ConceptTemplate.ps1
 #>
 [CmdletBinding()]
 param()
@@ -708,7 +708,7 @@ function Get-F23Parts {
         @(($DE ? 'Gesamtausfall / Desaster' : 'Total outage / disaster'), ($DE ? 'Exchange SE kann auf neuem Windows-Server per RecoverServer neu installiert werden; DB aus Backup einspielen' : 'Exchange SE can be reinstalled on new Windows Server via RecoverServer; restore DB from backup'), (Add-WordContentControl 'dr_rto_full' ($DE ? 'RTO: geplante Zeit lt. Backup-Strategie' : 'RTO: planned time per backup strategy')))
     )))
 
-    # ── 9. Monitoring-Konzept ─────────────────────────────────────────────────────
+    # ── 9. Monitoring Concept ─────────────────────────────────────────────────────
     $null = $parts.Add((Add-WordHeading ($DE ? '9. Monitoring-Konzept' : '9. Monitoring Concept') 1))
     $null = $parts.Add((Add-WordTable -Headers @(($DE ? 'Eigenschaft' : 'Property'), ($DE ? 'Wert' : 'Value')) -Rows @(
         @(($DE ? 'Monitoring-Lösung' : 'Monitoring solution'), (Add-WordContentControl 'mon_solution' ($DE ? 'z.B. PRTG, Checkmk, SCOM, Zabbix' : 'e.g. PRTG, Checkmk, SCOM, Zabbix')))
@@ -813,7 +813,7 @@ function Get-F23Parts {
     )
     $null = $parts.Add((Add-WordQuestionnaireTable -ColNr 'Nr.' -ColFrage ($DE ? 'Frage' : 'Question') -ColAntwort ($DE ? 'Antwort' : 'Answer') -Questions $questions))
 
-    # ── 16. Freigabeseite ──────────────────────────────────────────────────────────
+    # ── 16. Approval Page ──────────────────────────────────────────────────────────
     $null = $parts.Add((Add-WordHeading ($DE ? '16. Freigabeseite' : '16. Approval Page') 1))
     $null = $parts.Add((Add-WordParagraph ($DE ? 'Mit Unterzeichnung bestätigen die Beteiligten, dass sie das Konzept- und Freigabedokument geprüft haben und der Umsetzung zustimmen.' : 'By signing, the parties confirm that they have reviewed this concept and approval document and agree to proceed.')))
     $null = $parts.Add((Add-WordParagraph ''))
