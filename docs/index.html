@@ -260,7 +260,7 @@ footer a:hover { text-decoration: underline; }
 <section class="hero">
   <div class="hero-logo">EX</div>
   <h1><strong>EXpress</strong></h1>
-  <p style="font-size:14px;opacity:.55;margin-bottom:8px;letter-spacing:.5px">Install-Exchange15.ps1</p>
+  <p style="font-size:14px;opacity:.55;margin-bottom:8px;letter-spacing:.5px">EXpress.ps1</p>
   <p class="tagline">
     The fastest way to get Exchange Server production-ready —
     nobody gets from bare Windows Server to a fully installed, hardened, and optimised Exchange
@@ -268,16 +268,16 @@ footer a:hover { text-decoration: underline; }
     one script, one command, done.
   </p>
   <div class="badge-row">
-    <span class="badge"><span class="dot"></span> v5.82 — April 2026</span>
+    <span class="badge"><span class="dot"></span> v1.0 — coming soon</span>
     <span class="badge">⚡ Express deployment</span>
     <span class="badge">🛡 Exchange SE / 2019 / 2016</span>
     <span class="badge">🔄 AutoPilot — auto-reboot</span>
   </div>
   <div class="btn-row">
-    <a href="https://github.com/st03ps/Install-Exchange15" class="btn btn-primary">
+    <a href="https://github.com/st03ps/EXpress" class="btn btn-primary">
       📦 View on GitHub
     </a>
-    <a href="https://github.com/st03ps/Install-Exchange15/raw/master/Install-Exchange15.ps1" class="btn btn-secondary">
+    <a href="https://github.com/st03ps/EXpress/raw/master/EXpress.ps1" class="btn btn-secondary">
       ⬇ Download Script
     </a>
   </div>
@@ -460,7 +460,7 @@ footer a:hover { text-decoration: underline; }
           <p>HealthChecker runs automatically. Results are embedded in the installation report alongside every security setting and its best-practice recommendation.</p>
           <p>Complete HTML installation report generated at the end — proof of everything that was configured, no manual documentation required.</p>
           <p>Word installation document (.docx) generated automatically alongside the HTML report — pure PowerShell, no Office required. DE/EN, customer-ready redaction mode included.</p>
-          <code>.\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1</code>
+          <code>.\EXpress.ps1 -ConfigFile .\deploy-mbx01.psd1</code>
         </div>
       </div>
     </div>
@@ -536,33 +536,33 @@ footer a:hover { text-decoration: underline; }
 
     <div class="code-block">
 <span class="comment"># CoPilot — interactive guided menu (recommended for first run)</span>
-<span class="cmd">.\Install-Exchange15.ps1</span>
+<span class="cmd">.\EXpress.ps1</span>
 
 <span class="comment"># AutoPilot — fully unattended, handles every reboot automatically</span>
-<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span> <span class="param">-AutoPilot</span>
+<span class="cmd">.\EXpress.ps1</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span> <span class="param">-AutoPilot</span>
 
 <span class="comment"># AutoPilot farm deployment — predefined config, run on N machines in parallel</span>
-<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-ConfigFile</span> <span class="val">.\deploy-mbx01.psd1</span>
+<span class="cmd">.\EXpress.ps1</span> <span class="param">-ConfigFile</span> <span class="val">.\deploy-mbx01.psd1</span>
 
 <span class="comment"># Swing migration — copy config from source, import certificate, join DAG</span>
-<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span> <span class="param">-AutoPilot</span> `
+<span class="cmd">.\EXpress.ps1</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span> <span class="param">-AutoPilot</span> `
     <span class="param">-CopyServerConfig</span> <span class="val">EX01</span> <span class="param">-CertificatePath</span> <span class="val">D:\certs\mail.pfx</span> <span class="param">-DAGName</span> <span class="val">DAG01</span>
 
 <span class="comment"># Recipient Management Tools on an admin workstation</span>
-<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-InstallRecipientManagement</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span>
+<span class="cmd">.\EXpress.ps1</span> <span class="param">-InstallRecipientManagement</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span>
 
 <span class="comment"># Management Tools only — hybrid AD object management (Windows 11 / member server)</span>
-<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-InstallManagementTools</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span>
+<span class="cmd">.\EXpress.ps1</span> <span class="param">-InstallManagementTools</span> <span class="param">-SourcePath</span> <span class="val">D:\Exchange</span>
 
 <span class="comment"># StandaloneOptimize — harden &amp; tune an already-installed Exchange server</span>
-<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-StandaloneOptimize</span> <span class="param">-Namespace</span> <span class="val">mail.contoso.com</span> `
+<span class="cmd">.\EXpress.ps1</span> <span class="param">-StandaloneOptimize</span> <span class="param">-Namespace</span> <span class="val">mail.contoso.com</span> `
     <span class="param">-CertificatePath</span> <span class="val">C:\certs\mail.pfx</span> <span class="param">-LogRetentionDays</span> <span class="val">30</span>
 
 <span class="comment"># Generate Word installation document on an existing server (DE or EN)</span>
-<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-StandaloneDocument</span> <span class="param">-Language</span> <span class="val">EN</span>
+<span class="cmd">.\EXpress.ps1</span> <span class="param">-StandaloneDocument</span> <span class="param">-Language</span> <span class="val">EN</span>
 
 <span class="comment"># Customer-ready document — IPs and sensitive values redacted</span>
-<span class="cmd">.\Install-Exchange15.ps1</span> <span class="param">-StandaloneDocument</span> <span class="param">-Language</span> <span class="val">DE</span> <span class="param">-CustomerDocument</span>
+<span class="cmd">.\EXpress.ps1</span> <span class="param">-StandaloneDocument</span> <span class="param">-Language</span> <span class="val">DE</span> <span class="param">-CustomerDocument</span>
 
 <span class="comment"># Compile to self-contained .exe (PS2Exe)</span>
 <span class="cmd">.\Build.ps1</span>
@@ -588,7 +588,7 @@ footer a:hover { text-decoration: underline; }
         <div class="mockup-logo">EX</div>
         <div>
           <div class="mockup-title">Exchange Server Installation Report</div>
-          <small>Generated by Install-Exchange15.ps1 v5.82</small>
+          <small>Generated by EXpress.ps1 v1.0</small>
         </div>
       </div>
       <div class="mockup-summary">
@@ -665,13 +665,13 @@ footer a:hover { text-decoration: underline; }
 <!-- ═══ FOOTER ════════════════════════════════════════════════════════════ -->
 <footer>
   <div class="footer-links">
-    <a href="https://github.com/st03ps/Install-Exchange15">GitHub Repository</a>
-    <a href="https://github.com/st03ps/Install-Exchange15/blob/master/README.md">Documentation</a>
-    <a href="https://github.com/st03ps/Install-Exchange15/raw/master/deploy-example.psd1">Config Template</a>
+    <a href="https://github.com/st03ps/EXpress">GitHub Repository</a>
+    <a href="https://github.com/st03ps/EXpress/blob/master/README.md">Documentation</a>
+    <a href="https://github.com/st03ps/EXpress/raw/master/deploy-example.psd1">Config Template</a>
     <a href="https://github.com/microsoft/CSS-Exchange">CSS-Exchange</a>
   </div>
   <p>
-    EXpress / Install-Exchange15.ps1 &bull; Maintainer: <strong style="color:#c8c6c4">st03ps</strong> &bull;
+    EXpress.ps1 &bull; Maintainer: <strong style="color:#c8c6c4">st03ps</strong> &bull;
     Based on original work by <a href="http://eightwone.com">Michel de Rooij</a> &bull;
     AS-IS, without warranty
   </p>
