@@ -1,10 +1,10 @@
 #Requires -Version 5.1
 <#
     .SYNOPSIS
-    Generates Exchange Server Konzept-/Freigabedokument templates (F23 DE + EN).
+    Generates Exchange Server concept / approval document templates (F23 DE + EN).
 
     .DESCRIPTION
-    Run by the maintainer to produce templates/Exchange-Konzept-Vorlage-DE.docx and -EN.docx.
+    Run by the maintainer to produce templates/Exchange-concept-template-DE.docx and -EN.docx.
     Outputs are committed to the repository and distributed with EXpress.
     Uses pure PowerShell OpenXML-ZIP — no Office/COM dependencies.
 
@@ -832,8 +832,8 @@ $repoRoot     = Split-Path $PSScriptRoot -Parent
 $templatesDir = Join-Path $repoRoot 'templates'
 if (-not (Test-Path $templatesDir)) { New-Item $templatesDir -ItemType Directory -Force | Out-Null }
 
-Write-Host 'Generating Exchange-Konzept-Vorlage-DE.docx...'
-$pathDE = Join-Path $templatesDir 'Exchange-Konzept-Vorlage-DE.docx'
+Write-Host 'Generating Exchange-concept-template-DE.docx...'
+$pathDE = Join-Path $templatesDir 'Exchange-concept-template-DE.docx'
 New-WordDocument -OutputPath $pathDE `
     -BodyParts (Get-F23Parts 'DE') `
     -Title 'Exchange Server Konzept- und Freigabedokument' `
@@ -841,8 +841,8 @@ New-WordDocument -OutputPath $pathDE `
     -Creator 'EXpress'
 Write-Host "  -> $pathDE"
 
-Write-Host 'Generating Exchange-Konzept-Vorlage-EN.docx...'
-$pathEN = Join-Path $templatesDir 'Exchange-Konzept-Vorlage-EN.docx'
+Write-Host 'Generating Exchange-concept-template-EN.docx...'
+$pathEN = Join-Path $templatesDir 'Exchange-concept-template-EN.docx'
 New-WordDocument -OutputPath $pathEN `
     -BodyParts (Get-F23Parts 'EN') `
     -Title 'Exchange Server Concept and Approval Document' `

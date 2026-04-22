@@ -6,13 +6,13 @@ Pre-built Word templates for Exchange Server planning and approval projects.
 
 | File | Language | Purpose |
 |---|---|---|
-| `Exchange-Konzept-Vorlage-DE.docx` | German | Konzept- und Freigabedokument |
-| `Exchange-Konzept-Vorlage-EN.docx` | English | Concept and Approval Document |
+| `Exchange-concept-template-DE.docx` | German | Concept and Approval Document (German edition) |
+| `Exchange-concept-template-EN.docx` | English | Concept and Approval Document (English edition) |
 
 ## Usage
 
 1. Copy the template for your project language.
-2. Rename to e.g. `Contoso_Exchange-Konzept_v1.0.docx`.
+2. Rename to e.g. `Contoso_Exchange-concept_v1.0.docx`.
 3. Fill in all **content controls** (blue placeholder text) using Word or LibreOffice.
 4. Complete the **Questionnaire (Chapter 15)** — all open items from Chapters 3–14.
 5. Collect signatures on the **Approval Page (Chapter 16)** before proceeding.
@@ -54,5 +54,5 @@ Run as the maintainer after structural changes to the template, then commit the 
 ```powershell
 .\tools\Build-KonzeptTemplate.ps1
 git add templates/
-git commit -m "templates: regenerate Konzept-Vorlage DE + EN"
+git commit -m "templates: regenerate concept templates DE + EN"
 ```
