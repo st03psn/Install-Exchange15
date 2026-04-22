@@ -4,6 +4,76 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.85 (2026-04-22)
+
+### Conditional Phase 2→3 reboot
+
+New helper `Test-RebootPending` inspects Windows' standard pending-reboot signals:
+
+- `HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending`
+- `HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired`
+- `HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\PendingFileRenameOperations`
+- Pending computer rename (`ActiveComputerName` ≠ `ComputerName`)
+- CCM ClientSDK `DetermineIfRebootPending` (SCCM-managed hosts)
+
+After Phase 2 completes in Autopilot, the main phase loop calls `Test-RebootPending`. If nothing is pending, `InstallPhase` is advanced to 3 and `Save-State` persists the advance; the loop re-enters the `switch` and runs Phase 3 in the same process — no reboot, no RunOnce hop.
+
+**When this saves a reboot:** WS2025 + Exchange SE (or any combination where .NET 4.8.1 is already present). VC++ 2012/2013 and URL Rewrite don't set reboot flags. On WS2016/WS2019/WS2022 where .NET 4.8 / 4.8.1 is actually installed, CBS or PendingFileRenameOperations will be set and the existing reboot path runs unchanged.
+
+**Crash recovery:** because `LastSuccessfulPhase=2` and `InstallPhase=3` are saved before Phase 3 runs, a Phase 3 crash still resumes correctly at Phase 3 on the next start.
+
+### Conditional Phase 5→6 reboot
+
+Same mechanism applied to the Phase 5 → Phase 6 boundary: the reboot runs only when `$State['RebootRequired']` is set (Exchange SU installer returned exit code 3010) **or** `Test-RebootPending` reports a pending reboot from any other source. Phase 5 otherwise only writes registry values and IIS settings that don't require a reboot, so HealthChecker / Installation Report / Word Document (Phase 6) can run immediately in the same process.
+
+### Antispam install output routing
+
+`Install-AntispamAgents` no longer redirects all streams from `Install-AntispamAgents.ps1` into `Out-Null`. The previous approach (`*>&1 | Out-Null` + `$WarningPreference = 'Ignore'` + `$PSDefaultParameterValues['*:WarningAction']`) had two problems: it suppressed the legitimate output — the agent-configuration table we want to keep — and it did not suppress warnings emitted via `$host.UI.WriteWarningLine` (which bypass the pipeline).
+
+The new approach captures all streams into a single merged record list and routes by record type:
+
+- `WarningRecord` / `VerboseRecord` / `DebugRecord` → `Write-MyVerbose` (log only, no console)
+- `ErrorRecord` → `Write-MyWarning`
+- `InformationRecord` → `Write-MyOutput`
+- Everything else (the agent-configuration table, success messages) → `Write-MyOutput` with `[antispam]` prefix
+
+The `$WarningPreference` / `$PSDefaultParameterValues` gymnastics are removed — record-level filtering is deterministic and does not rely on stream preferences that Exchange scripts reset locally.
+
+### Phase 7 merged back into Phase 6
+
+`MAX_PHASE` reverted to 6; HealthChecker, Installation Report, and Word Installation Document all run at the end of Phase 6 again. The short-lived Phase 7 split (introduced for the "Exchange Server Membership" HC finding on same-session runs) is removed — the real cause is Domain-Controller specific and is now surfaced through a clarifying warning instead.
+
+### HealthChecker on Domain Controllers
+
+`Invoke-HealthChecker` now queries `Win32_ComputerSystem.DomainRole` and emits an explicit warning when the install target is a Domain Controller (role 4/5). HC's "Exchange Server Membership" check enumerates `Win32_GroupUser` for the local "Exchange Servers" / "Exchange Trusted Subsystem" groups, which don't exist on DCs — the SAM database is replaced by AD. The finding is therefore not actionable on DCs and the warning makes that explicit.
+
+The previous `klist purge` workaround (attempted token refresh) is removed; it never addressed the real cause.
+
+### VC++ 2013 update URL
+
+`Install-MyPackage` for VC++ 2013 now uses `https://aka.ms/highdpimfc2013x64enu` which delivers 12.0.40664 (High-DPI aware MFC). The legacy GUID CDN URL (`CC2DF5F8-4454-44B4-802D-5EA68D086676/vcredist_x64.exe`) delivered 12.0.40660, which HealthChecker flags as outdated per `aka.ms/HC-LatestVC`. `Get-VCRuntime -version '12.0' -MinBuild '12.0.40664'` gates the install.
+
+### Word document — `New-WdTable` hardening
+
+PS 5.1 flattens literal `@(@('a','b'), @('c','d'))` to a single flat array when bound to `[object[][]]`. `New-WdTable` now:
+
+- Wraps each `$row` in `@($row)` so both `object[][]` (correct) and flattened-scalar (buggy) input produce valid rows
+- Pads short rows to the header width with empty cells
+
+The "Offene Punkte" callsite in `New-InstallationDocument` additionally uses the `,@(...)` prefix on each row literal.
+
+### VERBOSE console spam after Autopilot resume
+
+`$VerbosePreference = 'SilentlyContinue'` and `$DebugPreference = 'SilentlyContinue'` are now pinned at the very top of `process{}`, before any `Get-CimInstance` call. Previously the first `Get-CimInstance Win32_OperatingSystem` ran with the default `$VerbosePreference='Continue'` (set by PowerShell when `-Verbose` was on the command line — preserved across RunOnce relaunches), which spammed `VERBOSE: Perform operation 'Enumerate CimInstances' ...` to the console but not to the tiered log.
+
+Custom tier-aware logging (`Write-MyVerbose` / `Write-MyDebug`) is independent of the stream preferences — driven by `$State['LogVerbose']` / `$State['LogDebug']` flags set a few lines further down.
+
+### Menu confirmation
+
+Download Domain value is now logged next to Namespace in the post-menu summary, so an empty or mistyped entry is visible in the log for troubleshooting HC's Download Domains finding.
+
+---
+
 ## v5.84 (2026-04-22)
 
 ### F22 — Installation Documentation: org-wide + all servers (remote query)

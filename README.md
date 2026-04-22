@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.84 (April 2026, last updated 2026-04-22)
+**Version:** 5.85 (April 2026, last updated 2026-04-22)
 **License:** As-Is, without warranty
 
 ---
@@ -178,8 +178,9 @@ Log encoding is UTF-8 without BOM — so the file renders correctly in every vie
 
 ## Installation Phases
 
-The script runs through 7 phases (0–6) and saves state in an XML file to
-automatically resume after reboots:
+The script runs Phase 0 (preflight) once, then 6 install phases (1–6). State
+is persisted to XML so Autopilot automatically resumes at the correct phase
+after every reboot:
 
 ```
 Phase 0 → Preflight checks, pre-flight HTML report
@@ -188,8 +189,10 @@ Phase 2 → .NET Framework 4.8/4.8.1, OS hotfixes, Visual C++ Runtimes, URL Rewr
 Phase 3 → UCMA Runtime, Active Directory preparation (PrepareAD/PrepareSchema), AD replication check
 Phase 4 → Run Exchange Setup
 Phase 5 → Post-configuration (security hardening, performance tuning, certificate import, Exchange SU)
-Phase 6 → Start services, IIS health check, Virtual Directory URLs, DAG join, HealthChecker, HTML + PDF Installation Report, Word Installation Document, cleanup
+Phase 6 → Start services, IIS health check, Virtual Directory URLs, DAG join, connectors, HealthChecker, HTML + PDF Installation Report, Word Installation Document, cleanup
 ```
+
+Reboots between phases are conditional in Autopilot: Phase 1→2 always reboots (Windows features); Phase 2→3 skips the reboot when `Test-RebootPending` reports nothing pending (typical on WS2025 + Exchange SE); Phase 5→6 skips the reboot unless the Exchange SU set `RebootRequired` (exit code 3010) or Windows signals a pending reboot.
 
 Recipient Management / Management Tools modes use phases 0–2 only.
 
@@ -258,6 +261,17 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.85 — April 2026
+- **Conditional Phase 2→3 reboot** — new `Test-RebootPending` helper (CBS / WindowsUpdate / `PendingFileRenameOperations` / pending rename / CCM ClientSDK) gates the Autopilot reboot between Phase 2 and Phase 3; when nothing reboot-relevant was installed (typical on WS2025 + Exchange SE where .NET 4.8.1 ships in-box), Phase 3 runs directly in the same process — saves one reboot cycle
+- **Conditional Phase 5→6 reboot** — same mechanism applied between Phase 5 and Phase 6; reboot only runs when the Exchange SU returned exit code 3010 (`$State['RebootRequired']`) or `Test-RebootPending` detects a pending reboot from any other source. Phase 5 otherwise only changes registry/IIS settings that don't require a reboot
+- **Antispam install output routing** — `Install-AntispamAgents` now captures all streams from `Install-AntispamAgents.ps1` and routes by record type: `WarningRecord`/`VerboseRecord` → log only, `ErrorRecord` → `Write-MyWarning`, success + agent table → `Write-MyOutput` with `[antispam]` prefix. Previously `*>&1 | Out-Null` suppressed the legitimate agent-configuration table while implicit-remoting warnings still leaked through the host UI
+- **Phase 7 merged back into Phase 6** — HealthChecker, Installation Report, and Word Document now run in Phase 6 again (the short-lived Phase 7 split was introduced only as a workaround for HC "Exchange Server Membership"; the real cause is now addressed properly, see below); `MAX_PHASE` = 6
+- **HealthChecker on Domain Controllers** — `Invoke-HealthChecker` detects `DomainRole ≥ 4` (BDC/PDC) and emits a clarifying note: DCs have no local security groups (SAM replaced by AD), so HC's "Exchange Server Membership" check always shows failed/blank on DCs regardless of actual AD group membership. The previous `klist purge` workaround has been removed
+- **VC++ 2013 12.0.40664** — install URL switched to `aka.ms/highdpimfc2013x64enu` (High-DPI aware, 12.0.40664); the legacy GUID CDN URL delivered 12.0.40660 which HealthChecker flags as outdated
+- **Word document: table rendering** — `New-WdTable` normalises row arguments and pads short rows to header width; avoids PS 5.1 `[object[][]]` flattening that produced truncated tables (e.g. "Offene Punkte" chapter was rendered as a single column with 15 rows instead of 3 rows × 5 columns)
+- **VERBOSE console spam** — `$VerbosePreference` / `$DebugPreference` are now pinned to `SilentlyContinue` at the very top of `process{}` (before any CIM call); fixes the `VERBOSE: Perform operation 'Enumerate CimInstances'...` lines that leaked to the console after Autopilot reboot resumes initiated with `-Verbose`
+- **Menu confirmation** — Download Domain value now logged next to Namespace, so an empty/mistyped entry is visible in the log
 
 ### v5.84 — April 2026
 - **Word Document: organisation-wide + all servers** — `New-InstallationDocument` now documents the entire Exchange organisation, not only the local server; new chapter 4 covers org-wide configuration (Org-Config, Accepted/Remote Domains, E-Mail-Address Policies, Transport Rules, Transport Config, Journal/DLP/Retention, Mobile/OWA Policies, all DAGs with DB copies, org-scoped Send Connectors, Federation/Hybrid/OAuth, AuthConfig); new chapter 5 enumerates every Exchange server with identity, hardware details, databases, virtual directories, receive connectors, certificates, and transport agents
@@ -483,7 +497,7 @@ Code quality and robustness improvements; no new parameters.
 
 ## Notes
 
-- State file: `<InstallPath>\<ComputerName>_Install-Exchange15_state.xml` (default: `C:\Install\`)
+- State file: `<InstallPath>\<ComputerName>_State.xml` (default: `C:\Install\`)
 - Log file: `<InstallPath>\reports\<ComputerName>_InstallLog_<yyyyMMdd-HHmmss>.log` — tier-prefixed entries (`INFO` / `WARNING` / `ERROR` / `EXE`; `VERBOSE` with `-Verbose`; `DEBUG` + `SUPPRESSED-ERROR` with `-Debug`); UTF-8 without BOM; see **Logging** section above
 - Installation report (HTML): `<InstallPath>\reports\<ComputerName>_InstallationReport_<timestamp>.html` (+ `.pdf` if Edge available)
 - Installation document (Word): `<InstallPath>\reports\<ComputerName>_InstallationDocument_<DE|EN>_<timestamp>.docx`

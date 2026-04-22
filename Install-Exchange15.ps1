@@ -1287,7 +1287,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.84'
+    $ScriptVersion = '5.85'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -1680,6 +1680,38 @@ process {
     function Test-Admin {
         $currentPrincipal = New-Object System.Security.Principal.WindowsPrincipal( [Security.Principal.WindowsIdentity]::GetCurrent() )
         return $currentPrincipal.IsInRole( [Security.Principal.WindowsBuiltInRole]::Administrator )
+    }
+
+    function Test-RebootPending {
+        # Returns $true if Windows signals a pending reboot. Used to decide whether
+        # a phase boundary really needs to reboot, or if we can continue in-process.
+        $reasons = @()
+        if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') {
+            $reasons += 'CBS RebootPending'
+        }
+        if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') {
+            $reasons += 'WindowsUpdate RebootRequired'
+        }
+        $pfro = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name 'PendingFileRenameOperations' -ErrorAction SilentlyContinue
+        if ($pfro -and $pfro.PendingFileRenameOperations) {
+            $reasons += 'PendingFileRenameOperations'
+        }
+        $cn = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName' -Name 'ComputerName' -ErrorAction SilentlyContinue
+        $pcn = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName' -Name 'ComputerName' -ErrorAction SilentlyContinue
+        if ($cn -and $pcn -and $cn.ComputerName -ne $pcn.ComputerName) {
+            $reasons += 'Pending computer rename'
+        }
+        try {
+            $ccm = Invoke-CimMethod -Namespace 'ROOT\ccm\ClientSDK' -ClassName 'CCM_ClientUtilities' -MethodName 'DetermineIfRebootPending' -ErrorAction Stop
+            if ($ccm -and ($ccm.RebootPending -or $ccm.IsHardRebootPending)) {
+                $reasons += 'CCM ClientSDK'
+            }
+        } catch { }
+        if ($reasons.Count -gt 0) {
+            Write-MyVerbose ('Reboot pending: {0}' -f ($reasons -join ', '))
+            return $true
+        }
+        return $false
     }
 
     function Test-ADGroupMember ([int]$RelativeId) {
@@ -3763,25 +3795,68 @@ Write-Log 'Exchange log cleanup finished'
                           Where-Object { $_.Identity -like '*Filter*' -or $_.Identity -like '*Antispam*' }
         if (-not $existingAgents) {
             Write-MyOutput 'Installing Exchange antispam agents'
+            # Capture everything that bypasses the pipeline (Write-Host / $host.UI.WriteWarningLine /
+            # [Console]::WriteLine) by redirecting Console.Out + Console.Error to StringWriters.
+            # Combined with *>&1 this catches both stream-based and host-UI-based output.
+            $capOut    = [System.IO.StringWriter]::new()
+            $capErr    = [System.IO.StringWriter]::new()
+            $origOut   = [System.Console]::Out
+            $origErr   = [System.Console]::Error
+            $records   = $null
             try {
-                # $PSDefaultParameterValues['*:WarningAction'] has higher precedence than $WarningPreference
-                # and overrides any internal $WarningPreference reset inside Install-AntispamAgents.ps1
-                $savedWP  = $WarningPreference;  $WarningPreference = 'Ignore'
-                $waKey    = '*:WarningAction'
-                $savedWA  = $PSDefaultParameterValues[$waKey]
-                $PSDefaultParameterValues[$waKey] = 'Ignore'
-                & $installScript *>&1 | Out-Null
-                $PSDefaultParameterValues[$waKey] = $savedWA
-                if ($null -eq $savedWA) { $null = $PSDefaultParameterValues.Remove($waKey) }
-                $WarningPreference = $savedWP
-                Write-MyVerbose 'Restarting MSExchangeTransport after antispam agent install'
-                Restart-Service MSExchangeTransport -Force -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-                Write-MyVerbose 'MSExchangeTransport restarted after antispam agent install'
+                [System.Console]::SetOut($capOut)
+                [System.Console]::SetError($capErr)
+                $records = & $installScript *>&1
             }
             catch {
+                [System.Console]::SetOut($origOut)
+                [System.Console]::SetError($origErr)
                 Write-MyWarning ('Failed to install antispam agents: {0}' -f $_.Exception.Message)
                 return
             }
+            finally {
+                [System.Console]::SetOut($origOut)
+                [System.Console]::SetError($origErr)
+            }
+
+            # Route pipeline records: warnings/verbose to log only, everything else to stdout
+            foreach ($r in $records) {
+                if ($null -eq $r) { continue }
+                if ($r -is [System.Management.Automation.WarningRecord]) {
+                    Write-MyVerbose ('[antispam] WARN: {0}' -f $r.Message)
+                }
+                elseif ($r -is [System.Management.Automation.ErrorRecord]) {
+                    Write-MyWarning ('[antispam] {0}' -f $r.Exception.Message)
+                }
+                elseif ($r -is [System.Management.Automation.VerboseRecord] -or
+                        $r -is [System.Management.Automation.DebugRecord]) {
+                    Write-MyVerbose ('[antispam] {0}' -f $r.Message)
+                }
+                elseif ($r -is [System.Management.Automation.InformationRecord]) {
+                    Write-MyOutput ('[antispam] {0}' -f $r.MessageData)
+                }
+                else {
+                    $line = ($r | Out-String).TrimEnd()
+                    if ($line) { Write-MyOutput ('[antispam] {0}' -f $line) }
+                }
+            }
+
+            # Route host-UI output captured via Console redirection
+            foreach ($captured in @($capOut.ToString(), $capErr.ToString())) {
+                if (-not $captured) { continue }
+                foreach ($line in ($captured -split "`r?`n")) {
+                    if (-not $line) { continue }
+                    if ($line -match '^\s*WARNING:') {
+                        Write-MyVerbose ('[antispam] {0}' -f $line.Trim())
+                    } else {
+                        Write-MyOutput ('[antispam] {0}' -f $line.TrimEnd())
+                    }
+                }
+            }
+
+            Write-MyVerbose 'Restarting MSExchangeTransport after antispam agent install'
+            Restart-Service MSExchangeTransport -Force -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+            Write-MyVerbose 'MSExchangeTransport restarted after antispam agent install'
         }
         else {
             Write-MyVerbose ('Antispam agents already installed ({0} found), skipping install script' -f $existingAgents.Count)
@@ -4353,18 +4428,6 @@ Write-Log 'Exchange log cleanup finished'
 
         if (Test-Path $hcPath) {
             try {
-                # Refresh Kerberos tickets so HC's "Exchange Server Membership" check sees
-                # up-to-date AD group membership for both the current user and LocalSystem.
-                # Without this, a fresh-reboot token may have stale/blank tokenGroups and HC
-                # reports "Unable to determine Local System Membership as the results were blank".
-                try {
-                    Invoke-NativeCommand -FilePath 'klist.exe' -Arguments @('purge')                -Tag 'klist (user)'        | Out-Null
-                    Invoke-NativeCommand -FilePath 'klist.exe' -Arguments @('-li','0x3e7','purge') -Tag 'klist (LocalSystem)' | Out-Null
-                    Write-MyVerbose 'Kerberos ticket cache purged for current user and LocalSystem'
-                } catch {
-                    Write-MyVerbose ('klist purge failed (non-fatal): {0}' -f $_.Exception.Message)
-                }
-
                 # HC writes ExchangeAllServersReport-*.html to the *current directory*, not -OutputFilePath.
                 # Push-Location so both the XML (-OutputFilePath) and the HTML land in ReportsPath.
                 Push-Location $State['ReportsPath']
@@ -4392,7 +4455,15 @@ Write-Log 'Exchange log cleanup finished'
                 } else {
                     Write-MyOutput ('HealthChecker completed — report in {0}' -f $State['ReportsPath'])
                 }
-                Write-MyOutput 'NOTE: HealthChecker "Exchange Server Membership" may show blank/failed results in this run — the current process token was created before Exchange setup added the computer account to "Exchange Servers". Re-run HealthChecker after the next reboot for accurate membership results.'
+                # On Domain Controllers there are no local security groups — the SAM database is
+                # replaced by AD. HC's "Exchange Server Membership" check enumerates Win32_GroupUser
+                # for the local "Exchange Servers" / "Exchange Trusted Subsystem" groups, which don't
+                # exist on DCs, so it always reports "failed/blank" regardless of AD group membership.
+                # This is a HC limitation; the server IS a member via the domain group.
+                $dcRole = try { (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).DomainRole } catch { 3 }
+                if ($dcRole -ge 4) {
+                    Write-MyWarning 'NOTE: This server is a Domain Controller. HC "Exchange Server Membership" will show failed/blank — DCs have no local security groups. Exchange group membership is via AD domain groups and is correct.'
+                }
             }
             catch {
                 Pop-Location -ErrorAction SilentlyContinue
@@ -5670,6 +5741,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         param([string[]]$Headers, [object[][]]$Rows)
         $sb = [System.Text.StringBuilder]::new()
         $null = $sb.Append('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>')
+        $colCount = if ($Headers) { $Headers.Count } else { 0 }
         if ($Headers) {
             $null = $sb.Append('<w:tr><w:trPr><w:tblHeader/></w:trPr>')
             foreach ($h in $Headers) {
@@ -5679,9 +5751,18 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             $null = $sb.Append('</w:tr>')
         }
         foreach ($row in $Rows) {
+            # Callers that forget the `,@(...)` prefix on literal jagged arrays cause PS 5.1
+            # to flatten the outer @(...), so each $row arrives as a scalar string instead of
+            # a row array. Normalize both cases here to avoid emitting ragged tables, which
+            # some Word versions flag as invalid and refuse to render past that point.
+            $cells = @($row)
             $null = $sb.Append('<w:tr>')
-            foreach ($cell in $row) {
+            foreach ($cell in $cells) {
                 $null = $sb.Append('<w:tc><w:p><w:r><w:t xml:space="preserve">{0}</w:t></w:r></w:p></w:tc>' -f (Invoke-XmlEscape ([string]$cell)))
+            }
+            # Pad short rows to header width so cell counts match the first/header row.
+            for ($pad = $cells.Count; $pad -lt $colCount; $pad++) {
+                $null = $sb.Append('<w:tc><w:p><w:r><w:t xml:space="preserve"></w:t></w:r></w:p></w:tc>')
             }
             $null = $sb.Append('</w:tr>')
         }
@@ -6436,10 +6517,12 @@ $body
 
         # ── 16. Offene Punkte ──────────────────────────────────────────────────────
         $null = $parts.Add((New-WdHeading (L '16. Offene Punkte' '16. Open Items') 1))
+        # Comma operator prefix prevents PS 5.1 from flattening the jagged array when
+        # binding to [object[][]]; without it Rows becomes a flat 15-element array.
         $null = $parts.Add((New-WdTable -Headers @('Nr.', (L 'Offener Punkt' 'Open item'), (L 'Verantwortlich' 'Owner'), (L 'Fällig am' 'Due date'), (L 'Status' 'Status')) -Rows @(
-            @('1', '', '', '', '')
-            @('2', '', '', '', '')
-            @('3', '', '', '', '')
+            ,@('1', '', '', '', '')
+            ,@('2', '', '', '', '')
+            ,@('3', '', '', '', '')
         )))
 
         # Write document
@@ -9008,6 +9091,14 @@ $body
 
     #Requires -Version 5.1
 
+    # Pin verbose/debug preferences early — before any cmdlet that would emit stream 4/5 output
+    # (Get-CimInstance below is a stream-4 spammer when -Verbose was passed on the command line,
+    # which also happens on Autopilot RunOnce resume when the original launch used -Verbose).
+    # Our custom Write-MyVerbose / Write-MyDebug write to the log via $State['LogVerbose'/'LogDebug']
+    # flags, set a few lines further down — decoupled from $VerbosePreference.
+    $VerbosePreference = 'SilentlyContinue'
+    $DebugPreference   = 'SilentlyContinue'
+
     # When compiled with PS2Exe, MyInvocation.MyCommand.Path is empty — fall back to the process image path
     $ScriptFullName = if ($MyInvocation.MyCommand.Path) {
         $MyInvocation.MyCommand.Path
@@ -9051,12 +9142,9 @@ $body
     $script:isFreshStart = ($State.Count -eq 0)
     $boundVerbose = $PSBoundParameters.ContainsKey('Verbose') -and [bool]$PSBoundParameters['Verbose']
     $boundDebug   = $PSBoundParameters.ContainsKey('Debug')   -and [bool]$PSBoundParameters['Debug']
-    # Keep console clean: -Verbose / -Debug auto-set $VerbosePreference='Continue' /
-    # $DebugPreference='Inquire', which floods the console (and prompts). We pin both to
-    # SilentlyContinue so `Write-Verbose`/`Write-Debug` stay off console, while our
-    # Write-MyVerbose / Write-MyDebug wrappers still append to the log via State flags.
-    $VerbosePreference = 'SilentlyContinue'
-    $DebugPreference   = 'SilentlyContinue'
+    # $VerbosePreference / $DebugPreference have already been pinned to SilentlyContinue at the
+    # top of process{} (before the first Get-CimInstance). Our Write-MyVerbose / Write-MyDebug
+    # wrappers append to the log via the State flags below — independent of the preference vars.
     $State['LogVerbose'] = $boundVerbose -or $boundDebug -or [bool]$State['LogVerbose']
     $State['LogDebug']   = $boundDebug   -or [bool]$State['LogDebug']
 
@@ -9189,6 +9277,7 @@ $body
             Write-MyOutput ('Menu: Install  : {0}' -f $InstallPath)
             if ($Organization)    { Write-MyOutput ('Menu: Org      : {0}' -f $Organization) }
             if ($Namespace)       { Write-MyOutput ('Menu: Namespace: {0}' -f $Namespace) }
+            if ($DownloadDomain)  { Write-MyOutput ('Menu: DL Domain: {0}' -f $DownloadDomain) }
             if ($DAGName)         { Write-MyOutput ('Menu: DAG      : {0}' -f $DAGName) }
             if ($CertificatePath) { Write-MyOutput ('Menu: Cert PFX : {0}' -f $CertificatePath) }
             # Active switch labels (same computation the menu summary used)
@@ -9448,7 +9537,7 @@ $body
         $MAX_PHASE = 1
     }
     else {
-        $MAX_PHASE = 7
+        $MAX_PHASE = 6
     }
 
     $runMode = if ($State['ConfigDriven']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
@@ -9651,6 +9740,10 @@ $body
             }
         }
         else {
+        # Loop so Phase 2 can flow directly into Phase 3 when no reboot is pending
+        # (e.g. WS2025 + Exchange SE where nothing reboot-relevant was installed).
+        do {
+            $continueInProcess = $false
         switch ($State["InstallPhase"]) {
             1 {
 
@@ -9686,20 +9779,20 @@ $body
                     exit $ERR_UNEXPECTEDOS
                 }
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 7: Windows Features + .NET' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Windows Features + .NET' -PercentComplete 0
                 Disable-IEESC
                 Disable-ServerManagerAtLogon
                 Write-MyOutput "Installing Operating System prerequisites"
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 7: Installing Windows Features' -PercentComplete 10
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Installing Windows Features' -PercentComplete 10
                 Install-WindowsFeatures $MajorOSVersion
 
                 if ($State['CopyServerConfig']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 7: Exporting source server config' -PercentComplete 80
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Exporting source server config' -PercentComplete 80
                     Export-SourceServerConfig $State['CopyServerConfig']
                 }
 
                 # Install pending Windows Updates before rebooting (if requested)
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 7: Windows Updates' -PercentComplete 90
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Windows Updates' -PercentComplete 90
                 Install-PendingWindowsUpdates
                 Write-MyVerbose ('Phase 1 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
@@ -9707,12 +9800,12 @@ $body
 
             2 {
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 7: Prerequisites' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Prerequisites' -PercentComplete 0
                 Write-MyOutput "Installing BITS module"
                 Import-Module BITSTransfer
 
                 # Check .NET FrameWork 4.8.1 needs to be installed
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 7: .NET Framework' -PercentComplete 10
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: .NET Framework' -PercentComplete 10
                 if ( $State["Install481"]) {
 
                     Remove-NETFrameworkInstallBlock '4.8.1' '-' '481'
@@ -9745,7 +9838,7 @@ $body
                 }
 
                 # Check if need to install VC++ Runtimes
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 7: Visual C++ Runtimes' -PercentComplete 50
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Visual C++ Runtimes' -PercentComplete 50
                 # VC++ 2012 (v11.0): required for Exchange 2016 CU23, Exchange 2019, SE and Edge Transport role (flagged by HealthChecker)
                 if ( -not (Get-VCRuntime -version '11.0') -and $State["VCRedist2012"] ) {
                     Install-MyPackage "" "Visual C++ 2012 Redistributable" "vcredist_x64_2012.exe" "https://download.microsoft.com/download/1/6/B/16B06F60-3B20-4FF2-B699-5E9B7962F9AE/VSU_4/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
@@ -9757,8 +9850,9 @@ $body
 
                 # VC++ 2013 (v12.0): required for Exchange 2016 CU23, 2019 and SE; minimum 12.0.40664 (KB4538461)
                 if ( -not (Get-VCRuntime -version '12.0' -MinBuild '12.0.40664') -and $State["VCRedist2013"] ) {
-                    # VC++ 2013 x64 12.0.40664 (KB4538461, Jan 2020 update) — Microsoft Download Center
-                    Install-MyPackage "" "Visual C++ 2013 Redistributable" "vcredist_x64_2013.exe" "https://download.microsoft.com/download/C/C/2/CC2DF5F8-4454-44B4-802D-5EA68D086676/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
+                    # VC++ 2013 x64 12.0.40664.0 — High-DPI aware build (aka.ms/highdpimfc2013x64enu)
+                    # This is the version HC checks for; the older GUID CDN URL delivers 12.0.40660.
+                    Install-MyPackage "" "Visual C++ 2013 Redistributable" "vcredist_x64_2013.exe" "https://aka.ms/highdpimfc2013x64enu" ("/install", "/quiet", "/norestart")
                     if ( -not (Get-VCRuntime -version '12.0')) {
                         Write-MyError 'Visual C++ 2013 Redistributable installation could not be verified — Exchange Setup will fail. Check the installer manually.'
                         exit $ERR_PROBLEMPACKAGESETUP
@@ -9766,7 +9860,7 @@ $body
                 }
 
                 # URL Rewrite module
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 7: URL Rewrite Module' -PercentComplete 80
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: URL Rewrite Module' -PercentComplete 80
                 Install-MyPackage "{9BCA2118-F753-4A1E-BCF3-5A820729965C}" "URL Rewrite Module 2.1" "rewrite_amd64_en-US.msi" "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi" ("/quiet", "/norestart")
                 Write-MyVerbose ('Phase 2 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
@@ -9775,10 +9869,10 @@ $body
 
             3 {
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 7: Prerequisites (continued)' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: Prerequisites (continued)' -PercentComplete 0
                 if ( !($State['InstallEdge'])) {
                     Write-MyOutput "Installing Exchange prerequisites (continued)"
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 7: UCMA Runtime' -PercentComplete 20
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: UCMA Runtime' -PercentComplete 20
                     if ( [System.Version]$FullOSVersion -ge [System.Version]$WS2019_PREFULL -and (Test-ServerCore) ) {
                         Install-MyPackage "{41D635FE-4F9D-47F7-8230-9B29D6D42D31}" "Unified Communications Managed API 4.0 Runtime (Core)" "Setup.exe" (Join-Path -Path $State['SourcePath'] -ChildPath 'UcmaRedist\Setup.exe') ("/passive", "/norestart") -NoDownload
                     }
@@ -9791,7 +9885,7 @@ $body
                     Set-EdgeDNSSuffix -DNSSuffix $State['EdgeDNSSuffix']
                 }
                 if ($State["OrganizationName"]) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 7: Checking Active Directory' -PercentComplete 60
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: Checking Active Directory' -PercentComplete 60
                     $adPrepRan = Initialize-Exchange
                     if ($adPrepRan) {
                         Wait-ADReplication
@@ -9804,7 +9898,7 @@ $body
             4 {
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
                 Write-MyOutput "Installing Exchange"
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 7: Running Exchange Setup (this may take 30-60 min)' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 6: Running Exchange Setup (this may take 30-60 min)' -PercentComplete 0
 
                 switch ( $State["SCP"]) {
                     '' {
@@ -9824,7 +9918,7 @@ $body
 
                 # Cleanup any background jobs
                 Stop-BackgroundJobs
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 7: Configuring transport services' -PercentComplete 95
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 6: Configuring transport services' -PercentComplete 95
 
                 if ( Get-Service MSExchangeTransport -ErrorAction SilentlyContinue) {
                     Write-MyOutput "Configuring MSExchangeTransport startup to Manual"
@@ -9867,10 +9961,10 @@ $body
                     $script:p5LastDesc = $desc
                     $script:p5Sw.Restart()
                     $script:p5Step++
-                    Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 7: Post-configuration' -Status $desc -PercentComplete ($script:p5Step * 100 / $script:p5Total)
+                    Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 6: Post-configuration' -Status $desc -PercentComplete ($script:p5Step * 100 / $script:p5Total)
                 }
 
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 5 of 7: Post-configuration' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 5 of 6: Post-configuration' -PercentComplete 0
                 Step-P5 'Windows Defender exclusions';  Enable-WindowsDefenderExclusions
                 Step-P5 'Power plan';                   Enable-HighPerformancePowerPlan
                 Step-P5 'NIC power management';         Disable-NICPowerManagement
@@ -10032,12 +10126,12 @@ $body
                 Invoke-EOMT
                 if ($p5LastDesc) { Write-MyVerbose ('{0} took {1:F1}s' -f $p5LastDesc, $p5Sw.Elapsed.TotalSeconds) }
 
-                Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 7: Post-configuration' -Completed
+                Write-PhaseProgress -Id 1 -Activity 'Phase 5 of 6: Post-configuration' -Completed
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
             6 {
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Finalizing' -PercentComplete 0
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Finalizing' -PercentComplete 0
                 if ( Get-Service MSExchangeTransport -ErrorAction SilentlyContinue) {
                     Write-MyOutput "Configuring MSExchangeTransport startup to Automatic"
                     Set-Service MSExchangeTransport -StartupType Automatic
@@ -10057,38 +10151,38 @@ $body
 
                 # Install antispam agents (Mailbox role only)
                 if ($State['InstallMailbox'] -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Antispam agents' -PercentComplete 8
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Antispam agents' -PercentComplete 8
                     Install-AntispamAgents
                 }
 
                 # Set Virtual Directory URLs
                 if ($State['Namespace'] -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Virtual Directory URLs' -PercentComplete 15
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Virtual Directory URLs' -PercentComplete 15
                     Set-VirtualDirectoryURLs
                 }
 
                 # Join Database Availability Group
                 if ($State['DAGName']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Joining DAG' -PercentComplete 30
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Joining DAG' -PercentComplete 30
                     Join-DAG
                 }
 
                 # DAG replication health check (F8)
                 if ($State['DAGName'] -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: DAG replication health' -PercentComplete 33
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: DAG replication health' -PercentComplete 33
                     Test-DAGReplicationHealth
                 }
 
                 # Add server to existing Send Connectors
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Send Connectors' -PercentComplete 35
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Send Connectors' -PercentComplete 35
                     Add-ServerToSendConnectors
                 }
 
                 # Server Manager stays disabled permanently on Exchange servers (set machine-wide in Phase 5)
 
                 if ( !($State['InstallEdge'])) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: IIS health check' -PercentComplete 60
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: IIS health check' -PercentComplete 60
                     Write-MyVerbose 'Performing Health Monitor checks..'
                     # Warmup IIS
                     $hcPassed = 0
@@ -10129,69 +10223,51 @@ $body
 
                 # Database / log path separation check
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: DB path check' -PercentComplete 73
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: DB path check' -PercentComplete 73
                     Test-DBLogPathSeparation
                 }
 
                 # Auth Certificate health check
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Auth Certificate check' -PercentComplete 75
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Auth Certificate check' -PercentComplete 75
                     Test-AuthCertificate
                 }
 
                 # VSS writers, EEMS, Modern Auth checks (F9, F10, F11)
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: VSS writers' -PercentComplete 76
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: VSS writers' -PercentComplete 76
                     Test-VSSWriters
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: EEMS status' -PercentComplete 77
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: EEMS status' -PercentComplete 77
                     Test-EEMSStatus
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Modern Auth' -PercentComplete 77
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Modern Auth' -PercentComplete 77
                     Get-ModernAuthReport
                 }
 
                 # Anonymous relay connector
                 if (($State['RelaySubnets'] -or $State['ExternalRelaySubnets']) -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Anonymous relay connector' -PercentComplete 78
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Anonymous relay connector' -PercentComplete 78
                     New-AnonymousRelayConnector
                 }
 
                 # Exchange log cleanup scheduled task
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: Log cleanup task' -PercentComplete 76
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Log cleanup task' -PercentComplete 76
                 Register-ExchangeLogCleanup
 
                 # RBAC role group membership report
                 if (-not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 7: RBAC report' -PercentComplete 78
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: RBAC report' -PercentComplete 78
                     Get-RBACReport
                 }
 
-                Enable-UAC
-                Enable-IEESC
-
-                Write-PhaseProgress -Activity 'Exchange Installation' -Completed
-            }
-
-            7 {
-                # Phase 7 runs after the Phase 6 reboot so that:
-                # - Exchange computer account group membership is in the process token
-                # - All services have started cleanly from scratch
-                # - HealthChecker results reflect the fully-configured server
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: HealthChecker &amp; Report' -PercentComplete 0
-
-                # Reload Exchange PS module after reboot
-                if (-not $State['InstallEdge']) {
-                    Import-ExchangeModule
-                }
-
                 # Run CSS-Exchange HealthChecker
-                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: HealthChecker' -PercentComplete 20
+                Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: HealthChecker' -PercentComplete 80
                 if (-not $State['SkipHealthCheck']) {
                     Invoke-HealthChecker
                 }
 
                 # Installation Report
                 if (-not $State['SkipInstallReport'] -and -not $State['InstallEdge']) {
-                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: Installation Report' -PercentComplete 70
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Installation Report' -PercentComplete 88
                     # B16: wrap in try/catch so a crash inside New-InstallationReport does not
                     # propagate to the global trap { break } and kill the script before the
                     # "We're good to go" message and phase-end reboot logic run.
@@ -10204,10 +10280,13 @@ $body
                     }
 
                     if (-not $State['NoWordDoc']) {
-                        Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 7 of 7: Word Installation Document' -PercentComplete 85
+                        Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Word Installation Document' -PercentComplete 94
                         try { New-InstallationDocument } catch { Write-MyWarning ('Word document failed: {0}' -f $_.Exception.Message) }
                     }
                 }
+
+                Enable-UAC
+                Enable-IEESC
 
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
                 Write-MyOutput "Setup finished - We're good to go."
@@ -10218,6 +10297,29 @@ $body
                 exit $ERR_UNEXPTECTEDPHASE
             }
         }
+
+            # Skip reboot between Phase 2 and 3 if Windows doesn't signal a pending
+            # reboot. Persist the advance immediately so a crash in Phase 3 doesn't
+            # re-run Phase 2.
+            if ( $State["Autopilot"] -and $State["InstallPhase"] -eq 2 -and -not (Test-RebootPending) ) {
+                Write-MyOutput 'Phase 2 complete — no reboot pending, continuing directly with Phase 3 ..'
+                $State["LastSuccessfulPhase"] = 2
+                $State["InstallPhase"] = 3
+                Save-State $State
+                $continueInProcess = $true
+            }
+
+            # Skip reboot between Phase 5 and 6 unless an Exchange SU set RebootRequired
+            # (exit code 3010) or Windows reports a pending reboot from any other source.
+            # Phase 5 otherwise only changes registry/IIS settings that don't require reboot.
+            if ( $State["Autopilot"] -and $State["InstallPhase"] -eq 5 -and -not $State['RebootRequired'] -and -not (Test-RebootPending) ) {
+                Write-MyOutput 'Phase 5 complete — no SU reboot and no pending reboot, continuing directly with Phase 6 ..'
+                $State["LastSuccessfulPhase"] = 5
+                $State["InstallPhase"] = 6
+                Save-State $State
+                $continueInProcess = $true
+            }
+        } while ($continueInProcess)
         } # end else (standard Exchange install switch)
     }
     $State["LastSuccessfulPhase"] = $State["InstallPhase"]

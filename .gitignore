@@ -5,10 +5,13 @@
 .claude/
 CLAUDE.md
 memory/
-project_v51_plan.md
+
+# Exchange Web Services DLLs (not redistributed — fetched on demand)
 Microsoft.Exchange.WebServices.Auth.dll
 Microsoft.Exchange.WebServices.Auth.xml
 Microsoft.Exchange.WebServices.dll
 Microsoft.Exchange.WebServices.xml
-run3.ps1
+
+# Local scratch files
+run*.ps1
 instex.ps1
