@@ -44,8 +44,54 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ## v5.83 (2026-04-22)
 
-- `Fix-PhaseNum` (Dev-Tool), `Parse-Check` (Dev-Tool): verbleibende Dev-Tools hinzugefügt
-- Dreistufiges Logging, vereinheitlichter Datei-Nomenklatur, Credential-Prompt-Fix
+### Dreistufiges Logging (single log file, tier-gesteuert via `-Verbose` / `-Debug`)
+
+`Write-ToTranscript` schreibt ein einziges Log-File mit drei Tiers, pro Zeile mit Tier-Präfix versehen (`INFO` / `WARNING` / `ERROR` / `EXE` / `VERBOSE` / `DEBUG`):
+
+| Aufruf | Im Log enthalten |
+|---|---|
+| `.\Install-Exchange15.ps1` (Default) | INFO, WARNING, ERROR, EXE |
+| `.\Install-Exchange15.ps1 -Verbose` | + VERBOSE |
+| `.\Install-Exchange15.ps1 -Debug` | + DEBUG + `SUPPRESSED-ERROR`-Zeilen |
+
+**`SUPPRESSED-ERROR` im Debug-Modus:** `Write-ToTranscript` snapshottet `$Error.Count` und rekonstruiert alle Fehler, die zwischen Aufrufen neu aufgetaucht sind — also auch die, die `try/catch` stumm geschluckt hat. Zeilenformat: `[SUPPRESSED-ERROR] (Exception.Type) at line N: <offending line> :: <message>`. Unverzichtbar für die Diagnose von BITS-/MSI-/CIM-Schluckfehlern.
+
+**Encoding-Fix:** PS 5.1 `Out-File` schreibt standardmäßig UTF-16 LE mit BOM, der UTF-8-Header erzeugte dadurch „seltsame Schriftarten" in Viewern. Jetzt `[System.IO.File]::AppendAllText(..., UTF8Encoding(`$false`))` — UTF-8 ohne BOM, jede Zeile gleich codiert.
+
+Aktiviert werden die Tiers über die Standard-PowerShell-Switches `-Verbose` / `-Debug` auf dem `.ps1`-Aufruf — intern abgelegt in `$State['LogVerbose']` / `$State['LogDebug']`. Beim Autopilot-Resume über `RunOnce` werden die Flags automatisch an den weiterlaufenden Prozess weitergereicht (`$logFlags`), d.h. das gewünschte Log-Level bleibt über Reboots hinweg erhalten.
+
+Neuer Helper `Write-MyDebug` — Console bleibt stumm, Log-Zeile erscheint nur im Debug-Tier.
+
+### Vereinheitlichte Datei-Nomenklatur
+
+Alle vom Script erzeugten Dateien folgen jetzt dem Schema `{PC}_{Tag}_{yyyyMMdd-HHmmss}.{ext}`:
+
+- Transcript/Log (inkl. `{PC}_InstallLog_*.log`)
+- Preflight-Report (neu mit Timestamp — vorher überschrieben bei jedem Lauf)
+- Installation-Report (HTML)
+- Installation-Document (Word)
+- RBAC-Report
+- Exported Server-Config (XML)
+- Log-Cleanup-Protokoll
+
+Einheitliche Sortierung im Explorer, zusammengehörige Artefakte eines Installations-Laufs anhand Timestamp auf einen Blick erkennbar.
+
+### Credential-Prompt-Fix
+
+`Get-ValidatedCredentials`: deterministische GUI-vs-Read-Host-Entscheidung via `$env:SESSIONNAME`-Check (Console vs RDP). Vorher konnte `Get-Credential` in seltenen Fällen `$null` zurückgeben und stumm weiterlaufen — jetzt wird die Eingabemodalität vorab festgelegt und re-prompted bei Abbruch.
+
+### Bootstrap-Reihenfolge
+
+- Log-Initialisierung läuft **vor** der Menü-Anzeige — Menü-Interaktionen landen dadurch im Log
+- `$script:isFreshStart`-Snapshot verhindert, dass frühe State-Mutationen einen Fresh-Start fälschlich als Autopilot-Resume klassifizieren
+
+### Dev-Tools
+
+- `tools/Test-ScriptSanity.ps1` — 14 strukturelle Sanity-Checks (param-Block, process-Block, Encoding, Ternary-Syntax, Function-Count etc.)
+- `tools/Test-ScriptQuality.ps1` — qualitative Checks
+- `tools/Fix-IfAsArg.ps1` — Fixer für PS 5.1 `-f (if …)`-Syntax-Fehler
+- `tools/Fix-PhaseNum.ps1` — Phasen-Nummer-Konsistenz
+- `tools/Parse-Check.ps1` — schneller Parser-Check ohne Ausführung
 
 ---
 

@@ -254,7 +254,11 @@ The following best-practice configurations are automatically applied after Excha
 - **Titelblatt Szenario-Zeile** — document title page shows whether the run was a new environment, a server addition, or an ad-hoc inventory
 
 ### v5.83 — April 2026
-- Dev tools `Fix-PhaseNum` and `Parse-Check` added; three-tier logging, unified file nomenclature, credential prompt fix
+- **Three-tier logging** — single log file with tier-prefixed entries (`INFO` / `WARNING` / `ERROR` / `EXE` / `VERBOSE` / `DEBUG`); activated via standard `-Verbose` / `-Debug` switches on the `.ps1` call. Debug tier additionally emits `[SUPPRESSED-ERROR]` lines that reconstruct errors silently swallowed by `try/catch` — invaluable for diagnosing BITS/MSI/CIM failures. Encoding pinned to UTF-8 without BOM so the log renders correctly in every viewer. Log tier survives Autopilot reboots.
+- **Unified file nomenclature** — all generated artefacts (log, preflight, installation report, Word document, RBAC, exported config, log-cleanup) now follow `{PC}_{Tag}_{yyyyMMdd-HHmmss}.{ext}`; Preflight gains a timestamp so prior runs are preserved instead of overwritten
+- **Credential prompt fix** — `Get-ValidatedCredentials` now picks GUI vs. Read-Host deterministically via `$env:SESSIONNAME` (console vs. RDP); eliminates silent `$null` fallback when `Get-Credential` is cancelled
+- **Bootstrap order** — log initialisation runs before the menu; `$script:isFreshStart` snapshot prevents early state mutations from triggering a false Autopilot-resume path
+- **Dev tools** — `Test-ScriptSanity` (14 structural checks), `Test-ScriptQuality`, `Fix-IfAsArg`, `Fix-PhaseNum`, `Parse-Check`
 
 ### v5.82 — April 2026
 - **Word Installation Document** (`New-InstallationDocument`) — generated automatically at Phase 6 completion alongside the HTML report; pure-PowerShell OpenXML engine, no Office dependency; 15 chapters: installation parameters, system details, network & DNS, Active Directory, Exchange configuration (DBs, VDirs, connectors, certificates, DAG, transport), hardening & tuning, backup readiness, HealthChecker reference, monitoring, hybrid status, public folders, executed cmdlets, runbooks and open items
