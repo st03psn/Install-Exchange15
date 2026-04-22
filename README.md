@@ -155,8 +155,24 @@ Use `Build.ps1` to compile the script into a self-contained Windows executable v
 | `-Language` | Document language: `DE` (default) or `EN` |
 | `-DocumentScope` | `All` (default): org + all servers + local. `Org`: org-wide only. `Local`: per-server only |
 | `-IncludeServers` | Limit per-server documentation to specific server names (e.g. `EX01,EX02`) |
+| `-Verbose` | Raise log tier to `VERBOSE` — adds detailed progress / decision entries to the log file |
+| `-Debug` | Raise log tier to `DEBUG` — adds `VERBOSE` + `DEBUG` + `SUPPRESSED-ERROR` entries (reconstructs errors silently caught by `try/catch`); invaluable for diagnosing BITS / MSI / CIM failures |
 
 See `deploy-example.psd1` for a fully documented configuration file template.
+
+### Logging
+
+A single log file is written for every run. Entries are tier-prefixed; the active tier is selected by the standard PowerShell switches on the `.ps1` call:
+
+| Switch | Tiers written |
+|---|---|
+| _(none)_ | `INFO` / `WARNING` / `ERROR` / `EXE` |
+| `-Verbose` | + `VERBOSE` |
+| `-Debug` | + `DEBUG` + `SUPPRESSED-ERROR` |
+
+`SUPPRESSED-ERROR` lines reconstruct exceptions swallowed by `try/catch` — without them, silent BITS failures, missing registry keys, or CIM timeouts leave no trace. The tier is preserved across Autopilot reboots (re-applied to the resumed process via `RunOnce`).
+
+Log encoding is UTF-8 without BOM — so the file renders correctly in every viewer (PS 5.1 `Out-File` would default to UTF-16 LE, which caused rendering artefacts in earlier versions).
 
 ---
 
@@ -468,7 +484,7 @@ Code quality and robustness improvements; no new parameters.
 ## Notes
 
 - State file: `<InstallPath>\<ComputerName>_Install-Exchange15_state.xml` (default: `C:\Install\`)
-- Log file: `<InstallPath>\reports\<ComputerName>_Install-Exchange15_<timestamp>.log` — always verbose; `[INFO]`, `[WARNING]`, `[ERROR]`, `[VERBOSE]` entries
+- Log file: `<InstallPath>\reports\<ComputerName>_InstallLog_<yyyyMMdd-HHmmss>.log` — tier-prefixed entries (`INFO` / `WARNING` / `ERROR` / `EXE`; `VERBOSE` with `-Verbose`; `DEBUG` + `SUPPRESSED-ERROR` with `-Debug`); UTF-8 without BOM; see **Logging** section above
 - Installation report (HTML): `<InstallPath>\reports\<ComputerName>_InstallationReport_<timestamp>.html` (+ `.pdf` if Edge available)
 - Installation document (Word): `<InstallPath>\reports\<ComputerName>_InstallationDocument_<DE|EN>_<timestamp>.docx`
 - All reports (Preflight, Installation, RBAC, HealthChecker) written to `<InstallPath>\reports\`
