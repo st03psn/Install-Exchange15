@@ -1287,7 +1287,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.85'
+    $ScriptVersion = '5.86'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -3729,6 +3729,41 @@ Write-Log 'Exchange log cleanup finished'
         }
     }
 
+    function Register-AuthCertificateRenewal {
+        # MECA — CSS-Exchange MonitorExchangeAuthCertificate.ps1. Creates a daily
+        # scheduled task that auto-renews the Exchange Auth Certificate 60 days
+        # before expiry. Without it, Auth Cert expiry causes a full outage
+        # (OAuth, Hybrid, EWS). Skip on Edge and Management-only installs.
+        if ($State['InstallEdge'] -or $State['InstallManagementTools'] -or $State['InstallRecipientManagement']) {
+            Write-MyVerbose 'Auth Certificate renewal task: not applicable to this install mode'
+            return
+        }
+        Write-MyOutput 'Registering Auth Certificate renewal (MECA / CSS-Exchange MonitorExchangeAuthCertificate.ps1)'
+        $mecaPath = Join-Path $State['InstallPath'] 'MonitorExchangeAuthCertificate.ps1'
+        $mecaUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/MonitorExchangeAuthCertificate.ps1'
+        if (-not (Test-Path $mecaPath)) {
+            try {
+                Invoke-WebDownload -Url $mecaUrl -OutFile $mecaPath
+                Write-MyVerbose ('MECA downloaded, SHA256: {0}' -f (Get-FileHash $mecaPath -Algorithm SHA256).Hash)
+            }
+            catch {
+                Write-MyWarning ('Could not download MonitorExchangeAuthCertificate.ps1: {0}' -f $_.Exception.Message)
+                return
+            }
+        }
+        try {
+            Push-Location $State['InstallPath']
+            & $mecaPath -ConfigureScriptViaScheduledTask -Confirm:$false *>&1 | ForEach-Object { Write-MyVerbose ('MECA: {0}' -f $_) }
+            Write-MyOutput 'MECA scheduled task registered — auth cert will auto-renew 60 days before expiry'
+        }
+        catch {
+            Write-MyWarning ('MECA registration failed: {0}' -f $_.Exception.Message)
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
     function Add-ServerToSendConnectors {
         if ($State['InstallEdge']) {
             Write-MyVerbose 'Edge role — skipping Send Connector update'
@@ -3934,15 +3969,15 @@ Write-Log 'Exchange log cleanup finished'
                 $existing = Get-ReceiveConnector -Identity "$server\$intName" -ErrorAction SilentlyContinue
                 if ($existing) {
                     Set-ReceiveConnector -Identity "$server\$intName" -RemoteIPRanges $State['RelaySubnets'] `
-                        -AuthMechanism Tls -ProtocolLoggingLevel Verbose -ErrorAction Stop
-                    Write-MyVerbose 'Internal relay connector already exists — RemoteIPRanges, TLS and logging updated'
+                        -AuthMechanism Tls -ProtocolLoggingLevel Verbose -Banner '220 Mail Service' -ErrorAction Stop
+                    Write-MyVerbose 'Internal relay connector already exists — RemoteIPRanges, TLS, logging and banner updated'
                 }
                 else {
                     New-ReceiveConnector -Name $intName -Server $server -TransportRole FrontendTransport `
                         -RemoteIPRanges $State['RelaySubnets'] -Bindings '0.0.0.0:25' `
                         -PermissionGroups AnonymousUsers -AuthMechanism Tls `
-                        -ProtocolLoggingLevel Verbose -ErrorAction Stop | Out-Null
-                    Write-MyOutput 'Internal relay connector created (TLS offered, accepted domains only, no external relay right)'
+                        -ProtocolLoggingLevel Verbose -Banner '220 Mail Service' -ErrorAction Stop | Out-Null
+                    Write-MyOutput 'Internal relay connector created (TLS offered, accepted domains only, no external relay right, hardened banner)'
                 }
             }
             catch {
@@ -3971,8 +4006,8 @@ Write-Log 'Exchange log cleanup finished'
                 $connObj = $null
                 if ($existing) {
                     Set-ReceiveConnector -Identity "$server\$extName" -RemoteIPRanges $State['ExternalRelaySubnets'] `
-                        -AuthMechanism Tls -ProtocolLoggingLevel Verbose -ErrorAction Stop
-                    Write-MyVerbose 'External relay connector already exists — RemoteIPRanges, TLS and logging updated'
+                        -AuthMechanism Tls -ProtocolLoggingLevel Verbose -Banner '220 Mail Service' -ErrorAction Stop
+                    Write-MyVerbose 'External relay connector already exists — RemoteIPRanges, TLS, logging and banner updated'
                     $connObj = $existing
                 }
                 else {
@@ -3981,7 +4016,7 @@ Write-Log 'Exchange log cleanup finished'
                     $connObj = New-ReceiveConnector -Name $extName -Server $server -TransportRole FrontendTransport `
                         -RemoteIPRanges $State['ExternalRelaySubnets'] -Bindings '0.0.0.0:25' `
                         -PermissionGroups AnonymousUsers -AuthMechanism Tls `
-                        -ProtocolLoggingLevel Verbose -ErrorAction Stop
+                        -ProtocolLoggingLevel Verbose -Banner '220 Mail Service' -ErrorAction Stop
                 }
                 # Fallback: if the object is somehow null, retry Get-ReceiveConnector with backoff
                 if (-not $connObj) {
@@ -5301,14 +5336,18 @@ Write-Log 'Exchange log cleanup finished'
         $rootAUBadge = if ($rootAU -ne 1) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge 'Disabled by policy!' 'warn' }
         $secRows.Add(('<tr><td>Root CA Auto-Update</td><td>DisableRootAutoUpdate = {0}</td><td>Must not be disabled (Exchange Online / M365 connectivity)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $rootAU, $rootAUBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/security/trusted-root/release-notes' 'MS Trusted Root')))
 
-        # Extended Protection (OWA VDir)
+        # Extended Protection (OWA VDir — evaluate Frontend only; Back End is internal and EP=None by design)
         if (-not $State['InstallEdge']) {
             try {
-                $owaVdir = Get-OwaVirtualDirectory -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($owaVdir) {
-                    $epVal = $owaVdir.ExtendedProtectionTokenChecking
+                $owaVdirs = @(Get-OwaVirtualDirectory -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue)
+                $owaFe    = $owaVdirs | Where-Object { $_.Name -notlike '*Back End*' -and $_.WebSiteName -notlike '*Back End*' } | Select-Object -First 1
+                if (-not $owaFe) { $owaFe = $owaVdirs | Select-Object -First 1 }
+                if ($owaFe) {
+                    $siteLabel = if ($owaFe.WebSiteName) { $owaFe.WebSiteName } else { $owaFe.Name }
+                    $epVal = [string]$owaFe.ExtendedProtectionTokenChecking
+                    if ([string]::IsNullOrEmpty($epVal)) { $epVal = 'None' }
                     $epBadge = if ($epVal -in 'Require','Allow') { Format-Badge "$epVal ✓" 'ok' } else { Format-Badge "$epVal (risk)" 'warn' }
-                    $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0}</td><td>Require or Allow</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
+                    $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0} — {1}</td><td>Require or Allow</td><td>{2}</td><td>{3}</td><td>MS Exchange</td></tr>' -f $siteLabel, $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
                 }
             } catch { }
         }
@@ -7966,6 +8005,21 @@ $body
         }
     }
 
+    function Disable-LLMNR {
+        # CIS L1 18.5.4.2: Disable Link-Local Multicast Name Resolution.
+        # LLMNR broadcasts unresolved names to the local subnet; Responder-class tools
+        # answer with spoofed records and capture NTLM hashes. Exchange relies on DNS.
+        Write-MyOutput 'Disabling LLMNR (Link-Local Multicast Name Resolution)'
+        Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -Name 'EnableMulticast' -Value 0
+    }
+
+    function Disable-MDNS {
+        # WS2022+ enables mDNS by default (port 5353 UDP). Same poisoning vector as LLMNR.
+        # Registry value EnableMDNS under Dnscache\Parameters disables it globally.
+        Write-MyOutput 'Disabling mDNS (Multicast DNS)'
+        Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableMDNS' -Value 0
+    }
+
     function Enable-LSAProtection {
         # Enables LSA Protection (RunAsPPL) to prevent credential theft from LSASS memory.
         # Exchange 2019 CU12+ and Exchange SE are compatible with LSA Protection.
@@ -8492,6 +8546,127 @@ $body
         }
     }
 
+    function Disable-DefenderTamperProtection {
+        # Tamper Protection blocks Set-MpPreference from taking effect. It cannot be disabled
+        # via PowerShell/registry once MDE/Intune enforces it — those must be set via the
+        # Security Center / Intune policy. On unmanaged devices we can flip the registry flag
+        # as best-effort. Re-enabled in Enable-DefenderTamperProtection.
+        if (-not (Get-Command -Name Get-MpComputerStatus -ErrorAction SilentlyContinue)) { return }
+        try {
+            $status = Get-MpComputerStatus -ErrorAction Stop
+            if (-not $status.IsTamperProtected) {
+                Write-MyVerbose 'Defender Tamper Protection already off — nothing to do'
+                return
+            }
+            Write-MyOutput 'Attempting to disable Defender Tamper Protection (best-effort, registry)'
+            $tpPath = 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Features'
+            # Capture current value so we can restore it, even if not present
+            $prev   = (Get-ItemProperty -Path $tpPath -Name 'TamperProtection' -ErrorAction SilentlyContinue).TamperProtection
+            if ($null -eq $prev) { $State['DefenderTPPrev'] = '__absent__' } else { $State['DefenderTPPrev'] = [int]$prev }
+            Set-RegistryValue -Path $tpPath -Name 'TamperProtection' -Value 0
+            Start-Sleep -Seconds 2
+            $post = Get-MpComputerStatus -ErrorAction SilentlyContinue
+            if ($post -and $post.IsTamperProtected) {
+                Write-MyWarning 'Tamper Protection still active — likely enforced by Intune/MDE. Realtime disable may be ignored.'
+                Write-MyWarning '  Disable Tamper Protection manually in Windows Security / Intune before install, or accept that setup runs with AV active.'
+            }
+            else {
+                Write-MyVerbose 'Tamper Protection flag cleared successfully'
+            }
+            $State['DefenderTPDisabledByEXpress'] = $true
+            Save-State $State
+        }
+        catch {
+            Write-MyWarning ('Could not inspect/disable Tamper Protection: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Enable-DefenderTamperProtection {
+        # Restore the Tamper Protection registry value we captured before flipping it.
+        if (-not $State['DefenderTPDisabledByEXpress']) { return }
+        try {
+            $tpPath = 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Features'
+            $prev   = $State['DefenderTPPrev']
+            if ($prev -eq '__absent__') {
+                Remove-ItemProperty -Path $tpPath -Name 'TamperProtection' -ErrorAction SilentlyContinue
+                Write-MyOutput 'Tamper Protection registry value removed (original state)'
+            }
+            elseif ($null -ne $prev) {
+                Set-RegistryValue -Path $tpPath -Name 'TamperProtection' -Value ([int]$prev)
+                Write-MyOutput ('Tamper Protection registry value restored to {0}' -f $prev)
+            }
+            $State.Remove('DefenderTPDisabledByEXpress') | Out-Null
+            $State.Remove('DefenderTPPrev') | Out-Null
+            Save-State $State
+        }
+        catch {
+            Write-MyWarning ('Could not restore Tamper Protection: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Disable-DefenderRealtimeMonitoring {
+        # Temporarily disable Defender real-time scanning during Exchange install/hardening.
+        # Setup and SU runs generate massive file I/O (ECP/OWA .config unpacking, assembly
+        # ngen, transport agents) that Defender scans inline, causing setup to stall or fail
+        # with random file-lock errors. Re-enabled at the start of Phase 6.
+        # Accepted risk: GPO/Intune may re-enable during the window. Flag is idempotent.
+        if (-not (Get-Command -Name Set-MpPreference -ErrorAction SilentlyContinue)) {
+            Write-MyVerbose 'Windows Defender not installed — skipping realtime disable'
+            return
+        }
+        # Tamper Protection must be cleared first, otherwise Set-MpPreference is silently ignored.
+        Disable-DefenderTamperProtection
+        try {
+            $pref = Get-MpPreference -ErrorAction Stop
+            if ($pref.DisableRealtimeMonitoring) {
+                Write-MyVerbose 'Defender realtime monitoring already disabled — leaving as-is'
+                return
+            }
+            Write-MyOutput 'Disabling Windows Defender realtime monitoring during Exchange install'
+            Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+            Start-Sleep -Seconds 1
+            $post = Get-MpPreference -ErrorAction SilentlyContinue
+            if ($post -and -not $post.DisableRealtimeMonitoring) {
+                Write-MyWarning 'Realtime monitoring did not stay disabled — Tamper Protection or policy override active. Continuing with AV on.'
+                return
+            }
+            $State['DefenderRealtimeDisabledByEXpress'] = $true
+            Save-State $State
+        }
+        catch {
+            Write-MyWarning ('Could not disable Defender realtime monitoring: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Enable-DefenderRealtimeMonitoring {
+        # Re-enable Defender realtime scanning — only if we were the ones who disabled it.
+        # A GPO/Intune tamper-back that re-enabled it already will clear the state flag
+        # via Get-MpPreference check and we skip silently.
+        if (-not (Get-Command -Name Set-MpPreference -ErrorAction SilentlyContinue)) { return }
+        if ($State['DefenderRealtimeDisabledByEXpress']) {
+            try {
+                $pref = Get-MpPreference -ErrorAction Stop
+                if (-not $pref.DisableRealtimeMonitoring) {
+                    Write-MyVerbose 'Defender realtime monitoring already enabled (possibly by GPO/Intune)'
+                }
+                else {
+                    Write-MyOutput 'Re-enabling Windows Defender realtime monitoring'
+                    Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop
+                }
+                $State.Remove('DefenderRealtimeDisabledByEXpress') | Out-Null
+                Save-State $State
+            }
+            catch {
+                Write-MyWarning ('Could not re-enable Defender realtime monitoring: {0}' -f $_.Exception.Message)
+            }
+        }
+        else {
+            Write-MyVerbose 'Defender realtime monitoring was not disabled by EXpress — skipping re-enable'
+        }
+        # Restore Tamper Protection regardless — it may have been flipped without realtime change.
+        Enable-DefenderTamperProtection
+    }
+
     # Return location of mounted drive if ISO specified
     function Resolve-SourcePath {
         param (
@@ -8727,6 +8902,7 @@ $body
             'R' = @{ Name='InstallWindowsUpdates';  Label='Install Windows Updates';       Default=$true  }
             'S' = @{ Name='RunEOMT';                Label='Run EOMT (CVE mitigations)';    Default=$false }
             'T' = @{ Name='WaitForADSync';          Label='Wait for AD replication';       Default=$false }
+            'U' = @{ Name='GenerateDoc';            Label='Generate Installation Document'; Default=$false }
         }
 
         # Toggles disabled per mode (letters that cannot be toggled in that mode)
@@ -8734,12 +8910,12 @@ $body
         # S=RunEOMT only makes sense for modes that run Exchange post-config (1, 5, 6)
         $disabledToggles = @{
             1 = @()
-            2 = @('I','G','S','T')
-            3 = @('B','C','D','E','F','G','H','I','J','K','L','M','N','P','Q','R','S','T')
-            4 = @('B','I','G','S','T')
+            2 = @('I','G','S','T','U')                                                      # Edge: no installation doc
+            3 = @('B','C','D','E','F','G','H','I','J','K','L','M','N','P','Q','R','S','T','U')
+            4 = @('B','I','G','S','T','U')                                                  # Mgmt tools: no installation doc
             5 = @()
-            6 = @('B','I','K','M','N','Q','R','T')                                        # Standalone: no setup, no PrepareAD
-            7 = @('A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T') # Document only: all toggles irrelevant
+            6 = @('B','I','K','M','N','Q','R','T')                                          # Standalone: no setup, no PrepareAD
+            7 = @('A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U') # Document only: all toggles irrelevant (doc always generated)
         }
 
         # Initialize toggle states from defaults
@@ -8777,7 +8953,7 @@ $body
                 Write-Host ('    [{0}] {1}  {2}' -f $i, $marker, $modes[$i]) -ForegroundColor $color
             }
             Write-Host ''
-            Write-MenuLine '  Switches (toggle A-T, then ENTER to proceed to inputs):' Yellow
+            Write-MenuLine '  Switches (toggle A-U, then ENTER to proceed to inputs):' Yellow
 
             $disabled = @(if ($Mode -gt 0) { $disabledToggles[$Mode] } else { @() }) + $ExtraDisabled
             $letters  = @($toggleDefs.Keys)
@@ -8836,7 +9012,7 @@ $body
             $statusMsg = ''
 
             if ($useRawKey) {
-                Write-Host '  Press A-T to toggle, ENTER to continue: ' -NoNewline -ForegroundColor Cyan
+                Write-Host '  Press A-U to toggle, ENTER to continue: ' -NoNewline -ForegroundColor Cyan
                 try {
                     $keyInfo = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
                     $vk  = $keyInfo.VirtualKeyCode
@@ -8852,7 +9028,7 @@ $body
                 }
             }
             else {
-                $raw = (Read-Host '  Toggle [A-T] or ENTER to continue').Trim().ToUpper()
+                $raw = (Read-Host '  Toggle [A-U] or ENTER to continue').Trim().ToUpper()
                 if ($raw -eq '') { break }
             }
 
@@ -9254,6 +9430,9 @@ $body
             $Recover             = [switch]($mode -eq 5)
             $StandaloneOptimize  = [switch]($mode -eq 6)
             $StandaloneDocument  = [switch]($mode -eq 7)
+            # Toggle U "Generate Installation Document" → invert to NoWordDoc.
+            # Mode 7 always generates the doc regardless of the toggle.
+            $NoWordDoc           = [switch](-not ([bool]$menuResult['GenerateDoc'] -or $mode -eq 7))
             $Language            = if ($menuResult['Language']) { $menuResult['Language'] } else { 'DE' }
             $CustomerDocument    = [switch]([bool]$menuResult['CustomerDocument'])
             $NoSetup             = [switch]($false)
@@ -9782,6 +9961,7 @@ $body
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Windows Features + .NET' -PercentComplete 0
                 Disable-IEESC
                 Disable-ServerManagerAtLogon
+                Disable-DefenderRealtimeMonitoring
                 Write-MyOutput "Installing Operating System prerequisites"
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Installing Windows Features' -PercentComplete 10
                 Install-WindowsFeatures $MajorOSVersion
@@ -9912,7 +10092,7 @@ $body
                     }
                 }
 
-                Start-DisableMSExchangeAutodiscoverAppPoolJob
+                $null = Start-DisableMSExchangeAutodiscoverAppPoolJob
 
                 Install-Exchange15_
 
@@ -9943,7 +10123,7 @@ $body
                     'Windows Defender exclusions', 'Power plan', 'NIC power management', 'Page file',
                     'TCP settings', 'SMBv1', 'Windows Search', 'WDigest', 'HTTP/2', 'TCP offload',
                     'Credential Guard', 'LM compatibility', 'LSA Protection', 'RSS / NIC queues',
-                    'IPv4 over IPv6', 'NetBIOS on NICs',
+                    'IPv4 over IPv6', 'NetBIOS on NICs', 'LLMNR', 'mDNS',
                     'MaxConcurrentAPI', 'Disk allocation', 'Scheduled tasks', 'Server Manager',
                     'CRL timeout', 'TLS / Schannel', 'Root CA auto-update', 'Exchange module + search tuning',
                     'Security hardening', 'Org/Transport optimizations', 'IANA timezone mapping',
@@ -9983,6 +10163,8 @@ $body
                 Step-P5 'RSS / NIC queues';             Enable-RSSOnAllNICs
                 Step-P5 'IPv4 over IPv6';               Set-IPv4OverIPv6Preference
                 Step-P5 'NetBIOS on NICs';              Disable-NetBIOSOnAllNICs
+                Step-P5 'LLMNR';                        Disable-LLMNR
+                Step-P5 'mDNS';                         Disable-MDNS
                 Step-P5 'MaxConcurrentAPI';             Set-MaxConcurrentAPI
                 Step-P5 'Disk allocation unit';         Test-DiskAllocationUnitSize
                 Step-P5 'Scheduled tasks';              Disable-UnnecessaryScheduledTasks
@@ -10132,6 +10314,7 @@ $body
 
             6 {
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Finalizing' -PercentComplete 0
+                Enable-DefenderRealtimeMonitoring
                 if ( Get-Service MSExchangeTransport -ErrorAction SilentlyContinue) {
                     Write-MyOutput "Configuring MSExchangeTransport startup to Automatic"
                     Set-Service MSExchangeTransport -StartupType Automatic
@@ -10227,10 +10410,11 @@ $body
                     Test-DBLogPathSeparation
                 }
 
-                # Auth Certificate health check
+                # Auth Certificate health check + MECA auto-renewal task
                 if (-not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Auth Certificate check' -PercentComplete 75
                     Test-AuthCertificate
+                    Register-AuthCertificateRenewal
                 }
 
                 # VSS writers, EEMS, Modern Auth checks (F9, F10, F11)
@@ -10265,6 +10449,11 @@ $body
                     Invoke-HealthChecker
                 }
 
+                # Re-enable UAC and IE ESC BEFORE report/document generation so the
+                # captured security state reflects the final, hardened configuration.
+                Enable-UAC
+                Enable-IEESC
+
                 # Installation Report
                 if (-not $State['SkipInstallReport'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Installation Report' -PercentComplete 88
@@ -10281,12 +10470,16 @@ $body
 
                     if (-not $State['NoWordDoc']) {
                         Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Word Installation Document' -PercentComplete 94
-                        try { New-InstallationDocument } catch { Write-MyWarning ('Word document failed: {0}' -f $_.Exception.Message) }
+                        try { New-InstallationDocument } catch {
+                            $derr = $_
+                            Write-MyWarning ('Word document failed: ' + $derr.Exception.Message)
+                            $dln = if ($derr.InvocationInfo) { $derr.InvocationInfo.ScriptLineNumber } else { '?' }
+                            $dli = if ($derr.InvocationInfo) { ($derr.InvocationInfo.Line -replace '\s+', ' ').Trim() } else { '' }
+                            Write-MyWarning ('  at line ' + $dln + ': ' + $dli)
+                            if ($derr.ScriptStackTrace) { Write-MyVerbose ('  stack: ' + $derr.ScriptStackTrace) }
+                        }
                     }
                 }
-
-                Enable-UAC
-                Enable-IEESC
 
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
                 Write-MyOutput "Setup finished - We're good to go."
