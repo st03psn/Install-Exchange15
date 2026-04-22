@@ -94,7 +94,7 @@
     SkipSetupAssist   = $false   # $true to skip CSS-Exchange SetupAssist on Phase 4 failure
 
     # -------------------------------------------------------------------------
-    # v5.82 — Word installation document (F22)
+    # v5.82 / v5.84 — Word installation document (F22)
     # -------------------------------------------------------------------------
 
     # $true to skip Word (.docx) installation document generation after Phase 6
@@ -106,6 +106,16 @@
 
     # Document language: 'DE' (default) or 'EN'
     # Language = 'DE'
+
+    # Scope of the generated document (v5.84):
+    #   All   — org-wide settings + all Exchange servers + local details (default)
+    #   Org   — org-wide chapter only (no per-server hardware / VDir queries)
+    #   Local — per-server sections only (no org-wide chapter)
+    # DocumentScope = 'All'
+
+    # Limit per-server documentation to specific server names (v5.84).
+    # Local server is always included. Applies when DocumentScope is All or Local.
+    # IncludeServers = @('EX01', 'EX02')
 
     # DoNotEnableEP = $false   # $true to skip Extended Protection configuration
     # NoNet481      = $false   # $true to skip .NET 4.8.1 installation

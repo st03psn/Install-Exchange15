@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.82 (April 2026, last updated 2026-04-21)
+**Version:** 5.84 (April 2026, last updated 2026-04-22)
 **License:** As-Is, without warranty
 
 ---
@@ -83,11 +83,17 @@ If a `config.psd1` file is found in the same folder as the script or `.exe`, you
     -CertificatePath C:\certs\mail.pfx -LogRetentionDays 30 `
     -RelaySubnets '10.0.1.0/24' -ExternalRelaySubnets '10.0.2.5'
 
-# Generate a Word installation document on an existing server (no install required)
-.\Install-Exchange15.ps1 -StandaloneDocument -Language EN
+# Generate a Word document for the full organisation on an existing server (ad-hoc inventory)
+.\Install-Exchange15.ps1 -StandaloneDocument -Language DE
 
-# Generate a customer-ready Word document with sensitive values redacted
-.\Install-Exchange15.ps1 -StandaloneDocument -Language DE -CustomerDocument
+# Generate a customer-ready Word document — full org + all servers, sensitive values redacted
+.\Install-Exchange15.ps1 -StandaloneDocument -Language EN -CustomerDocument
+
+# Document only org-wide configuration (no per-server hardware queries)
+.\Install-Exchange15.ps1 -StandaloneDocument -DocumentScope Org -Language DE
+
+# Document specific servers only in a large farm
+.\Install-Exchange15.ps1 -StandaloneDocument -IncludeServers EX01,EX02 -Language DE
 ```
 
 ### Compile to .exe (optional)
@@ -147,6 +153,8 @@ Use `Build.ps1` to compile the script into a self-contained Windows executable v
 | `-NoWordDoc` | Skip Word (.docx) installation document generation at Phase 6 |
 | `-CustomerDocument` | Redact RFC1918 IPs, certificate thumbprints, and passwords in the Word document |
 | `-Language` | Document language: `DE` (default) or `EN` |
+| `-DocumentScope` | `All` (default): org + all servers + local. `Org`: org-wide only. `Local`: per-server only |
+| `-IncludeServers` | Limit per-server documentation to specific server names (e.g. `EX01,EX02`) |
 
 See `deploy-example.psd1` for a fully documented configuration file template.
 
@@ -234,6 +242,19 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.84 — April 2026
+- **Word Document: organisation-wide + all servers** — `New-InstallationDocument` now documents the entire Exchange organisation, not only the local server; new chapter 4 covers org-wide configuration (Org-Config, Accepted/Remote Domains, E-Mail-Address Policies, Transport Rules, Transport Config, Journal/DLP/Retention, Mobile/OWA Policies, all DAGs with DB copies, org-scoped Send Connectors, Federation/Hybrid/OAuth, AuthConfig); new chapter 5 enumerates every Exchange server with identity, hardware details, databases, virtual directories, receive connectors, certificates, and transport agents
+- **Ad-hoc inventory mode** — run `-StandaloneDocument` on any existing Exchange server at any time to produce a full current-state document of the organisation, without a prior EXpress install
+- **Remote hardware queries via CIM/WSMan** — hardware, pagefile, volume, and NIC data collected from all servers using WinRM (TCP 5985/5986, Kerberos); no WMI/DCOM, no dynamic RPC ports; Exchange EMS already requires WinRM so no extra infrastructure needed
+- **Interactive retry/skip prompt** — if a remote server is unreachable, EXpress shows `[R] Retry / [S] Skip` with a 10-minute auto-skip countdown; silent skip in Autopilot/unattended mode; failure is noted inline in the document
+- **`-DocumentScope All|Org|Local`** — control document depth: `All` = full org + all servers (default), `Org` = org-wide chapter only, `Local` = per-server sections only; useful for large farms or targeted documentation runs
+- **`-IncludeServers`** — limit per-server documentation to specific Exchange servers in large environments
+- **Pre-requisite tooling** — `tools/Enable-EXpressRemoteQuery.ps1` enables WinRM on target servers with one command; `docs/remote-query-setup.md` provides GPO equivalent, firewall matrix, and error guide
+- **Titelblatt Szenario-Zeile** — document title page shows whether the run was a new environment, a server addition, or an ad-hoc inventory
+
+### v5.83 — April 2026
+- Dev tools `Fix-PhaseNum` and `Parse-Check` added; three-tier logging, unified file nomenclature, credential prompt fix
 
 ### v5.82 — April 2026
 - **Word Installation Document** (`New-InstallationDocument`) — generated automatically at Phase 6 completion alongside the HTML report; pure-PowerShell OpenXML engine, no Office dependency; 15 chapters: installation parameters, system details, network & DNS, Active Directory, Exchange configuration (DBs, VDirs, connectors, certificates, DAG, transport), hardening & tuning, backup readiness, HealthChecker reference, monitoring, hybrid status, public folders, executed cmdlets, runbooks and open items

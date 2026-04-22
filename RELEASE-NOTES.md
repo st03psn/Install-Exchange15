@@ -4,6 +4,51 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.84 (2026-04-22)
+
+### F22 — Installationsdokumentation: Org-weite + alle Server (Remote-Query)
+
+**Scope-Erweiterung:** `New-InstallationDocument` dokumentiert jetzt die gesamte Exchange-Organisation, nicht nur den lokalen Server. Drei Einsatzszenarien werden durch das Dokument unterschieden (Titelblatt: Szenario-Zeile):
+
+1. **Neue Exchange-Umgebung** — ein Server, Org frisch angelegt
+2. **Server-Ergänzung** — neuer Server zu bestehender Org; alle Server + neuer Server
+3. **Ad-hoc-Inventar** (`-StandaloneDocument` ohne vorheriges Setup) — reine Bestandsaufnahme, Kapitel 2/7/14 entfallen
+
+**Neue Kapitelstruktur (16 Kapitel):**
+
+- Kap. 4 „Organisation — übergreifende Konfiguration" (neu): Org-Config, Accepted/Remote Domains, E-Mail-Adressrichtlinien, Transportregeln, Transport-Konfiguration, Journal/DLP/Retention, Mobile/OWA-Policies, DAGs (alle, mit DB-Kopien), Send Connectors, Federation/Hybrid/OAuth, AuthConfig
+- Kap. 5 „Server in der Organisation" (neu): Schleife über `Get-ExchangeServer`; pro Server: Identität, Systemdetails, Datenbanken, VDirs, Receive Connectors, Zertifikate, Transport Agents; lokaler Server mit Marker „← Neu installiert"
+- Kap. 6–16: Netzwerk/DNS (lokal), Exchange-Installation (lokal), Härtung, Agents, Backup/DR, HealthChecker, Monitoring, Public Folders, CMDLets, Runbooks, Offene Punkte
+
+**Remote-Query-Standard (CIM/WSMan):** `Get-RemoteServerData` sammelt Hardware/OS/Pagefile/Volume/NIC-Daten von entfernten Exchange-Servern via CIM über WSMan (WinRM TCP 5985/5986, Kerberos). WMI/DCOM wird bewusst nicht verwendet. Lokaler Server: direktes CIM, kein WinRM-Prompt.
+
+**Interaktive Nachfrage bei Fehlschlag:** `Invoke-RemoteQueryWithPrompt` — zeigt bei WinRM-Fehlschlag Abhilfe-Hinweis und bietet `[R] Retry / [S] Skip` mit 10-min Auto-Skip-Countdown (Write-Progress Id 2); Autopilot/Non-Interactive: lautloser Skip. Hinweistext im Dokument bei übersprungenen Servern.
+
+**Neue Daten-Helper:**
+
+- `Get-OrganizationReportData` — org-weite Settings (einmalig)
+- `Get-ServerReportData -ServerName` — pro-Server Exchange-Cmdlets + Remote-CIM
+- `Get-InstallationReportData -Scope -IncludeServers` — Aggregator für beide Report-Funktionen
+
+**Neue Parameter:**
+
+- `-DocumentScope All|Org|Local` (Default: `All`) — Tiefe der Dokumentation steuerbar
+- `-IncludeServers <Name[]>` — Filterung auf ausgewählte Server in großen Farms
+
+**Neue Dateien:**
+
+- `tools/Enable-EXpressRemoteQuery.ps1` — idempotentes Pre-Req-Script für Zielserver (HTTP/HTTPS-Listener, optionale AD-Gruppen-ACL)
+- `docs/remote-query-setup.md` — GPO-Anleitung, Firewall-Matrix, Fehlerbilder, Härtungsempfehlung
+
+---
+
+## v5.83 (2026-04-22)
+
+- `Fix-PhaseNum` (Dev-Tool), `Parse-Check` (Dev-Tool): verbleibende Dev-Tools hinzugefügt
+- Dreistufiges Logging, vereinheitlichter Datei-Nomenklatur, Credential-Prompt-Fix
+
+---
+
 ## v5.82 (2026-04-21)
 
 - F22: `New-InstallationDocument` — generates a Word (.docx) installation report after Phase 6 using a pure-PowerShell OpenXML engine (no Office/COM); 15 chapters covering installation parameters, system details, network, AD, Exchange configuration, hardening, backup readiness, HealthChecker, monitoring, hybrid, public folders, executed cmdlets, and runbooks; CustomerDocument mode redacts RFC1918 IPs, certificate thumbprints, and passwords
