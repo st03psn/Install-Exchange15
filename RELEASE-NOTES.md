@@ -6,92 +6,92 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ## v5.84 (2026-04-22)
 
-### F22 — Installationsdokumentation: Org-weite + alle Server (Remote-Query)
+### F22 — Installation Documentation: org-wide + all servers (remote query)
 
-**Scope-Erweiterung:** `New-InstallationDocument` dokumentiert jetzt die gesamte Exchange-Organisation, nicht nur den lokalen Server. Drei Einsatzszenarien werden durch das Dokument unterschieden (Titelblatt: Szenario-Zeile):
+**Scope expansion:** `New-InstallationDocument` now documents the entire Exchange organisation, not just the local server. The document title page labels the run with one of three scenarios:
 
-1. **Neue Exchange-Umgebung** — ein Server, Org frisch angelegt
-2. **Server-Ergänzung** — neuer Server zu bestehender Org; alle Server + neuer Server
-3. **Ad-hoc-Inventar** (`-StandaloneDocument` ohne vorheriges Setup) — reine Bestandsaufnahme, Kapitel 2/7/14 entfallen
+1. **New Exchange environment** — a single server, organisation freshly created
+2. **Server addition** — new server joining an existing organisation; all servers documented plus the newly installed one
+3. **Ad-hoc inventory** (`-StandaloneDocument` without a prior setup run) — pure stock-take; chapters 2 / 7 / 14 are omitted
 
-**Neue Kapitelstruktur (16 Kapitel):**
+**New chapter structure (16 chapters):**
 
-- Kap. 4 „Organisation — übergreifende Konfiguration" (neu): Org-Config, Accepted/Remote Domains, E-Mail-Adressrichtlinien, Transportregeln, Transport-Konfiguration, Journal/DLP/Retention, Mobile/OWA-Policies, DAGs (alle, mit DB-Kopien), Send Connectors, Federation/Hybrid/OAuth, AuthConfig
-- Kap. 5 „Server in der Organisation" (neu): Schleife über `Get-ExchangeServer`; pro Server: Identität, Systemdetails, Datenbanken, VDirs, Receive Connectors, Zertifikate, Transport Agents; lokaler Server mit Marker „← Neu installiert"
-- Kap. 6–16: Netzwerk/DNS (lokal), Exchange-Installation (lokal), Härtung, Agents, Backup/DR, HealthChecker, Monitoring, Public Folders, CMDLets, Runbooks, Offene Punkte
+- Chapter 4 — "Organisation — cross-cutting configuration" (new): Org-Config, Accepted/Remote Domains, email address policies, transport rules, transport configuration, journal/DLP/retention, mobile/OWA policies, DAGs (all, with database copies), send connectors, federation/hybrid/OAuth, AuthConfig
+- Chapter 5 — "Servers in the organisation" (new): loop over `Get-ExchangeServer`; per server: identity, system details, databases, virtual directories, receive connectors, certificates, transport agents; local server marked "← newly installed"
+- Chapters 6–16: network/DNS (local), Exchange installation (local), hardening, agents, backup/DR, HealthChecker, monitoring, public folders, cmdlets, runbooks, open items
 
-**Remote-Query-Standard (CIM/WSMan):** `Get-RemoteServerData` sammelt Hardware/OS/Pagefile/Volume/NIC-Daten von entfernten Exchange-Servern via CIM über WSMan (WinRM TCP 5985/5986, Kerberos). WMI/DCOM wird bewusst nicht verwendet. Lokaler Server: direktes CIM, kein WinRM-Prompt.
+**Remote query standard (CIM/WSMan):** `Get-RemoteServerData` gathers hardware / OS / pagefile / volume / NIC data from remote Exchange servers via CIM over WSMan (WinRM TCP 5985/5986, Kerberos). WMI/DCOM is intentionally avoided. Local server: direct CIM, no WinRM prompt.
 
-**Interaktive Nachfrage bei Fehlschlag:** `Invoke-RemoteQueryWithPrompt` — zeigt bei WinRM-Fehlschlag Abhilfe-Hinweis und bietet `[R] Retry / [S] Skip` mit 10-min Auto-Skip-Countdown (Write-Progress Id 2); Autopilot/Non-Interactive: lautloser Skip. Hinweistext im Dokument bei übersprungenen Servern.
+**Interactive prompt on failure:** `Invoke-RemoteQueryWithPrompt` — on WinRM failure, shows a remediation hint and offers `[R] Retry / [S] Skip` with a 10-minute auto-skip countdown (`Write-Progress -Id 2`); under Autopilot or non-interactive sessions: silent skip. Skipped servers are flagged inline in the document.
 
-**Neue Daten-Helper:**
+**New data helpers:**
 
-- `Get-OrganizationReportData` — org-weite Settings (einmalig)
-- `Get-ServerReportData -ServerName` — pro-Server Exchange-Cmdlets + Remote-CIM
-- `Get-InstallationReportData -Scope -IncludeServers` — Aggregator für beide Report-Funktionen
+- `Get-OrganizationReportData` — org-wide settings (queried once)
+- `Get-ServerReportData -ServerName` — per-server Exchange cmdlets + remote CIM
+- `Get-InstallationReportData -Scope -IncludeServers` — aggregator consumed by both report functions
 
-**Neue Parameter:**
+**New parameters:**
 
-- `-DocumentScope All|Org|Local` (Default: `All`) — Tiefe der Dokumentation steuerbar
-- `-IncludeServers <Name[]>` — Filterung auf ausgewählte Server in großen Farms
+- `-DocumentScope All|Org|Local` (default `All`) — document depth selector
+- `-IncludeServers <Name[]>` — filter to a subset of servers in large farms
 
-**Neue Dateien:**
+**New files:**
 
-- `tools/Enable-EXpressRemoteQuery.ps1` — idempotentes Pre-Req-Script für Zielserver (HTTP/HTTPS-Listener, optionale AD-Gruppen-ACL)
-- `docs/remote-query-setup.md` — GPO-Anleitung, Firewall-Matrix, Fehlerbilder, Härtungsempfehlung
+- `tools/Enable-EXpressRemoteQuery.ps1` — idempotent prerequisite script for target servers (HTTP/HTTPS listener, optional AD-group ACL)
+- `docs/remote-query-setup.md` — GPO walkthrough, firewall matrix, failure modes, hardening recommendations
 
 ---
 
 ## v5.83 (2026-04-22)
 
-### Dreistufiges Logging (single log file, tier-gesteuert via `-Verbose` / `-Debug`)
+### Three-tier logging (single log file, tier-controlled via `-Verbose` / `-Debug`)
 
-`Write-ToTranscript` schreibt ein einziges Log-File mit drei Tiers, pro Zeile mit Tier-Präfix versehen (`INFO` / `WARNING` / `ERROR` / `EXE` / `VERBOSE` / `DEBUG`):
+`Write-ToTranscript` writes a single log file with three tiers; each line is tagged with its tier prefix (`INFO` / `WARNING` / `ERROR` / `EXE` / `VERBOSE` / `DEBUG`):
 
-| Aufruf | Im Log enthalten |
+| Invocation | Tiers written |
 |---|---|
-| `.\Install-Exchange15.ps1` (Default) | INFO, WARNING, ERROR, EXE |
-| `.\Install-Exchange15.ps1 -Verbose` | + VERBOSE |
-| `.\Install-Exchange15.ps1 -Debug` | + DEBUG + `SUPPRESSED-ERROR`-Zeilen |
+| `.\Install-Exchange15.ps1` (default) | `INFO`, `WARNING`, `ERROR`, `EXE` |
+| `.\Install-Exchange15.ps1 -Verbose` | + `VERBOSE` |
+| `.\Install-Exchange15.ps1 -Debug` | + `DEBUG` + `SUPPRESSED-ERROR` lines |
 
-**`SUPPRESSED-ERROR` im Debug-Modus:** `Write-ToTranscript` snapshottet `$Error.Count` und rekonstruiert alle Fehler, die zwischen Aufrufen neu aufgetaucht sind — also auch die, die `try/catch` stumm geschluckt hat. Zeilenformat: `[SUPPRESSED-ERROR] (Exception.Type) at line N: <offending line> :: <message>`. Unverzichtbar für die Diagnose von BITS-/MSI-/CIM-Schluckfehlern.
+**`SUPPRESSED-ERROR` in debug mode:** `Write-ToTranscript` snapshots `$Error.Count` and reconstructs every error that appeared since the previous call — including those silently swallowed by `try/catch`. Line format: `[SUPPRESSED-ERROR] (Exception.Type) at line N: <offending line> :: <message>`. Essential for diagnosing BITS / MSI / CIM failures that would otherwise leave no trace.
 
-**Encoding-Fix:** PS 5.1 `Out-File` schreibt standardmäßig UTF-16 LE mit BOM, der UTF-8-Header erzeugte dadurch „seltsame Schriftarten" in Viewern. Jetzt `[System.IO.File]::AppendAllText(..., UTF8Encoding(`$false`))` — UTF-8 ohne BOM, jede Zeile gleich codiert.
+**Encoding fix:** PS 5.1 `Out-File` defaults to UTF-16 LE with BOM, which combined with the UTF-8 header produced "strange font" rendering in viewers. Now `[System.IO.File]::AppendAllText(..., UTF8Encoding($false))` — UTF-8 without BOM, every line written with the same encoding.
 
-Aktiviert werden die Tiers über die Standard-PowerShell-Switches `-Verbose` / `-Debug` auf dem `.ps1`-Aufruf — intern abgelegt in `$State['LogVerbose']` / `$State['LogDebug']`. Beim Autopilot-Resume über `RunOnce` werden die Flags automatisch an den weiterlaufenden Prozess weitergereicht (`$logFlags`), d.h. das gewünschte Log-Level bleibt über Reboots hinweg erhalten.
+Tiers are activated via the standard PowerShell `-Verbose` / `-Debug` switches on the `.ps1` invocation, tracked internally in `$State['LogVerbose']` / `$State['LogDebug']`. On Autopilot resume via `RunOnce`, the flags are passed through to the resumed process (`$logFlags`), so the selected log tier survives reboots.
 
-Neuer Helper `Write-MyDebug` — Console bleibt stumm, Log-Zeile erscheint nur im Debug-Tier.
+New helper `Write-MyDebug` — console stays silent; the log line only appears when the debug tier is active.
 
-### Vereinheitlichte Datei-Nomenklatur
+### Unified file nomenclature
 
-Alle vom Script erzeugten Dateien folgen jetzt dem Schema `{PC}_{Tag}_{yyyyMMdd-HHmmss}.{ext}`:
+All artefacts generated by the script now follow the `{PC}_{Tag}_{yyyyMMdd-HHmmss}.{ext}` schema:
 
-- Transcript/Log (inkl. `{PC}_InstallLog_*.log`)
-- Preflight-Report (neu mit Timestamp — vorher überschrieben bei jedem Lauf)
-- Installation-Report (HTML)
-- Installation-Document (Word)
-- RBAC-Report
-- Exported Server-Config (XML)
-- Log-Cleanup-Protokoll
+- Transcript / log (including `{PC}_InstallLog_*.log`)
+- Preflight report (now timestamped — previously overwritten on each run)
+- Installation report (HTML)
+- Installation document (Word)
+- RBAC report
+- Exported server config (XML)
+- Log cleanup protocol
 
-Einheitliche Sortierung im Explorer, zusammengehörige Artefakte eines Installations-Laufs anhand Timestamp auf einen Blick erkennbar.
+Consistent sorting in Explorer; all artefacts from a single installation run are identifiable at a glance by their shared timestamp.
 
-### Credential-Prompt-Fix
+### Credential prompt fix
 
-`Get-ValidatedCredentials`: deterministische GUI-vs-Read-Host-Entscheidung via `$env:SESSIONNAME`-Check (Console vs RDP). Vorher konnte `Get-Credential` in seltenen Fällen `$null` zurückgeben und stumm weiterlaufen — jetzt wird die Eingabemodalität vorab festgelegt und re-prompted bei Abbruch.
+`Get-ValidatedCredentials`: deterministic GUI-vs-Read-Host decision via `$env:SESSIONNAME` check (console vs. RDP). Previously `Get-Credential` could return `$null` in rare cases and the script would silently continue — now the input modality is chosen up front, and the prompt is re-issued on cancel.
 
-### Bootstrap-Reihenfolge
+### Bootstrap order
 
-- Log-Initialisierung läuft **vor** der Menü-Anzeige — Menü-Interaktionen landen dadurch im Log
-- `$script:isFreshStart`-Snapshot verhindert, dass frühe State-Mutationen einen Fresh-Start fälschlich als Autopilot-Resume klassifizieren
+- Log initialisation now runs **before** the menu is drawn — menu interactions are captured in the log
+- `$script:isFreshStart` snapshot prevents early state mutations from being misclassified as an Autopilot resume
 
-### Dev-Tools
+### Dev tools
 
-- `tools/Test-ScriptSanity.ps1` — 14 strukturelle Sanity-Checks (param-Block, process-Block, Encoding, Ternary-Syntax, Function-Count etc.)
-- `tools/Test-ScriptQuality.ps1` — qualitative Checks
-- `tools/Fix-IfAsArg.ps1` — Fixer für PS 5.1 `-f (if …)`-Syntax-Fehler
-- `tools/Fix-PhaseNum.ps1` — Phasen-Nummer-Konsistenz
-- `tools/Parse-Check.ps1` — schneller Parser-Check ohne Ausführung
+- `tools/Test-ScriptSanity.ps1` — 14 structural sanity checks (param block, process block, encoding, ternary syntax, function count, …)
+- `tools/Test-ScriptQuality.ps1` — qualitative checks
+- `tools/Fix-IfAsArg.ps1` — fixer for the PS 5.1 `-f (if …)` syntax trap
+- `tools/Fix-PhaseNum.ps1` — phase-number consistency enforcer
+- `tools/Parse-Check.ps1` — fast parser check without execution
 
 ---
 

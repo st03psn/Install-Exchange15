@@ -1,120 +1,121 @@
-# Remote-Query-Setup für EXpress Installationsdokumentation
+# Remote Query Setup for EXpress Installation Documentation
 
-`New-InstallationDocument` erfasst Hardware-, Pagefile-, Volume- und NIC-Details
-aller Exchange-Server einer Organisation. Dafür wird **CIM über WSMan (WinRM)**
-verwendet — derselbe Transport, den die Exchange Management Shell ohnehin nutzt.
+`New-InstallationDocument` gathers hardware, pagefile, volume, and NIC
+details from every Exchange server in the organisation. It uses **CIM over
+WSMan (WinRM)** — the same transport the Exchange Management Shell already
+relies on.
 
-Dieses Dokument beschreibt den verbindlichen, minimalen Standard, der auf jedem
-zu dokumentierenden Server bereitgestellt werden muss.
+This document describes the minimum standard that must be provisioned on
+every server to be documented.
 
 ---
 
-## Transport und Grenzen
+## Transport and boundaries
 
 | | |
 |---|---|
-| Transport | CIM über WSMan (WinRM), **nicht** WMI/DCOM |
-| Ports | TCP 5985 (HTTP, Default), TCP 5986 (HTTPS, optional) |
-| Auth | Kerberos (Domäne) — **kein** `TrustedHosts` |
-| Timeout | 30 s pro Server |
-| Rechte | Read-only — ausschließlich `Get-CimInstance`-Aufrufe |
-| Degradation | Bei Fehlschlag: Hinweistext im Dokument, Lauf fährt fort |
+| Transport | CIM over WSMan (WinRM), **not** WMI/DCOM |
+| Ports | TCP 5985 (HTTP, default), TCP 5986 (HTTPS, optional) |
+| Authentication | Kerberos (domain) — **no** `TrustedHosts` |
+| Timeout | 30 s per server |
+| Rights | Read-only — exclusively `Get-CimInstance` calls |
+| Degradation | On failure: inline note in the document, the run continues |
 
 ---
 
-## Weg A: Script (pro Server lokal ausführen)
+## Option A: Script (run locally on each server)
 
 ```powershell
-\\filer\tools\Enable-EXpressRemoteQuery.ps1                   # HTTP-Listener reicht im LAN
-\\filer\tools\Enable-EXpressRemoteQuery.ps1 -EnableHttps      # zusätzlich HTTPS (5986)
+\\filer\tools\Enable-EXpressRemoteQuery.ps1                   # HTTP listener is enough on LAN
+\\filer\tools\Enable-EXpressRemoteQuery.ps1 -EnableHttps      # add HTTPS listener (5986)
 \\filer\tools\Enable-EXpressRemoteQuery.ps1 -RestrictToGroup 'EXpress-DocReader'
 ```
 
-Idempotent — mehrfache Aufrufe sind unschädlich.
+Idempotent — repeated invocations are harmless.
 
 ---
 
-## Weg B: Gruppenrichtlinie (empfohlen für Domänen)
+## Option B: Group Policy (recommended for domains)
 
-Neue GPO `Exchange — EXpress Remote Query`, verlinkt an die OU mit den
-Exchange-Servern.
+Create GPO `Exchange — EXpress Remote Query`, linked to the OU containing
+the Exchange servers.
 
-### 1. WinRM-Dienst
+### 1. WinRM service
 
-**Computerkonfiguration → Richtlinien → Windows-Einstellungen → Sicherheitseinstellungen → Systemdienste**
+**Computer Configuration → Policies → Windows Settings → Security Settings → System Services**
 
-- `Windows Remote Management (WS-Management)` → **Automatisch**
+- `Windows Remote Management (WS-Management)` → **Automatic**
 
-### 2. WinRM-Service-Konfiguration
+### 2. WinRM service configuration
 
-**Computerkonfiguration → Richtlinien → Administrative Vorlagen → Windows-Komponenten → Windows-Remoteverwaltung (WinRM) → WinRM-Dienst**
+**Computer Configuration → Policies → Administrative Templates → Windows Components → Windows Remote Management (WinRM) → WinRM Service**
 
-| Einstellung | Wert |
+| Setting | Value |
 |---|---|
-| Remoteserververwaltung über WinRM zulassen | **Aktiviert**, IPv4-Filter `*`, IPv6-Filter `*` |
-| Kerberos-Authentifizierung zulassen | **Aktiviert** |
-| Nicht verschlüsselten Datenverkehr zulassen | **Nicht konfiguriert** (bleibt verschlüsselt) |
+| Allow remote server management through WinRM | **Enabled**, IPv4 filter `*`, IPv6 filter `*` |
+| Allow Kerberos authentication | **Enabled** |
+| Allow unencrypted traffic | **Not configured** (traffic stays encrypted) |
 
 ### 3. Firewall
 
-**Computerkonfiguration → Richtlinien → Windows-Einstellungen → Sicherheitseinstellungen → Windows Defender Firewall mit erweiterter Sicherheit → Eingehende Regeln**
+**Computer Configuration → Policies → Windows Settings → Security Settings → Windows Defender Firewall with Advanced Security → Inbound Rules**
 
-Neue Regel oder bestehende aktivieren:
+Create a new rule or enable the existing one:
 
 | | |
 |---|---|
 | Name | `Windows Remote Management (HTTP-In)` |
-| Protokoll | TCP |
-| Lokaler Port | 5985 |
-| Profil | Domäne, Privat |
-| Aktion | Zulassen |
-| Remote-IP | Management-Subnetz bzw. Exchange-Server-Subnetz |
+| Protocol | TCP |
+| Local port | 5985 |
+| Profile | Domain, Private |
+| Action | Allow |
+| Remote IP | Management subnet or Exchange server subnet |
 
-Für HTTPS zusätzlich:
+For HTTPS, additionally:
 
 | | |
 |---|---|
 | Name | `Windows Remote Management (HTTPS-In)` |
-| Protokoll | TCP |
-| Lokaler Port | 5986 |
+| Protocol | TCP |
+| Local port | 5986 |
 
-### 4. (Optional) Zugriff auf Gruppe einschränken
+### 4. (Optional) Restrict access to a group
 
-PSSessionConfiguration-ACL via GPO-Preferences-Script oder DSC setzen auf
-`BUILTIN\Administrators` + `DOMAIN\EXpress-DocReader`. Alternativ über das Script
-`Enable-EXpressRemoteQuery.ps1 -RestrictToGroup`.
+Apply PSSessionConfiguration ACL via GPO preferences script or DSC,
+granting `BUILTIN\Administrators` + `DOMAIN\EXpress-DocReader`.
+Alternatively use `Enable-EXpressRemoteQuery.ps1 -RestrictToGroup`.
 
 ---
 
-## Verifikation
+## Verification
 
-Vom Management-Host aus:
+From the management host:
 
 ```powershell
 Test-WSMan -ComputerName ex01.contoso.local
 Get-CimInstance Win32_OperatingSystem -CimSession (New-CimSession -ComputerName ex01.contoso.local)
 ```
 
-Erwartung: WSMan-Identity + OS-Objekt mit Caption/Version. Fehlerfall siehe
-unten.
+Expected: a WSMan identity response plus an OS object with Caption/Version.
+See below for failure cases.
 
 ---
 
-## Fehlerbilder
+## Failure modes
 
-| Fehler | Ursache | Abhilfe |
+| Error | Cause | Remedy |
 |---|---|---|
-| `WinRM cannot complete the operation` | Dienst gestoppt oder Firewall blockt | Script oder GPO anwenden |
-| `Access is denied` | Kein lokaler Admin / nicht in `Remote Management Users` | Konto in Zielgruppe aufnehmen oder mit Admin-Account abfragen |
-| `The WinRM client cannot process the request. Kerberos authentication failed` | Ziel nicht in Domäne oder SPN fehlt | Server domänenjoinen oder HTTPS-Listener mit Hostnamen nutzen |
-| `The connection to the specified remote host was refused` | Kein Listener konfiguriert | `winrm quickconfig` bzw. Script |
+| `WinRM cannot complete the operation` | Service stopped or firewall blocks | Apply the script or the GPO |
+| `Access is denied` | Caller is not a local admin / not in `Remote Management Users` | Add the account to the target group, or query with an admin account |
+| `The WinRM client cannot process the request. Kerberos authentication failed` | Target is not domain-joined, or SPN missing | Domain-join the server, or use an HTTPS listener with hostname |
+| `The connection to the specified remote host was refused` | No listener configured | `winrm quickconfig`, or run the script |
 
 ---
 
-## Härtungsempfehlung
+## Hardening recommendations
 
-- **Kein `TrustedHosts *`** — Kerberos innerhalb der Domäne ist hinreichend
-- HTTPS-Listener (5986) mit Exchange-Auth-Zertifikat, falls Management-Netz nicht
-  vertrauenswürdig
-- Zugriff per AD-Gruppe `EXpress-DocReader` einschränken; EXpress benötigt
-  ausschließlich Leserechte
+- **Never set `TrustedHosts *`** — Kerberos inside the domain is sufficient
+- Use the HTTPS listener (5986) with the Exchange auth certificate if the
+  management network is not trusted
+- Restrict access via an AD group such as `EXpress-DocReader`; EXpress
+  requires read-only rights
