@@ -1,6 +1,321 @@
-# EXpress — Release Notes
+﻿# EXpress — Release Notes
 
 Full optimization and feature history. See `README.md` for user-facing changelog.
+
+**Versioning scheme:** `MAJOR.MINOR` = feature release; `MAJOR.MINOR.PATCH` = bugfix / maintenance release on top of the matching feature version.
+
+---
+
+## v5.94 (2026-04-24) — feature
+
+### Word installation document — audit-readiness sections
+
+Nine new sections added to `New-InstallationDocument` so the generated Word file doubles as an audit/handover record (ISO 27001, BSI IT-Grundschutz, DSGVO) without manual post-processing:
+
+- **§1.1 Change-Management** — placeholder 2-column table (Change-Request-Nr., approver, approval date, sign-off, sign-off date, remarks) for the operator to complete after go-live.
+- **§4.17 Service-Accounts / RBAC-Rollengruppen** — live `Get-RoleGroupMember` query for six Exchange role groups (Organization / Server / Recipient / Hygiene / Compliance Management, View-Only Organization Management). Multi-line cells via `<w:br/>` so each member is on its own line.
+- **§6.2 Ports/Firewall** — 13-row static reference (SMTP 25/587, HTTPS 443, HTTP 80, IMAPS 993, POP3S 995, RPC 135, SMB 445, GC 3268/3269, WinRM 5985/5986, MAPI-over-HTTP 64327).
+- **§7.2 Security-Update-Status** — Exchange build, Windows build, last boot, `$State['ExchangeSUVersion']` when present.
+- **§8.8 Compliance-Mapping** — 14 hardening measures cross-referenced to CIS Benchmark and BSI IT-Grundschutz module IDs.
+- **§8.9 DSGVO/Datenschutz-Hinweise** — 8-row GDPR checklist (Art. 4 Nr. 2 classification, AVV, TOM, Löschkonzept, Auskunftsrecht, Verletzungsmeldung, DSFA, Betriebsrat).
+- **§10.4 Backup-Nachweis** — placeholder for backup product, last full/incremental, restore-test cadence, RPO/RTO.
+- **§12.2 Monitoring-Checkliste** — 9-row go-live readiness list (crimson channels, HC schedule, DAG health, certificate expiry, queue depth, disk space, backup success, AD replication, security updates).
+- **Chapter 16 Abnahmetest** — 12 acceptance test cases with auto-populated OWA/ECP/EWS/Autodiscover URLs when `$State['Namespace']` is set; otherwise `<Namespace>` placeholder.
+
+### Chapter renumbering
+
+- Operative Runbooks: §16 → §17 (subsections 16.1–16.6 → 17.1–17.6).
+- Offene Punkte: §17 → §18.
+
+### `New-WdTable` multi-line cells
+
+Cell text containing `` `n `` is emitted with `<w:br/>` between runs so each line renders on its own row inside the cell (used by §4.17 Service-Accounts role-group membership list). `-Compact` (8pt) is now reserved for tables with 4+ columns that would otherwise wrap; 2–3 column tables stay at the default 11pt for legibility.
+
+### F25 Advanced Configuration Menu — plan absorbed into master
+
+The WIP on `feature/advanced-menu` (4 scaffolding functions, 319-line diff, stash commit `787b221`) is preserved as a reference but the design now lives in master at `docs/plan-advanced-menu.md`. ROADMAP F25 shortened to a pointer. No code on master changed — avoids maintaining two branches for a feature that is not yet scheduled.
+
+---
+
+## v5.93 (2026-04-23) — feature
+
+### Hybrid-aware MEAC task registration + AD Split-Permissions prep
+
+`Register-AuthCertificateRenewal` now drives CSS-Exchange `MonitorExchangeAuthCertificate.ps1` (MEAC) with the two scenarios the upstream documentation explicitly supports beyond the default: hybrid coexistence and AD Split Permissions. MEAC itself continues to self-provision the `SystemMailbox{b963af59-3975-4f92-9d58-ad0b1fe3a1a3}` automation account, its RBAC role group, and the scheduled task — EXpress only wires the operator-supplied knobs through.
+
+#### Auto-generated automation-account password (standard deployments)
+
+MEAC provisions the `SystemMailbox{b963af59-…}` user account itself, but Task Scheduler needs a password at registration time in order to register a task that runs AS that user — without one, MEAC logs "Please provide a password for the automation account" and exits without creating the task. Observed symptom: `Get-ScheduledTask -TaskName 'Daily Auth Certificate Check'` returns nothing even though MEAC reported no error.
+
+EXpress now generates a strong 32-character random password inline (cryptographic RNG, mixed alpha+digits+symbols) and passes it via MEAC `-Password`. The password is transient:
+
+- MEAC sets it on the `SystemMailbox{b963af59-…}` account AND registers the scheduled task atomically;
+- Windows Task Scheduler then stores the credential in its (DPAPI-protected) local credential store;
+- EXpress never needs the password again — not persisted to state, not logged, not returned. If re-registration ever becomes necessary (password policy rotation, task deleted), re-running `Register-AuthCertificateRenewal` generates a fresh password and MEAC resets both the account and the task atomically.
+
+When `-MEACAutomationCredential` is supplied (Split-Permissions path), the CLI credential takes precedence and no password is generated.
+
+#### Hybrid coexistence (transparent)
+
+Per MEAC docs, replacing the Auth Certificate in a hybrid org requires a Hybrid Configuration Wizard rerun afterwards; doing it silently breaks federation with Exchange Online. MEAC therefore refuses to renew by default when it detects hybrid — the operator must pass `-IgnoreHybridConfig` to authorise.
+
+EXpress now mirrors that safety model without surprising the operator:
+
+1. `Register-AuthCertificateRenewal` probes `Get-HybridConfiguration`. If hybrid is detected and `-MEACIgnoreHybridConfig` was not supplied, the task is registered in hybrid-safe mode and a multi-line advisory is logged at registration time (not buried in `-Verbose`).
+2. `-MEACIgnoreHybridConfig` is a pure passthrough. When present, it is forwarded to MEAC and a warning restates the HCW-rerun obligation.
+3. `-MEACNotificationEmail <addr>` is forwarded to MEAC `-SendEmailNotificationTo`. In hybrid mode it's the recommended escape hatch: daily checks still run, the task doesn't renew, but the admin gets an email 60 days before expiry with enough time to schedule an HCW rerun.
+4. `-MEACIgnoreUnreachableServers` is forwarded for multi-server orgs where partial outages are expected.
+
+All four knobs have config-file equivalents (`MEACIgnoreHybridConfig`, `MEACIgnoreUnreachableServers`, `MEACNotificationEmail`) — the credential one does not (see below).
+
+#### AD Split Permissions
+
+Per MEAC docs, under AD Split Permissions the Exchange admin cannot create AD users, so the `SystemMailbox{b963af59-3975-4f92-9d58-ad0b1fe3a1a3}@<domain>` automation account must be pre-created by a Domain Admin on a non-Exchange box via `-PrepareADForAutomationOnly -ADAccountDomain <domain>`. The resulting credential is then passed to the Exchange-side run via `-AutomationAccountCredential`.
+
+EXpress now supports both sides of that split:
+
+- **DA side — `-MEACPrepareADOnly -MEACADAccountDomain contoso.local`**: a new standalone parameter set dispatched immediately after the logging bootstrap, before any Exchange prereq check. EXpress downloads MEAC into `$env:TEMP`, invokes it with `-PrepareADForAutomationOnly -ADAccountDomain $MEACADAccountDomain -Confirm:$false`, logs each MEAC line at INFO tier, and exits with `ERR_OK` (or the new `ERR_MEACPREPAREAD = 1038` on failure). No state, no phase loop, no reboot. Safe to run on a domain-controller or admin workstation with only the ActiveDirectory module.
+- **Exchange side — `-MEACAutomationCredential (Get-Credential)`**: the standard install run receives the DA-created credential. EXpress persists it at Phase 0 intake (`$State['MEACAutomationUser']` + DPAPI-encrypted `$State['MEACAutomationPW']`) so it survives the Autopilot reboot chain, and `Register-AuthCertificateRenewal` rehydrates it via the new helper `Get-MEACAutomationCredentialFromState` and forwards it to MEAC as `-AutomationAccountCredential`. No bind-test, no validation, no prompts — it's a pure passthrough. If the credential is wrong, MEAC reports it; EXpress does not re-invent that layer.
+
+No plain-text config key for the automation password — deliberately. Split-Permissions deployments where a config file can carry the password are rare enough that the security cost of the plain-text path isn't justified. `-MEACAutomationCredential` is CLI-only (or picked up from a per-deployment secret store via `$env:`-assembled PSCredential in a wrapper).
+
+### Scope
+
+- **New CLI:** `-MEACAutomationCredential`, `-MEACIgnoreHybridConfig`, `-MEACIgnoreUnreachableServers`, `-MEACNotificationEmail` (available in sets M / NoSetup / Recover); `-MEACPrepareADOnly` + `-MEACADAccountDomain` (new parameter set `MEACPrepareAD`).
+- **New config keys:** `MEACIgnoreHybridConfig`, `MEACIgnoreUnreachableServers`, `MEACNotificationEmail`.
+- **New state keys:** `MEACAutomationUser`, `MEACAutomationPW` (DPAPI, user+machine bound). Populated only when `-MEACAutomationCredential` is supplied.
+- **New error code:** `ERR_MEACPREPAREAD = 1038`.
+- **New helper:** `Get-MEACAutomationCredentialFromState` (13-line rehydrate-only helper; no validation).
+- **`Register-AuthCertificateRenewal`:** hybrid probe + passthrough assembly. `$meacParams` hashtable fills incrementally based on what the operator supplied.
+
+### Not in scope
+
+The feature budget is roughly 130 lines of new code. No OU picker, no bind test, no 3-way A/M/S prompt, no Phase-0 credential cascade, no RBAC probe, no batch-logon probe, no plain-text MEAC password in config — MEAC handles all of those concerns itself when it provisions the automation account. EXpress stays a thin wrapper.
+
+---
+
+## v5.92 (2026-04-23) — feature
+
+### Plain-text install-admin credentials in config file (fully unattended)
+
+For true zero-touch deployment pipelines, the `-ConfigFile` .psd1 may now carry plain-text install-admin credentials alongside every other parameter:
+
+```powershell
+@{
+    # ...existing keys...
+    AdminUser     = 'CONTOSO\svc-exchadmin'
+    AdminPassword = 'R3plac3-M3-Immediately!'
+}
+```
+
+On load, EXpress converts the plain strings into a `PSCredential` object and emits a loud, box-framed **SECURITY WARNING** to the transcript every run:
+
+```
+################################################################
+##  SECURITY WARNING: PLAIN-TEXT CREDENTIALS IN CONFIG FILE   ##
+################################################################
+```
+
+These keys are an opt-in convenience for short-lived, unattended installation runs only. **The config file must be deleted or scrubbed immediately after install completes.** The state file's DPAPI encryption is user+machine bound; the config file is not — it is a plain artefact on disk, in backups, and in any version-control system it touches.
+
+CLI `-Credentials` takes precedence over the config-file keys (command line wins).
+
+### `Check.ps1` quality gate moved under `tools/`
+
+Call sites now use `.\tools\Check.ps1 -SkipAnalyzer`, matching the rest of the quality-gate toolbelt (`Test-ScriptQuality.ps1`, `Test-ScriptSanity.ps1`, `Parse-Check.ps1`).
+
+---
+
+## v5.91 (2026-04-23) — feature
+
+### Default output language flipped to English; single `-German` switch
+
+The HTML install report and pre-flight report have always been English-only. The Word installation document was the outlier: it defaulted to German via `-Language DE`. This made the script's default output language inconsistent and awkward for non-German audiences.
+
+- **Default: English.** All output (Word document, menu prompts, help) is English unless `-German` is set.
+- **`-German` switch** is the single opt-in for German output. The previous `-Language DE|EN` parameter has been removed — a two-value parameter plus a default is strictly more surface area than a boolean switch for the same thing.
+- **Menu prompt** (mode 7 "Standalone Document"): replaced "Document language [DE/EN]" with "German output? [y/N] (default: English)".
+- **Config-file back-compat:** legacy `Language=DE` entries in config files are still honoured and map to `-German`. New config files can use `German=true` directly.
+- `$State['Language']` remains `'EN'`/`'DE'` internally — `New-InstallationDocument`'s `L` helper was not touched.
+
+Behavioural contract: omit `-German` → English. Set `-German` → German. Nothing in between.
+
+---
+
+## v5.90 (2026-04-23) — feature
+
+### Word document: three readability + correctness fixes
+
+**(1) Anti-spam filter display now reflects reality.** §9.1 previously showed `Get-*FilterConfig.Enabled` as "Enabled", which is misleading — that is only the organisation-wide feature switch. EXpress disables the underlying transport agents (`Disable-TransportAgent`) for every filter except Recipient Filter, so "org config Enabled = True" typically coexists with "agent Disabled" → the filter does not fire.
+
+Each filter table (Content / Sender / Recipient / Sender ID) now has two rows:
+- **Effective status (transport agent)** — the actual pipeline state from `Get-TransportAgent`:
+  - `Enabled — agent runs in transport pipeline`
+  - `Inactive — transport agent is disabled, filter does not fire (org switch is only a feature flag)`
+  - `Not installed` (agent not present on this server)
+- **Org config Enabled (feature flag)** — `Get-*FilterConfig.Enabled` (the old row), clearly labelled as the feature switch.
+
+A paragraph above §9.1 explains the distinction so operators don't mis-read the table.
+
+**Why the other agents are disabled at all:** on Mailbox-role servers behind EOP/gateway, Sender ID rejects practically every inbound because the visible source IP is the gateway (SPF fails on Neutral/Fail), Content Filter double-scores already-classified mail (unpredictable FP rate), and Connection/Sender Filters add no value without curated lists. Recipient Filter stays on for Directory Harvest Attack Protection — that single agent is always worth running.
+
+**(2) Exchange Online / M365 promoted to top-level section.** Moved from §4.17 (inside "Organisation — Global Configuration") to §15 "Exchange Online and Microsoft 365", placed immediately before §16 "Operational Runbooks". Hybrid considerations (CMT, Free/Busy, Move Request, EOP, namespace, licensing) belong with day-2 operations, not org-config telemetry. "Open Items" renumbered §16 → §17.
+
+**(3) Wide tables now fit the page.** `New-WdTable` gets a `-Compact` switch that emits runs at 8pt (`<w:sz w:val="16"/>`) instead of 11pt — ~40% more horizontal characters per line, turning cascading wraps on every column into at most one break per cell. Applied to:
+- **Receive Connectors** — the 8-column table (Name / Bindings / Remote IPs / Auth / Permissions / TLS / FQDN / Max size) is also split into two 4/5-column tables (Network + Security and limits) sharing the connector name as the join key.
+- **Certificates per server** — 5 columns (Subject / Expiry / Remaining / Services / Thumbprint); Subject and Thumbprint are long, Compact keeps them on one line.
+
+---
+
+## v5.88.3 (2026-04-23) — bugfix
+
+### Word document: `$state` shadows `$State` hashtable — "Unable to index into System.String"
+
+PowerShell variable lookup is **case-insensitive**: `$state` and `$State` are the same variable. Two locations inside `New-InstallationDocument` used `$state` as a local loop/condition variable, silently overwriting the script-level `$State` hashtable with a string, causing "Unable to index into an object of type System.String" at `$State['WordDocPath'] = $docPath` (line 7378).
+
+- §12.1 Crimson Event Log loop: `$state = if ($log.IsEnabled) ...` → renamed `$logState`
+- `Draw-OptimizationMenu`: `$state = if ($sel[$LastKey]) ...` → renamed `$optState`
+
+`Test-ScriptQuality.ps1` now has a **SingletonShadow** detector (section 3e): walks all `AssignmentStatementAst` nodes, finds any local variable whose name (lowercased) matches a known script-level singleton (`$State`, `$StateFile`), and flags those not in the legitimate owner allowlist (`Restore-State`, `<top-level>`).
+
+---
+
+## v5.88.2 (2026-04-23) — bugfix
+
+### Word document: fix remaining `(if ...)` runtime crashes (PS 5.1)
+
+Six more occurrences of a control-flow statement inside plain grouping parens `(if ...)` — a known PS 5.1 pitfall documented in CLAUDE.md that produces "The term 'if' is not recognized as the name of a cmdlet" at runtime:
+
+- §2 Installation Parameters — `TLS 1.0 / TLS 1.1` row (`.Add(@('...', (if ...)))`)
+- §4.16 Admin Audit Log — `AdminAuditLogCmdlets` and `AdminAuditLogExclusions` rows (`SafeVal (if ...)`)
+- §9.1 Sender Filter — `BlockedSenders` and `BlockedDomains` rows (`SafeVal (if ...)`)
+- §9.1 Recipient Filter — `BlockedRecipients` row (`SafeVal (if ...)`)
+
+All fixed by assigning the `if`-result to a temporary variable first. The `Test-ScriptQuality.ps1` detector (section 3a) was widened from a `CommandAst`-only scan to a global `ParenExpressionAst` walk — it now catches the pattern in all contexts (method arguments, array literals, binary operands). `Test-ScriptSanity.ps1` check 3 updated accordingly. New `Check.ps1` root wrapper runs both suites with a single command.
+
+---
+
+## v5.88.1 (2026-04-23) — bugfix
+
+### MEAC: verify scheduled-task registration actually succeeded
+
+`Register-AuthCertificateRenewal` no longer trusts MEAC's own exit signal. The success message is now conditional on `Get-ScheduledTask` confirming the `"Daily Auth Certificate Check"` task exists after the MEAC invocation. If not, a warning with the MEAC log path is emitted instead of a false-positive success line, so registration failures surface at install time rather than five years later when the Auth Certificate silently expires.
+
+---
+
+## v5.88 (2026-04-23) — feature
+
+### Word installation document — §4.16 Admin-Auditprotokoll-Konfiguration
+
+New org-wide section collects `Get-AdminAuditLogConfig` and documents Admin Audit Log enabled state, retention period, log mailbox, logged cmdlets, exclusions, test-cmdlet logging, and log level. Basis for compliance evidence (ISO 27001, BSI-Grundschutz, DSGVO-Rechenschaftspflicht).
+
+### Word installation document — §9.1 Anti-Spam-Filter-Konfiguration
+
+New sub-section after the transport agent table collects `Get-ContentFilterConfig`, `Get-SenderFilterConfig`, `Get-RecipientFilterConfig`, and `Get-SenderIdConfig`. Rendered as four separate sub-tables (Content Filter, Sender Filter, Recipient Filter, Sender ID) showing enabled state, SCL thresholds, quarantine mailbox, block lists, and spoof/temp-error actions. Only appears when anti-spam agents are installed (safe to call — caught if not present).
+
+### Word installation document — §12.1 Exchange Crimson Event Log Channels
+
+New sub-section in the Monitoring-Readiness chapter queries `Get-WinEvent -ListLog "Microsoft-Exchange*"` and lists all enabled or populated `/Operational` and `/Admin` crimson channels with current state, maximum log size, and record count. Helps document which monitoring channels are available and whether they have been configured for external forwarding. Closing paragraph names the four most important channels for production monitoring.
+
+---
+
+## v5.87 (2026-04-23) — feature
+
+### Word installation document — binary registry values → localised text
+
+All hardening registry values (0/1) in Sections 8.1–8.4 are now rendered as localised human-readable text (`aktiviert` / `deaktiviert` in German, `enabled` / `disabled` in English) via a new `Format-RegBool` helper instead of raw integers. Affected rows: `.NET Strong Crypto v4/v2`, `WDigest UseLogonCredential`, `LSA RunAsPPL`, `Credential Guard (VBS)`, `HTTP/2 Cleartext`, `SMBv1`, `Serialized Data Signing`, `AMSI Body Scanning`, `ECC Certificate Support`. AMSI has dedicated handling because its registry value is a *Disable* flag (0 = AMSI active, 1 = AMSI off). LM Compatibility Level now shows `Level N` instead of a plain integer.
+
+### Word installation document — TLS protocol state: remove `(explizit konfiguriert)` annotation
+
+`Get-TlsProtocolState` no longer appends `(explizit konfiguriert)` / `(explicitly configured)` to the state string. The annotation was redundant — the OS-default case is already distinguished by the `(OS-Standard)` suffix. The function also renames `aktiv` → `aktiviert` for consistency with all other hardening rows.
+
+### Word installation document — IMAP/POP3 configuration section
+
+`Get-ServerReportData` now collects `Get-ImapSettings` / `Get-PopSettings` for the local server. A new sub-section `5.x.6 IMAP/POP3-Konfiguration` in the per-server chapter shows external/internal connection settings, X.509 certificate name, and login type. Fields left blank prompt `(bitte manuell ergänzen)` if the namespace has not been configured yet.
+
+### Word installation document — receive and send connector detail
+
+Receive connector table extended with `RequireTLS`, `FQDN`, and `Max. Größe` columns (Sections 5.x.5). Send connector table extended with the same three fields plus the column order was adjusted to put FQDN/TLS/size next to the routing information (Section 4.10).
+
+### Word installation document — DNS section replaced with manual template
+
+The split-DNS lookup (Sections 6.1) was removed: `Resolve-DnsName` from inside the server returns the internal DNS view, SOA fallback objects rendered as their type name, and external records often do not exist at installation time. Replaced by a static template table pre-populated with accepted domain names and placeholder `(bitte manuell ergänzen)` values for MX, SPF, DKIM, DMARC, and Autodiscover A/CNAME — to be filled in after go-live.
+
+### Word installation document — Autodiscover AppPool: show live IIS state
+
+Section 8.4 previously showed `$State['DisableAutodiscoverAppPool']` (a configuration intent flag). Replaced with a live `Get-WebAppPoolState 'MSExchangeAutodiscoverAppPool'` query so the document reflects the actual current pool state (Started/Stopped) rather than what was configured during installation.
+
+### Word installation document — EWS Max Concurrency: handle null (not-set) gracefully
+
+`Get-ThrottlingPolicy` returns `$null` for `EwsMaxConcurrency` on fresh organisations where the value was never explicitly configured. The row now shows `(nicht gesetzt — Standard: 27)` / `(not set — default: 27)` instead of an empty string or runtime exception.
+
+### Word installation document — installing user recorded
+
+`$State['InstallingUser']` is now captured at Phase 0 start using `[Security.Principal.WindowsIdentity]::GetCurrent().Name`. Section 1 (Document Properties) shows the value as `Installiert durch` / `Installed by`.
+
+### Word installation document — MEAC scheduled-task search broadened
+
+`Get-OrganizationReportData` now uses a two-pass approach: first a direct `Get-ScheduledTask -TaskName` lookup for each known name, then a broad `Where-Object { $_.TaskName -match 'MonitorExchangeAuth|ExchangeLogClean|EXpressLog' }` pass as fallback. This handles CSS-Exchange naming variants and ensures the MEAC task appears in Section 7.1 regardless of the exact task name used by different CSS-Exchange releases.
+
+---
+
+## v5.86.2 (2026-04-23) — bugfix
+
+### Word installation document — PS 5.1 nested-array flattening in `New-WdTable`
+
+Literal `@( @('a','b'), @('c','d') )` row arrays passed to `New-WdTable -Rows` were flattened by PowerShell 5.1's `@()` operator *before* the parameter binder saw them, so the function received `@('a','b','c','d')` and bound it to `[object[][]]` as four rows × one cell each. Visible symptom: the cover-page *Versionshistorie*, the Section 1 *Dokumenteigenschaften*, the Section 4.12 *Auth-Zertifikat* and every other literal-array table rendered with only the first column filled and each original cell on its own row. `New-WdTable` now auto-detects the flattened shape (all elements scalar AND total length a multiple of the header column count) and reshapes in place before emitting rows. Call sites using `List[object[]].ToArray()` or `,@(…)` per row are unaffected.
+
+### Word installation document — Section 4.12 Auth Certificate "Valid until" empty
+
+`Get-AuthConfig` does not expose `NotAfter` or `CurrentCertificateLifetime`; the previous code read the non-existent property and emitted an empty cell. The validity cell is now computed by looking up the cert via `Get-ExchangeCertificate -Thumbprint … -Server` (with a `Cert:\LocalMachine\My` fallback) and printing `yyyy-MM-dd (N days remaining)`. Missing Next/Previous thumbprints and empty Realm/ServiceName now render as `(nicht gesetzt)` / `(leer — Default)` instead of blanks.
+
+### Word installation document — Transport Agents table empty Name column
+
+Implicit-remoting deserialization of `TransportAgent` objects sometimes leaves `.Name` blank while `.Identity` carries the display name, so Sections 5.x *Transport Agents* and Chapter 9 *Transport-Agents und Anti-Spam* showed status+priority with no agent name. Both call sites now fall back to `[string]$ta.Identity` when `$ta.Name` is empty. Chapter 9 additionally now iterates all four transport scopes (`TransportService`, `FrontendTransport`, `MailboxSubmission`, `MailboxDelivery`) and deduplicates by name — previously only the default `HubTransport` scope was queried, hiding agents such as the Front-End SMTP Receive agents.
+
+### Word installation document — Section 8.1 TLS semantics ambiguous
+
+The TLS table printed raw registry values with labels like `TLS 1.0 Server Disabled = 0`, which reads as a double-negation and is easily misread as "TLS 1.0 is active". Replaced the raw-value column with a semantic state (`aktiv (explizit konfiguriert)` / `deaktiviert (OS-Default)` / etc.) derived from both `Enabled` and `DisabledByDefault` values, with an explicit `— ACHTUNG: …` suffix when a hardening gap is detected (e.g. TLS 1.0 actually enabled or TLS 1.2 actually disabled).
+
+### Word installation document — Serialized Data Signing always "(not set)"
+
+`New-InstallationDocument` Section 8.4 read registry value `EnableSerializedDataSigning`, but `Enable-SerializedDataSigning` writes to `EnableSerializationDataSigning` (Microsoft's actual spelling under `HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Diagnostics`). The row therefore always rendered as `(not set)` even after the hardening had been applied. Corrected the reader to match the writer.
+
+### MEAC scheduled-task parameter rename
+
+`Register-AuthCertificateRenewal` invoked the downloaded `MonitorExchangeAuthCertificate.ps1` with `-ConfigureScriptViaScheduledTask`, but the current CSS-Exchange release (BuildVersion 26.03.06.1531) renamed the parameter to `-ConfigureScriptToRunViaScheduledTask`. The MEAC call failed with `"A parameter cannot be found that matches parameter name 'ConfigureScriptViaScheduledTask'"`, the Auth-Cert auto-renewal scheduled task was therefore never registered, and Chapter 7.1 of the generated Word document consequently listed only the EXpress Log Cleanup task. Parameter name updated to match the upstream script.
+
+---
+
+## v5.86.1 (2026-04-23) — bugfix
+
+### Phase 5 → Phase 6 spurious reboot
+
+`Set-IPv4OverIPv6Preference` and `Disable-NetBIOSOnAllNICs` no longer set `$State['RebootRequired'] = $true`. Both tweaks are activated at the next boot, and the end-of-Phase-6 reboot (or the next natural reboot) covers them; forcing a mid-install reboot from Phase 5 only triggered the `Autopilot` resume path unnecessarily — especially on Exchange SE on WS2025 where no SU is currently published and Phase 5 otherwise has nothing reboot-worthy to do. The conditional skip-logic at the Phase 5→6 boundary (v5.85) now works as originally intended.
+
+### Antispam agent install output
+
+`Install-AntispamAgents` no longer emits five separate tables (one per `TransportAgent` object returned by the Exchange-shipped `Install-AntispamAgents.ps1`). Agent records are collected and rendered as a single compact summary list (`Identity / Priority / Enabled`). The well-known "Please restart the Microsoft Exchange Transport service for changes to take effect" warning is filtered (the function restarts the service itself immediately after). Remaining pipeline/Verbose/Debug/Information records are demoted from `Write-MyOutput` to `Write-MyDebug` so the standard transcript stays clean.
+
+### Word installation document — TransportConfig null-ref
+
+`Get-TransportConfig` returns `MaxSendSize` / `MaxReceiveSize` as `Unlimited` on fresh organisations, where `.Value` is `$null`. Both `New-InstallationDocument` (OpenXML Transport-Configuration table) and `New-InstallationReport` (HTML Exchange Optimizations table) now null-guard the `.Value.ToBytes()` access and fall back to `Unlimited / not set`. Without the guard the Word-document generation aborted with a null-valued-expression error just before the document finalization.
+
+### Word installation document — Format-RemoteSysRows collection unwrap
+
+`Format-RemoteSysRows` returned a `List[object[]]`, but PowerShell unwraps collections when they cross the function-return boundary, leaving the caller with a scalar `object[]` (single-row error-path case) or a plain `object[][]` — neither exposes `.ToArray()`, and `New-InstallationDocument` blew up at `$sysDetailRows.ToArray()` in section 5.x.2 "System details" for every server. Both `return` sites now prefix with the comma operator (`return ,$rows`) to preserve the List wrapper intact.
+
+### MEAC download — wrong parameter name
+
+`Register-AuthCertificateRenewal` called `Invoke-WebDownload -Url` but the function declares `-Uri`. PowerShell 5.1 silently ignores the unmatched `-Url` (the target parameter stays `$null`), so `System.Net.WebClient.DownloadFile('', $meacPath)` threw `"The path is not of a legal form"` from the empty URL argument. Changed the caller to `-Uri`. The CSS-Exchange `MonitorExchangeAuthCertificate.ps1` auto-renewal task now installs as intended.
+
+### Antispam WARN filter + PSSnapin autoload noise
+
+The WARN filter in `Install-AntispamAgents` was regexed against `"restart the Microsoft Exchange Transport"` but the actual Exchange message is `"restart is required for the change(s) to take effect : MSExchangeTransport"` — no match, so six "restart required" warnings plus three "Please exit Windows PowerShell to complete the installation." PSSnapin-autoload warnings always leaked to the console. Broadened to `'(restart is required|restart the Microsoft Exchange Transport|exit Windows PowerShell to complete)'`.
+
+### Service-restart visibility (ECC/CBC/AMSI + antispam)
+
+Batched W3SVC/WAS restart (after `Enable-ECC` / `Enable-CBC` / `Enable-AMSI` SettingOverride changes) and both MSExchangeTransport restarts in `Install-AntispamAgents` were logged only at `Write-MyVerbose` tier, so on a default run the console sat idle for 30–60s with no indication why. Promoted to `Write-MyOutput` with explicit "may take ~30/60s" hints, plus a matching "restarted" confirmation line. The corresponding `Enable-ECC` / `Enable-CBC` / `Enable-AMSI` "Enabling ..." headers were also promoted so the operator can see what triggered the restart.
 
 ---
 
@@ -18,9 +333,9 @@ Accepted trade-off: a GPO/Intune policy may re-enable realtime during the instal
 
 `Disable-LLMNR` sets `HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient\EnableMulticast = 0` (CIS L1 §18.5.4.2). `Disable-MDNS` sets `HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\EnableMDNS = 0` (WS2022+ default-on). Both close the Responder-class name-spoofing / NTLM-hash-capture vectors, alongside the existing NetBIOS-over-TCP/IP disable in Phase 5.
 
-### MECA — auto-renewal of Exchange Auth Certificate
+### MEAC — auto-renewal of Exchange Auth Certificate
 
-`Register-AuthCertificateRenewal` downloads CSS-Exchange `MonitorExchangeAuthCertificate.ps1` and registers the daily scheduled task via `-ConfigureScriptViaScheduledTask`. Task runs as SYSTEM, renews the Auth Certificate 60 days before expiry. Without MECA, Auth Cert expiry causes a full outage (OAuth, Hybrid, EWS push subscriptions). Runs in Phase 6 after `Test-AuthCertificate`; skipped on Edge and management-only installs.
+`Register-AuthCertificateRenewal` downloads CSS-Exchange `MonitorExchangeAuthCertificate.ps1` and registers the daily scheduled task via `-ConfigureScriptViaScheduledTask`. Task runs as SYSTEM, renews the Auth Certificate 60 days before expiry. Without MEAC, Auth Cert expiry causes a full outage (OAuth, Hybrid, EWS push subscriptions). Runs in Phase 6 after `Test-AuthCertificate`; skipped on Edge and management-only installs.
 
 ### Menu toggle [U]: Generate Installation Document
 

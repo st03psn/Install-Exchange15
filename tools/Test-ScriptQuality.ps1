@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Multi-layer quality check for Install-Exchange15.ps1 (or any PS script).
 
@@ -104,10 +104,12 @@ if (-not $SkipAnalyzer) {
 # ────────────────────────────────────────────────────────────────────────────
 Write-Host '── Custom detectors ───────────────────────────────────────' -ForegroundColor Cyan
 
-# 3a) Control-flow statement in `( ... )` used as a command-mode argument. Both PS 5.1 and PS 7
-# throw at runtime: "The term 'if' is not recognized as a name of a cmdlet ...". Inside $(...)
-# or @(...) it's fine. A `( Command-Name args )` paren (CommandAst) is also fine — only
-# keyword-driven statements (if/for/foreach/while/switch/try/do) in parens fail.
+# 3a) Control-flow statement directly inside plain '(...)' grouping parens.
+# In PS 5.1 this is always a runtime crash ("The term 'if' is not recognized..."),
+# regardless of context: command args, method args, array elements, -f operands.
+# $(if ...) is SubExpressionAst — NOT caught here (correct, it's valid).
+# @(if ...) is ArrayExpressionAst  — NOT caught here (correct, it's valid).
+# Only ParenExpressionAst wrapping a control-flow statement is the bug.
 $controlFlowTypes = @(
     [System.Management.Automation.Language.IfStatementAst]
     [System.Management.Automation.Language.ForStatementAst]
@@ -118,30 +120,15 @@ $controlFlowTypes = @(
     [System.Management.Automation.Language.DoWhileStatementAst]
     [System.Management.Automation.Language.DoUntilStatementAst]
 )
-function Test-IsControlFlowParen {
-    param($Paren)
-    if (-not ($Paren -is [System.Management.Automation.Language.ParenExpressionAst])) { return $false }
-    $p = $Paren.Pipeline
-    # Direct: paren wraps the statement directly
-    foreach ($t in $controlFlowTypes) { if ($p -is $t) { return $true } }
-    # Wrapped: paren wraps a PipelineAst whose elements contain control-flow (rare with parser)
-    if ($p -is [System.Management.Automation.Language.PipelineAst]) {
-        foreach ($el in $p.PipelineElements) {
-            foreach ($t in $controlFlowTypes) { if ($el -is $t) { return $true } }
-        }
-    }
-    return $false
-}
-
-$cmdAsts = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)
-foreach ($c in $cmdAsts) {
-    for ($i = 1; $i -lt $c.CommandElements.Count; $i++) {
-        $el = $c.CommandElements[$i]
-        if (Test-IsControlFlowParen $el) {
-            Add-Finding 'Custom' 'Error' $el.Extent.StartLineNumber 'IfAsCommandArg' `
-                ("Control-flow statement in `(...)` used as command arg to '{0}'. Use `$(...)` or a helper." -f $c.CommandElements[0].Extent.Text)
-        }
-    }
+$allParens = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.ParenExpressionAst] }, $true)
+foreach ($paren in $allParens) {
+    $inner = $paren.Pipeline
+    $isControlFlow = $false
+    foreach ($cfType in $controlFlowTypes) { if ($inner -is $cfType) { $isControlFlow = $true; break } }
+    if (-not $isControlFlow) { continue }
+    $kw = ($inner.GetType().Name -replace 'StatementAst$','').ToLower() -replace 'dowhile','do/while' -replace 'dountil','do/until'
+    Add-Finding 'Custom' 'Error' $paren.Extent.StartLineNumber 'ControlFlowInParen' `
+        ("($kw ...) in grouping parens — runtime crash in PS 5.1. Assign to a variable first: `$v = $kw ...; ... `$v")
 }
 
 # 3b) `-f` as first argument of a method call when sibling args exist.
@@ -191,6 +178,36 @@ foreach ($r in $restartCalls) {
             Add-Finding 'Custom' 'Error' $r.Extent.StartLineNumber 'DirectIisRestart' `
                 ("Direct W3SVC/WAS restart in {0} — violates the Phase-5 batched-restart contract. Set `$script:p5NeedsIisRestart = `$true` instead." -f $funcName)
         }
+    }
+}
+
+# 3e) Case-insensitive variable shadowing of script-level singletons.
+# PowerShell variable lookup is case-insensitive: $state, $State, $STATE all refer to
+# the same variable. A local $state = <string> inside New-InstallationDocument (or any
+# nested function) silently overwrites the global $State hashtable for the remainder of
+# that scope, causing "Unable to index into an object of type System.String" later.
+# Flag any AssignmentStatementAst where the left-hand side is a VariableExpressionAst
+# whose name matches a known singleton (case-insensitive) and the enclosing function
+# is NOT the function that legitimately owns that variable.
+$singletons = @{
+    # varname (lower) → array of function names that legitimately own it
+    'state'     = @('Restore-State', '<top-level>')
+    'statefile' = @('<top-level>')
+}
+$assignAsts = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)
+foreach ($a in $assignAsts) {
+    $lhs = $a.Left
+    if (-not ($lhs -is [System.Management.Automation.Language.VariableExpressionAst])) { continue }
+    $varName = $lhs.VariablePath.UserPath.ToLower()
+    if (-not $singletons.ContainsKey($varName)) { continue }
+    # Walk up to the enclosing function definition
+    $enc = $a.Parent
+    while ($enc -and -not ($enc -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $enc = $enc.Parent }
+    $encName   = if ($enc) { $enc.Name } else { '<top-level>' }
+    $allowList = $singletons[$varName]
+    if ($encName -notin $allowList) {
+        Add-Finding 'Custom' 'Error' $a.Extent.StartLineNumber 'SingletonShadow' `
+            ("`$$varName in '$encName' — case-insensitive match shadows script-level `$State hashtable. Rename the local variable.")
     }
 }
 

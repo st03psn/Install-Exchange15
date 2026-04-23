@@ -53,11 +53,12 @@ _None open._ Bugs B1–B17 (v5.6.x / v5.7x) and Planned features P1–P8 are all
 
 ---
 
-## Feature Backlog (F3, F24)
+## Feature Backlog (F3, F24, F25)
 
 | # | Feature | Phase | Priority |
 |---|---|---|---|
 | F3 | Split Permissions | 0 | LOW — irreversible, niche use case |
+| F25 | Advanced Configuration Menu | Menu | HIGH — target next feature release (post-5.93 or v1.0). Paginated-by-category toggle menu offered after the main installation menu with a 60-second auto-skip prompt (default = skip, keep current behaviour). ~55 toggles across 6 categories; main menu shrinks to installation-flow toggles only. Full design, feature catalog, and implementation checklist: [`plan-advanced-menu.md`](plan-advanced-menu.md). WIP scaffolding (4 functions, 319-line diff) lives on `feature/advanced-menu` (stash commit `787b221`) as a reference — cherry-pick or `stash pop` when F25 resumes. |
 | F24 | Installation-Document Template (hybrid) | 6 | MEDIUM — target v1.0 together with modularization. Convert `New-InstallationDocument` from fully code-driven OpenXML to a "style-shell + dynamic body" hybrid: ship `templates/Exchange-installation-document-{DE,EN}.docx` containing cover page (`[LOGO]` placeholder, SDT for Org/Server/Date/Scenario), header/footer with classification, `word/styles.xml` + `word/theme1.xml` + `word/numbering.xml`, and empty body-anchor SDTs (tags `body_chapter_1`, `body_chapter_5`, …). Script copies template, injects generated chapter XML into the anchor SDTs, writes output. New param `-TemplatePath <path>` for customer templates. Benefits: layout / branding / font / colour edits without PowerShell; corporate design trivial. Risks: template-schema brittleness → `Test-Template` validator required; two languages = two templates to maintain. Estimated effort: 1–2 days; lands naturally with modularization since engine moves to `src/74-OpenXml.ps1`. |
 
 ### Completed features (F6–F23)

@@ -91,7 +91,7 @@ beide `.docx` aus OpenXML-ZIP. Läuft beim Maintainer, Output wird committed.
    Protection, SDS, LSA, SMBv1, WDigest, HTTP/2, Download Domains,
    Defender-Exclusions — mit CIS + BSI + ISO 27001 + DSGVO-Referenzen
 7. **Message Hygiene** — Anti-Spam Agents vs. Edge Transport vs. 3rd Party
-   (Hornetsecurity / Proofpoint / Mimecast), Entscheidungsmatrix
+   (Hornetsecurity / Proofpoint / Mimeacst), Entscheidungsmatrix
 8. **Backup, Recovery & Disaster Recovery** *(zusammengefasst)*
    - 8.1 VSS-Integration (Writer-Liste, Snapshot-Policy) + Backup-Strategie
    - 8.2 Circular Logging ja/nein, Truncation, RDB-Strategie, Restore-Test-Kadenz

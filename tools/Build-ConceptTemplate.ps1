@@ -678,7 +678,7 @@ function Get-F23Parts {
         @(($DE ? 'Edge Transport Server' : 'Edge Transport Server'), ($DE ? 'Dedizierter Edge-Server in DMZ; verhindert Mailbox-Kontakt mit Internet-SMTP' : 'Dedicated Edge server in DMZ; prevents mailbox contact with Internet SMTP'), (Add-WordContentControl 'hygiene_edge' ($DE ? 'Ja / Nein' : 'Yes / No')))
         @('Hornetsecurity', ($DE ? 'Cloud-basierter Dienst; MX auf Hornetsecurity zeigen' : 'Cloud-based service; MX pointed at Hornetsecurity'), (Add-WordContentControl 'hygiene_hornetsec' ($DE ? 'Ja / Nein' : 'Yes / No')))
         @('Proofpoint', ($DE ? 'Kommerzieller Gateway-Dienst' : 'Commercial gateway service'), (Add-WordContentControl 'hygiene_proofpoint' ($DE ? 'Ja / Nein' : 'Yes / No')))
-        @('Mimecast', ($DE ? 'Kommerzieller Gateway-Dienst' : 'Commercial gateway service'), (Add-WordContentControl 'hygiene_mimecast' ($DE ? 'Ja / Nein' : 'Yes / No')))
+        @('Mimeacst', ($DE ? 'Kommerzieller Gateway-Dienst' : 'Commercial gateway service'), (Add-WordContentControl 'hygiene_mimeacst' ($DE ? 'Ja / Nein' : 'Yes / No')))
         @(($DE ? 'Sonstiger Drittanbieter' : 'Other third-party'), (Add-WordContentControl 'hygiene_other_desc' ($DE ? 'Beschreibung' : 'Description')), (Add-WordContentControl 'hygiene_other' ($DE ? 'Ja / Nein' : 'Yes / No')))
     )))
     $null = $parts.Add((Add-WordContentControl 'hygiene_notes' ($DE ? 'Zusätzliche Hinweise zur Message-Hygiene-Strategie eingeben...' : 'Enter additional notes on message hygiene strategy...')))
