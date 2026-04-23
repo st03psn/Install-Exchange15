@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: Install-Exchange15.ps1
-    Version:     5.93
+    Version:     5.94.1
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -748,7 +748,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.94'
+    $ScriptVersion = '5.94.1'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -4602,7 +4602,8 @@ Write-Log 'Exchange log cleanup finished'
 
         # Journal / Retention / DLP
         try { $org.JournalRules     = @(Get-JournalRule      -ErrorAction Stop) } catch { $org.JournalRules     = @() }
-        try { $org.RetentionPolicies = @(Get-RetentionPolicy  -ErrorAction Stop) } catch { $org.RetentionPolicies = @() }
+        try { $org.RetentionPolicies   = @(Get-RetentionPolicy    -ErrorAction Stop) } catch { $org.RetentionPolicies   = @() }
+        try { $org.RetentionPolicyTags = @(Get-RetentionPolicyTag -ErrorAction Stop) } catch { $org.RetentionPolicyTags = @() }
         try { $org.DlpPolicies      = @(Get-DlpPolicy        -ErrorAction Stop) } catch { $org.DlpPolicies      = @() }
 
         # Mobile / OWA policies
@@ -6251,7 +6252,22 @@ $body
             if ($orgD.RetentionPolicies.Count -gt 0) {
                 $rpRows = [System.Collections.Generic.List[object[]]]::new()
                 foreach ($rp in $orgD.RetentionPolicies) { $rpRows.Add(@($rp.Name, (SafeVal ($rp.RetentionPolicyTagLinks -join ', ')))) }
-                $null = $parts.Add((New-WdTable -Headers @((L 'Aufbewahrungsrichtlinie' 'Retention policy'), (L 'Tags' 'Tags')) -Rows $rpRows.ToArray()))
+                $null = $parts.Add((New-WdTable -Headers @((L 'Aufbewahrungsrichtlinie' 'Retention policy'), (L 'Verknüpfte Tags' 'Linked tags')) -Rows $rpRows.ToArray()))
+            }
+            if ($orgD.RetentionPolicyTags -and $orgD.RetentionPolicyTags.Count -gt 0) {
+                $null = $parts.Add((New-WdParagraph (L 'Konfigurierte Aufbewahrungs-Tags (Retention Tags) — definieren je Postfachordner oder benutzergewählt, nach welcher Frist welche Aktion (Verschieben ins Archiv, Löschen mit/ohne Wiederherstellung, MarkAsPastRetentionLimit) ausgeführt wird:' 'Configured retention tags — define per mailbox folder or user-selectable which action (move to archive, delete with/without recovery, MarkAsPastRetentionLimit) is executed after which retention period:')))
+                $rtRows = [System.Collections.Generic.List[object[]]]::new()
+                foreach ($rt in ($orgD.RetentionPolicyTags | Sort-Object Type, Name)) {
+                    $age = if ($null -ne $rt.AgeLimitForRetention) { ('{0} {1}' -f $rt.AgeLimitForRetention.Days, (L 'Tage' 'days')) } else { (L '(unbegrenzt)' '(unlimited)') }
+                    $rtRows.Add(@(
+                        $rt.Name,
+                        (SafeVal $rt.Type),
+                        $age,
+                        (SafeVal $rt.RetentionAction),
+                        (Lc $rt.RetentionEnabled (L 'Aktiv' 'Enabled') (L 'Inaktiv' 'Disabled'))
+                    ))
+                }
+                $null = $parts.Add((New-WdTable -Headers @((L 'Tag-Name' 'Tag name'), (L 'Typ' 'Type'), (L 'Aufbewahrung' 'Retention'), (L 'Aktion' 'Action'), (L 'Status' 'Status')) -Rows $rtRows.ToArray() -Compact))
             }
             if ($orgD.DlpPolicies.Count -gt 0) {
                 $dlpRows = [System.Collections.Generic.List[object[]]]::new()
@@ -6887,6 +6903,7 @@ $body
         # 8.6 IIS- und Exchange-Logs
         $null = $parts.Add((New-WdHeading (L '8.6 Protokollierung — IIS und Exchange' '8.6 Logging — IIS and Exchange') 2))
         $null = $parts.Add((New-WdParagraph (L 'Exchange Server schreibt umfangreiche Betriebsprotokolle in den Logging-Pfad unter dem Exchange-Installationsverzeichnis (Transport, Managed Availability, HttpProxy, CAS). IIS protokolliert Zugriffe auf OWA, ECP, EWS, ActiveSync, MAPI, OAB. Ohne automatische Bereinigung füllen diese Logs innerhalb weniger Wochen das Log-Volume vollständig auf. EXpress registriert hierfür einen geplanten Task (siehe 7.1), der Logs älter als der konfigurierten Aufbewahrungsfrist (Standard: 30 Tage) automatisch entfernt. Die tatsächlichen IIS-Log-Pfade zeigt die folgende Tabelle.' 'Exchange Server writes extensive operational logs to the logging path below the Exchange installation directory (Transport, Managed Availability, HttpProxy, CAS). IIS logs access to OWA, ECP, EWS, ActiveSync, MAPI, OAB. Without automatic cleanup these logs fill the log volume completely within a few weeks. EXpress registers a scheduled task for this purpose (see 7.1) which automatically removes logs older than the configured retention (default: 30 days). Actual IIS log paths are shown in the table below.')))
+        $null = $parts.Add((New-WdParagraph (L 'Hinweis zu Forensik und Compliance: Die regelmäßige lokale Bereinigung dient ausschließlich dazu, ein Vollaufen des Log-Volumes (und damit den Ausfall von Transport, IIS und Managed Availability) zu verhindern — sie ist kein Ersatz für eine revisionssichere Langzeit-Aufbewahrung. Für forensische Auswertung sicherheitsrelevanter Vorfälle (Authentifizierungs-Anomalien, EWS-/MAPI-Zugriffsmuster, Transport-Spuren bei Datenabfluss) und zur Erfüllung gesetzlicher Aufbewahrungspflichten (BSI APP.5.2, DSGVO Rechenschaftspflicht, GoBD) sind IIS-, HttpProxy-, MessageTracking-, Transport- und Windows-Security-Eventlogs idealerweise per Log-Forwarder (z. B. NXLog, WEF/WEC, Filebeat, Azure Monitor Agent) an ein zentrales SIEM (z. B. Splunk, Elastic Security, Microsoft Sentinel, Wazuh, IBM QRadar) auszuleiten. Die Aufbewahrungsdauer im SIEM sollte sich an der internen Sicherheitsleitlinie und branchenspezifischen Vorgaben orientieren (typisch 12 Monate Hot-Storage, 7 Jahre Archiv). Erst diese Kombination — kurze Aufbewahrung am Server, lange Aufbewahrung im SIEM — erfüllt sowohl operative Stabilitätsanforderungen als auch forensische und Compliance-Anforderungen.' 'Note on forensics and compliance: Periodic local cleanup is intended solely to prevent the log volume from filling up (which would take down Transport, IIS and Managed Availability) — it is not a substitute for tamper-evident long-term retention. For forensic investigation of security-relevant incidents (authentication anomalies, EWS/MAPI access patterns, transport traces during data exfiltration) and to meet legal retention obligations (BSI APP.5.2, GDPR accountability, GoBD), IIS, HttpProxy, MessageTracking, Transport and Windows Security event logs should ideally be forwarded via a log shipper (e.g. NXLog, WEF/WEC, Filebeat, Azure Monitor Agent) to a central SIEM (e.g. Splunk, Elastic Security, Microsoft Sentinel, Wazuh, IBM QRadar). Retention in the SIEM should follow the organisation''s security policy and industry-specific requirements (typically 12 months hot storage, 7 years archive). Only this combination — short retention on the server, long retention in the SIEM — satisfies both operational stability and forensic/compliance requirements.')))
         $logRows = [System.Collections.Generic.List[object[]]]::new()
         $logRows.Add(@((L 'Exchange Logging-Pfad' 'Exchange logging path'), (SafeVal (Join-Path (Split-Path $env:ExchangeInstallPath -Parent) 'Logging'))))
         $logRows.Add(@((L 'ETL/Diagnostic-Pfad' 'ETL/Diagnostic path'), (SafeVal (Join-Path (Split-Path $env:ExchangeInstallPath -Parent) 'Bin\Search\Ceres\HostController\Data\Events'))))
@@ -6918,6 +6935,7 @@ $body
         # 8.8 Compliance-Mapping CIS / BSI IT-Grundschutz
         $null = $parts.Add((New-WdHeading (L '8.8 Compliance-Mapping (CIS / BSI IT-Grundschutz)' '8.8 Compliance Mapping (CIS / BSI)') 2))
         $null = $parts.Add((New-WdParagraph (L 'Die folgende Tabelle ordnet die von EXpress angewendeten Härtungsmaßnahmen den relevanten Kontrollen aus dem CIS Benchmark for Microsoft Windows Server und dem BSI IT-Grundschutz-Kompendium zu. Sie dient als Nachweis für Audits und interne Compliance-Prüfungen.' 'The table below maps the hardening measures applied by EXpress to the relevant controls from the CIS Benchmark for Microsoft Windows Server and the BSI IT-Grundschutz Compendium. It serves as evidence for audits and internal compliance reviews.')))
+        $null = $parts.Add((New-WdParagraph (L 'Wichtiger Hinweis zur Protokoll-Auswertung: Mehrere der nachfolgenden Kontrollen — insbesondere Admin Audit Log, Mailbox Audit Log, Windows Security Eventlog und IIS-Zugriffsprotokolle — entfalten ihren vollen Compliance- und forensischen Nutzen erst, wenn die erzeugten Ereignisse zentral zusammengeführt, korreliert und revisionssicher aufbewahrt werden. EXpress aktiviert und konfiguriert die Protokollquellen auf dem Server, sieht jedoch ausdrücklich keine SIEM-Anbindung vor — diese ist organisationsweit zu planen und liegt außerhalb des Scopes einer Server-Installation. Für die Erfüllung von BSI APP.5.2 A13 (Protokollierung), BSI OPS.1.1.5 (Protokollierung), CIS Control 8 (Audit Log Management) sowie der DSGVO-Rechenschaftspflicht (Art. 5 Abs. 2) ist die Anbindung an ein SIEM (Security Information and Event Management) dringend empfohlen. Ein SIEM ermöglicht: (1) zentrale Korrelation über mehrere Exchange-Server, Domain Controller und Edge-Komponenten hinweg; (2) Alarmierung bei Anomalien (Brute-Force-Versuche, ungewöhnliche EWS-/PowerShell-Zugriffe, Mass-Mail-Abfluss); (3) revisionssichere Langzeit-Aufbewahrung über die lokale Bereinigungsfrist hinaus; (4) Nachweisführung gegenüber Auditoren ohne Eingriff am Produktivsystem. Empfohlene Quellen für die Auslieferung: Windows Security/System/Application-Eventlog, IIS-W3C-Logs, Exchange MessageTracking, HttpProxy, Managed Availability, sowie das Admin- und Mailbox-Audit-Log via Search-AdminAuditLog / Search-MailboxAuditLog oder New-MailboxAuditLogSearch.' 'Important note on log evaluation: Several of the controls below — in particular Admin Audit Log, Mailbox Audit Log, Windows Security event log and IIS access logs — only deliver their full compliance and forensic value when the generated events are centrally aggregated, correlated and retained tamper-evidently. EXpress enables and configures the log sources on the server, but explicitly does not provide SIEM integration — this must be planned organisation-wide and is out of scope for a server installation. To meet BSI APP.5.2 A13 (logging), BSI OPS.1.1.5 (logging), CIS Control 8 (Audit Log Management) and the GDPR accountability obligation (Art. 5(2)), integration with a SIEM (Security Information and Event Management) is strongly recommended. A SIEM enables: (1) central correlation across multiple Exchange servers, domain controllers and edge components; (2) alerting on anomalies (brute-force attempts, unusual EWS/PowerShell access, mass mail exfiltration); (3) tamper-evident long-term retention beyond the local cleanup period; (4) audit evidence without touching the production system. Recommended sources for forwarding: Windows Security/System/Application event log, IIS W3C logs, Exchange MessageTracking, HttpProxy, Managed Availability, plus the Admin and Mailbox Audit Log via Search-AdminAuditLog / Search-MailboxAuditLog or New-MailboxAuditLogSearch.')))
         $null = $parts.Add((New-WdTable -Headers @((L 'Maßnahme' 'Measure'), (L 'CIS-Kontrolle' 'CIS Control'), (L 'BSI-Grundschutz' 'BSI Control'), (L 'Status' 'Status')) -Rows @(
             ,@((L 'TLS 1.0 / 1.1 deaktiviert' 'TLS 1.0 / 1.1 disabled'),                          'CIS WS2022 18.4.x',   'BSI SYS.1.2 A5',  (L 'Umgesetzt' 'Implemented'))
             ,@((L 'TLS 1.2 erzwungen + .NET Strong Crypto' 'TLS 1.2 enforced + .NET Strong Crypto'), 'CIS WS2022 18.4.x',   'BSI SYS.1.2 A5',  (L 'Umgesetzt' 'Implemented'))
@@ -6932,6 +6950,8 @@ $body
             ,@('LLMNR / mDNS deaktiviert',                                                            'CIS WS2022 18.5.4.2', 'BSI NET.3.1 A10', (L 'Umgesetzt' 'Implemented'))
             ,@((L 'Dienste minimiert (Browser/Fax/Xcopy u. a.)' 'Services minimised (Browser/Fax/Xcopy etc.)'), 'CIS WS2022 5.x', 'BSI SYS.1.2 A3', (L 'Umgesetzt' 'Implemented'))
             ,@((L 'Admin Audit Log aktiviert' 'Admin Audit Log enabled'),                             'CIS EX2019 1.1',      'BSI APP.5.2 A13', (L 'Umgesetzt' 'Implemented'))
+            ,@((L 'SIEM-Anbindung / zentrale Log-Auswertung' 'SIEM integration / central log evaluation'), 'CIS Control 8',     'BSI OPS.1.1.5 / APP.5.2 A13', (L 'Out of Scope — organisationsweit zu planen' 'Out of scope — to be planned organisation-wide'))
+            ,@((L 'Log-Bereinigung am Server (Volume-Schutz)' 'Local log cleanup (volume protection)'), 'MS Best Practice',     'BSI APP.5.2 A4',  (L 'Umgesetzt — geplante Aufgabe (siehe 7.1)' 'Implemented — scheduled task (see 7.1)'))
             ,@((L 'Defender Echtzeit deaktiviert (Exchange-Konflikt mit AWL)' 'Defender realtime disabled (Exchange AWL conflict)'), 'CIS WS2022 n/a', 'BSI SYS.1.2 A4', (L 'Ausnahme — Exchange-AWL-Konflikt; AV-Ausnahmen gesetzt' 'Exception — Exchange AWL conflict; AV exclusions applied'))
         ) -Compact))
 

@@ -30,3 +30,8 @@ SERVER_ExchangeServer-Dokumentation_*.docx
 # Ad-hoc test log files
 antispam.txt
 word.txt
+
+# Planning docs — kept locally, never committed
+docs/ROADMAP.md
+docs/plan-*.md
+docs/archive/

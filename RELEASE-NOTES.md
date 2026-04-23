@@ -6,6 +6,22 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.94.1 (2026-04-24) — enhancement
+
+### Word installation document — SIEM guidance and retention-tag detail
+
+Follow-up on the v5.94 audit-readiness work. Three additions clarifying what EXpress *does not* configure (long-term log retention) and surfacing previously-missing org data.
+
+- **§8.6 — SIEM/forensics paragraph** — second paragraph after the existing logging/cleanup intro. Spells out that the scheduled cleanup (see §7.1) is purely volume-protection and not a substitute for tamper-evident long-term retention. Recommends SIEM integration (Splunk, Elastic Security, Microsoft Sentinel, Wazuh, IBM QRadar) via NXLog / WEF-WEC / Filebeat / Azure Monitor Agent, with typical retention guidance (12 months hot, 7 years archive). Cites BSI APP.5.2, GDPR accountability, GoBD.
+- **§8.8 — SIEM-context paragraph + two mapping rows** — explanatory paragraph before the compliance table covering the SIEM value proposition (central correlation, anomaly alerting, tamper-evident retention, audit evidence) and recommended source channels (Windows Security/System/Application, IIS W3C, MessageTracking, HttpProxy, Managed Availability, Search-AdminAuditLog / Search-MailboxAuditLog). Two new table rows: *SIEM integration* (CIS Control 8 / BSI OPS.1.1.5 / APP.5.2 A13 — Out of scope, organisation-wide planning) and *Local log cleanup* (Implemented — scheduled task per §7.1).
+- **§4.7 — Retention Tags rendered in detail** — `Get-OrganizationReportData` now also collects `Get-RetentionPolicyTag` into `$org.RetentionPolicyTags`. New sub-table after the existing Retention Policies table renders each tag's `Name`, `Type`, `AgeLimitForRetention` (in days), `RetentionAction` and `RetentionEnabled` state, sorted by Type then Name. Previously only policy-to-tag links were shown — actual tag behaviour (move-to-archive vs. delete vs. mark) was invisible to auditors.
+
+### Verified — no code change
+
+- **Admin Audit Log** — confirmed `AdminAuditLogEnabled=$true` is the Exchange 2013+ default; `Get-AdminAuditLogConfig` query in `Get-OrganizationReportData` and rendering in §4.16 already cover all relevant properties (enabled, age limit, mailbox, cmdlets, exclusions). No change needed.
+
+---
+
 ## v5.94 (2026-04-24) — feature
 
 ### Word installation document — audit-readiness sections
@@ -33,7 +49,7 @@ Cell text containing `` `n `` is emitted with `<w:br/>` between runs so each lin
 
 ### F25 Advanced Configuration Menu — plan absorbed into master
 
-The WIP on `feature/advanced-menu` (4 scaffolding functions, 319-line diff, stash commit `787b221`) is preserved as a reference but the design now lives in master at `docs/plan-advanced-menu.md`. ROADMAP F25 shortened to a pointer. No code on master changed — avoids maintaining two branches for a feature that is not yet scheduled.
+The WIP on `feature/advanced-menu` (4 scaffolding functions, 319-line diff, stash commit `787b221`) is preserved as a reference. The design lives in Claude memory (not in the repo). No code on master changed — avoids maintaining two branches for a feature that is not yet scheduled.
 
 ---
 

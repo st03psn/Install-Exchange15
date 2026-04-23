@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.94 (April 2026, last updated 2026-04-24)
+**Version:** 5.94.1 (April 2026, last updated 2026-04-24)
 **License:** As-Is, without warranty
 
 **Versioning scheme:** `MAJOR.MINOR` = feature release · `MAJOR.MINOR.PATCH` = bugfix / maintenance release. Example: `5.86` introduces features, `5.86.2` contains only bugfixes on top of `5.86`.
@@ -263,6 +263,11 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.94.1 — April 2026
+- **Word document §8.6 (Logging) — SIEM/forensics note** — explicit guidance that local log cleanup is volume-protection only and that long-term retention for forensics and compliance (BSI APP.5.2, GDPR accountability, GoBD) belongs in a SIEM (Splunk/Sentinel/Elastic/Wazuh/QRadar) fed via NXLog/WEF-WEC/Filebeat/AMA
+- **Word document §8.8 (Compliance Mapping) — SIEM context** — explanatory paragraph on why SIEM integration is required for the full compliance value of Admin Audit Log, Mailbox Audit Log, Windows Security and IIS logs; two new mapping rows: SIEM integration (Out of Scope — organisation-wide planning) and local log cleanup (Implemented)
+- **Word document §4.7 — Retention Tags fully documented** — `Get-RetentionPolicyTag` added to `Get-OrganizationReportData`; new sub-table renders each tag's Name, Type, AgeLimitForRetention, RetentionAction and RetentionEnabled state, sorted by Type/Name
 
 ### v5.93 — April 2026
 - **MEAC hybrid-aware task registration** — `Register-AuthCertificateRenewal` detects hybrid via `Get-HybridConfiguration`. Without `-MEACIgnoreHybridConfig`, MEAC registers the daily task in hybrid-safe mode (renewals blocked until an HCW rerun is planned). A multi-line advisory is logged at registration time. Pair with `-MEACNotificationEmail <addr>` to wire up MEAC's `-SendEmailNotificationTo` so expiry alerts reach the admin inbox 60 days before due.
