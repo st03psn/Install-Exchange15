@@ -15,3 +15,18 @@ Microsoft.Exchange.WebServices.xml
 # Local scratch files
 run*.ps1
 instex.ps1
+
+# Temp analysis artefacts (underscore-prefixed scratch work)
+_doc2*/
+_refdoc*/
+_ref_*
+_meac*.ps1
+
+# Generated test / installation documents (in repo root — belong on the Exchange server)
+SERVER_Document_*.docx
+SERVER_ExchangeServer-Dokumentation_*.docx
+~$*.docx
+
+# Ad-hoc test log files
+antispam.txt
+word.txt

@@ -73,12 +73,32 @@ if ($realPolluted) {
     Pass 'Pipeline: no functions mix Write-Output + return <value>'
 }
 
-# ── 3. No (if ...) as -f argument (PS 5.1 crash) ─────────────────────────────
-$badFmt = Select-String -Path $ScriptPath -Pattern '-f\s*\(if\s*\(' -AllMatches
-if ($badFmt) {
-    Fail 'PS5.1: no `-f (if (...)` patterns' ("line $($badFmt[0].LineNumber): $($badFmt[0].Line.Trim())")
+# ── 3. No (if/for/switch/...) in plain grouping parens (PS 5.1 runtime crash) ─
+# Full AST scan: any ParenExpressionAst whose Pipeline is a control-flow statement.
+# Covers: command args, method args, array elements, -f operands — all contexts.
+# $(if ...) is SubExpressionAst → not caught here (correct, it's valid).
+$cfTypes3 = @(
+    [System.Management.Automation.Language.IfStatementAst]
+    [System.Management.Automation.Language.ForStatementAst]
+    [System.Management.Automation.Language.ForEachStatementAst]
+    [System.Management.Automation.Language.WhileStatementAst]
+    [System.Management.Automation.Language.SwitchStatementAst]
+    [System.Management.Automation.Language.TryStatementAst]
+    [System.Management.Automation.Language.DoWhileStatementAst]
+    [System.Management.Automation.Language.DoUntilStatementAst]
+)
+$badParens = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.ParenExpressionAst] }, $true) |
+    Where-Object {
+        $inner = $_.Pipeline
+        $hit = $false
+        foreach ($t in $cfTypes3) { if ($inner -is $t) { $hit = $true; break } }
+        $hit
+    }
+if ($badParens) {
+    $first = $badParens | Select-Object -First 1
+    Fail 'PS5.1: no (control-flow) in grouping parens' ("line $($first.Extent.StartLineNumber): $($first.Extent.Text.Substring(0,[Math]::Min(80,$first.Extent.Text.Length)))")
 } else {
-    Pass 'PS5.1: no `-f (if (...)` patterns'
+    Pass 'PS5.1: no (control-flow) in grouping parens'
 }
 
 # ── 4. No Start-Transcript / Stop-Transcript ──────────────────────────────────

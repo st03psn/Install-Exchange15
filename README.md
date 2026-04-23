@@ -3,8 +3,10 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.86 (April 2026, last updated 2026-04-23)
+**Version:** 5.94 (April 2026, last updated 2026-04-24)
 **License:** As-Is, without warranty
+
+**Versioning scheme:** `MAJOR.MINOR` = feature release · `MAJOR.MINOR.PATCH` = bugfix / maintenance release. Example: `5.86` introduces features, `5.86.2` contains only bugfixes on top of `5.86`.
 
 ---
 
@@ -262,10 +264,49 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v5.93 — April 2026
+- **MEAC hybrid-aware task registration** — `Register-AuthCertificateRenewal` detects hybrid via `Get-HybridConfiguration`. Without `-MEACIgnoreHybridConfig`, MEAC registers the daily task in hybrid-safe mode (renewals blocked until an HCW rerun is planned). A multi-line advisory is logged at registration time. Pair with `-MEACNotificationEmail <addr>` to wire up MEAC's `-SendEmailNotificationTo` so expiry alerts reach the admin inbox 60 days before due.
+- **Documented MEAC passthroughs** — `-MEACIgnoreHybridConfig`, `-MEACIgnoreUnreachableServers`, `-MEACNotificationEmail` forwarded to MEAC at task registration. Config-file parity via `MEACIgnoreHybridConfig`, `MEACIgnoreUnreachableServers`, `MEACNotificationEmail` keys.
+- **AD Split-Permissions preparation (`-MEACPrepareADOnly`)** — new standalone mode. A Domain Admin on a non-Exchange box runs `Install-Exchange15.ps1 -MEACPrepareADOnly -MEACADAccountDomain contoso.local`; EXpress downloads `MonitorExchangeAuthCertificate.ps1` and invokes it with `-PrepareADForAutomationOnly -ADAccountDomain <domain>`. No Exchange prereqs, no phase loop, no reboot. The Exchange admin later passes the resulting credential via `-MEACAutomationCredential` during the regular install; EXpress persists it DPAPI-encrypted in state (survives the Autopilot reboot chain) and forwards it as `-AutomationAccountCredential` when the task is registered.
+
+### v5.92 — April 2026
+- **Plain-text install-admin credentials in config file (fully unattended)** — `-ConfigFile` .psd1 may now carry `AdminUser`/`AdminPassword` in plain text for zero-touch pipelines; every run logs a box-framed **SECURITY WARNING**; the config file must be deleted or scrubbed immediately after install completes (unlike the DPAPI state file, the config file is not machine-bound)
+- **`Check.ps1` moved to `tools/`** — invoke as `.\tools\Check.ps1 -SkipAnalyzer`; all other tools already lived there
+
+### v5.91 — April 2026
+- **Default document language: English** — HTML reports were already English-only; the Word installation document now also defaults to English. The previous `-Language DE|EN` parameter has been replaced by a single `-German` switch. Config-file back-compat: legacy `Language=DE` still maps to `-German`; new files can use `German=true`. Menu mode 7 prompt: "German output? [y/N] (default: English)"
+- **German opt-in reaches all menu modes** — new toggle `[V] Generate document in German` available in modes 1/5/6/7; previously only mode 7 offered the selection
+
+### v5.90 — April 2026
+- **Word document: antispam filter display reflects reality** — §9.1 now shows *both* the org-level `*FilterConfig.Enabled` feature flag and the actual `Get-TransportAgent` effective state per filter. Previously the document claimed filters were "Enabled" when EXpress had deliberately disabled the underlying transport agents during install
+- **Word document: Exchange Online section moved before Operative Runbooks** — §15 (was §4.17); keeps the runbooks as the final operational chapter
+- **Word document: wide-table readability** — Receive Connectors split into two logical sub-tables (Network / Security); `New-WdTable` gains a `-Compact` switch (8 pt) for columns-heavy data
+
+### v5.88 — April 2026
+- **Word document: §4.16 Admin Audit Log** — new org-wide section documenting `Get-AdminAuditLogConfig` (enabled state, retention, log mailbox, cmdlets, exclusions, test-cmdlet logging, log level) as compliance evidence
+- **Word document: §9.1 Anti-Spam Filter Configuration** — four sub-tables for Content/Sender/Recipient/SenderID filters with SCL thresholds, quarantine mailbox, block lists, spoof/temp-error actions
+- **Word document: §12.1 Exchange Crimson Event Log Channels** — enumerates all enabled or populated `Microsoft-Exchange*/Operational|Admin` channels with state/size/record count
+- **Bugfixes (v5.88.1–.3):** MEAC scheduled-task registration now verified via `Get-ScheduledTask` post-probe (no more false-positive success lines); six `(if ...)` PS 5.1 runtime crashes in the Word generator fixed (widened `Test-ScriptQuality` detector + new `Check.ps1` wrapper); variable-shadowing bug where local `$state` silently overwrote the script-level `$State` hashtable fixed with a new `SingletonShadow` detector
+
+### v5.87 — April 2026
+- **Word document: binary registry values → localised text** — all hardening rows (sections 8.1–8.4) render as `enabled`/`disabled` (or `aktiviert`/`deaktiviert`) instead of raw 0/1; AMSI handled as an inverted *Disable* flag; LM Compatibility as `Level N`
+- **Word document: receive and send connector detail** — extended columns: `RequireTLS`, `FQDN`, `Max. Größe`
+- **Word document: IMAP/POP3 configuration section** — per-server sub-section from `Get-ImapSettings`/`Get-PopSettings`
+- **Word document: DNS section** — removed unreliable `Resolve-DnsName` lookup; replaced with static manual template (MX/SPF/DKIM/DMARC/Autodiscover) pre-populated from accepted domains
+- **Word document: Autodiscover AppPool** — shows live `Get-WebAppPoolState` instead of the config intent flag
+
+### v5.86.2 — April 2026 (bugfix)
+- **Word installation document — PS 5.1 nested-array flattening** — literal `@( @(..), @(..) )` row arrays passed to `New-WdTable` were flattened before parameter binding, so many tables (Versionshistorie, Dokumenteigenschaften, 4.12 Auth-Zertifikat, …) rendered one column per row. `New-WdTable` now auto-detects and reshapes.
+- **Word installation document — 4.12 Auth Certificate validity** — "Gültig bis" is now computed from the actual cert (`Get-ExchangeCertificate` / `Cert:\LocalMachine\My`) instead of a non-existent `AuthConfig` property; blank thumbprint / realm cells render as `(nicht gesetzt)` / `(leer — Default)`.
+- **Word installation document — Transport Agents Name column** — falls back to `$ta.Identity` when deserialization leaves `$ta.Name` blank; Chapter 9 now iterates all four transport scopes (`TransportService`, `FrontendTransport`, `MailboxSubmission`, `MailboxDelivery`) and deduplicates.
+- **Word installation document — 8.1 TLS status semantics** — raw `TLS 1.0 Server Disabled = 0` replaced with human-readable state (`aktiv (explizit konfiguriert)` / `deaktiviert (OS-Default)` / `— ACHTUNG: sollte deaktiviert sein`).
+- **Word installation document — Serialized Data Signing reader** — registry read uses Microsoft's actual value name `EnableSerializationDataSigning` (was `EnableSerializedDataSigning`); row no longer always shows `(not set)`.
+- **MEAC parameter rename** — `Register-AuthCertificateRenewal` now uses `-ConfigureScriptToRunViaScheduledTask` (renamed upstream in CSS-Exchange `MonitorExchangeAuthCertificate.ps1` BuildVersion 26.03.06.1531). Auth-Cert auto-renewal scheduled task registers successfully and appears in Chapter 7.1 of the generated Word document.
+
 ### v5.86 — April 2026
 - **Defender realtime + Tamper Protection** — new `Disable/Enable-DefenderRealtimeMonitoring` and `Disable/Enable-DefenderTamperProtection` pairs. Realtime scanning is paused for the duration of the install (start of Phase 1 → start of Phase 6) to avoid AV-induced setup stalls and file-lock failures during ECP/OWA unpack, ngen, and transport-agent registration. Tamper Protection is flipped off best-effort via registry and restored afterwards; on Intune/MDE-enforced hosts the script warns the operator instead of failing silently. Safe on un-managed hosts; operator accepts GPO/Intune tamper-back risk.
 - **Network-layer hardening: LLMNR + mDNS** — new `Disable-LLMNR` and `Disable-MDNS` close the Responder-class name-spoofing and NTLM-hash-capture vectors alongside the existing NetBIOS-over-TCP/IP disable. CIS L1 §18.5.4.2 (LLMNR) and WS2022+ default-on mDNS (port 5353 UDP).
-- **MECA — Auth Certificate auto-renewal** — new `Register-AuthCertificateRenewal` downloads CSS-Exchange `MonitorExchangeAuthCertificate.ps1` and registers the daily scheduled task via `-ConfigureScriptViaScheduledTask`. Renews the Exchange Auth Certificate 60 days before expiry; without MECA, Auth Cert expiry causes a full outage (OAuth, Hybrid, EWS). Skipped on Edge and management-only installs.
+- **MEAC — Auth Certificate auto-renewal** — new `Register-AuthCertificateRenewal` downloads CSS-Exchange `MonitorExchangeAuthCertificate.ps1` and registers the daily scheduled task via `-ConfigureScriptViaScheduledTask`. Renews the Exchange Auth Certificate 60 days before expiry; without MEAC, Auth Cert expiry causes a full outage (OAuth, Hybrid, EWS). Skipped on Edge and management-only installs.
 - **Menu toggle [U] Generate Installation Document** — Word Installation Document is no longer generated by default from the interactive menu; enable via toggle U only when needed. Mode 7 (Installation Document only) still always generates the document. `-NoWordDoc` parameter and config-file behavior unchanged.
 - **SMTP Banner on anonymous relay connectors** — `New-AnonymousRelayConnector` now sets `-Banner '220 Mail Service'` at creation/update. Previously Phase 5 banner-hardening ran before the relay connectors existed, leaving them with the default version-disclosing banner; the Installation Report now correctly shows 5/5 hardened Frontend connectors on typical installs.
 - **Extended Protection (OWA) filters to Frontend VDir** — `New-InstallationReport` explicitly filters out the Back End OWA virtual directory (where `ExtendedProtectionTokenChecking = None` is by design) and renders the site name plus EP value in the Security table.
