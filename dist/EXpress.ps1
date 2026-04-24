@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.1.4
+    Version:     1.1.5
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -398,7 +398,7 @@
 
     .PARAMETER InstallPath
     Working directory for prereq downloads, state file, transcript, and reports.
-    Default: C:\Install. May be a UNC path to share prereq cache between hosts.
+    Default: the directory containing EXpress.ps1. May be a UNC path to share prereq cache between hosts.
 
     .PARAMETER SourcePath
     Location of the Exchange installation files (setup.exe) or the Exchange ISO.
@@ -566,7 +566,7 @@
     .PARAMETER LogRetentionDays
     Register a Windows Scheduled Task (Exchange Log Cleanup, daily 02:00)
     that removes IIS log files and Exchange transport / tracking logs older
-    than N days (1–365). Task lives in the \Exchange\ task folder.
+    than N days (1–365). 0 = log cleanup disabled. Task lives in the \Exchange\ task folder.
 
     .PARAMETER RelaySubnets
     IP ranges (e.g. '192.168.1.0/24','10.0.0.5') allowed to relay anonymously
@@ -963,7 +963,7 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
     [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
-    [ValidateRange(1, 365)]
+    [ValidateRange(0, 365)]
     [int]$LogRetentionDays,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
@@ -1052,7 +1052,7 @@ process {
     # variable to build the Autopilot RunOnce command correctly.
     $EXpressEntryScript = $MyInvocation.MyCommand.Path
 
-    $ScriptVersion = '1.1.4'
+    $ScriptVersion = '1.1.5'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -8285,7 +8285,7 @@ $body
                 # Install-PackageProvider may fail to reach the provider index URI but
                 # Install-Module -ForceBootstrap handles NuGet bootstrap itself without prompting.
                 Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
-                Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ForceBootstrap -ErrorAction Stop
+                Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
                 $useModule = $true
                 Write-MyOutput 'PSWindowsUpdate module installed'
             }
@@ -8415,18 +8415,24 @@ $body
         else {
             $wuJob = Start-Job -ScriptBlock {
                 param([string[]]$kbs)
-                $session  = New-Object -ComObject Microsoft.Update.Session
-                $searcher = $session.CreateUpdateSearcher()
-                $filter   = ($kbs | ForEach-Object { "KBArticleID='$_'" }) -join ' or '
-                $found    = $searcher.Search("IsInstalled=0 and ($filter)")
-                if ($found.Updates.Count -eq 0) { return @{ Installed=0; RebootRequired=$false } }
+                $session    = New-Object -ComObject Microsoft.Update.Session
+                $searcher   = $session.CreateUpdateSearcher()
+                # KBArticleID is not a valid WUA search criterion — search all pending and filter in-memory
+                $allPending = $searcher.Search('IsInstalled=0 and IsHidden=0 and BrowseOnly=0')
+                $toInstall  = New-Object -ComObject Microsoft.Update.UpdateColl
+                foreach ($u in $allPending.Updates) {
+                    foreach ($kb in @($u.KBArticleIDs)) {
+                        if ($kbs -contains $kb) { $null = $toInstall.Add($u); break }
+                    }
+                }
+                if ($toInstall.Count -eq 0) { return @{ Installed=0; RebootRequired=$false; ResultCode='' } }
                 $dl = $session.CreateUpdateDownloader()
-                $dl.Updates = $found.Updates
+                $dl.Updates = $toInstall
                 $dl.Download() | Out-Null
-                $inst       = $session.CreateUpdateInstaller()
-                $inst.Updates = $found.Updates
+                $inst = $session.CreateUpdateInstaller()
+                $inst.Updates = $toInstall
                 $instResult = $inst.Install()
-                @{ Installed = $found.Updates.Count; RebootRequired = $instResult.RebootRequired; ResultCode = $instResult.ResultCode }
+                @{ Installed = $toInstall.Count; RebootRequired = $instResult.RebootRequired; ResultCode = $instResult.ResultCode }
             } -ArgumentList (,$approvedKBs)
         }
 
@@ -10763,10 +10769,14 @@ $body
                 [scriptblock]$Validate = $null,
                 [string]$ValidateMessage = 'Invalid input — please try again'
             )
-            $displayDefault = if ($Default) { "[$Default]" } else { '' }
-            $full = if ($displayDefault) { "  $Prompt $displayDefault" } else { "  $Prompt" }
             while ($true) {
-                $val = Read-Host $full
+                if ($Default) {
+                    Write-Host -NoNewline ("  {0} " -f $Prompt)
+                    Write-Host -NoNewline ("[{0}]: " -f $Default) -ForegroundColor Green
+                    $val = Read-Host
+                } else {
+                    $val = Read-Host ("  {0}" -f $Prompt)
+                }
                 if ($val -eq '') { $val = $Default }
                 if ($Required -and -not $val) {
                     Write-Host '  (required — cannot be empty)' -ForegroundColor Yellow
@@ -10788,7 +10798,7 @@ $body
 
         $cfg = @{}
         $cfg['Mode']       = $selectedMode
-        $cfg['InstallPath'] = Read-MenuInput -Prompt 'Working/log folder' -Default 'C:\Install'
+        $cfg['InstallPath'] = if ($ScriptFullName) { Split-Path $ScriptFullName -Parent } else { $PWD.Path }
         if ($selectedMode -notin @(6, 7)) {
             $defaultIso = Join-Path $cfg['InstallPath'] 'sources\ExchangeServerSE-x64.iso'
             $srcTry = 0
@@ -10872,7 +10882,7 @@ $body
                 $cfg['MailDomain']     = Read-MenuInput -Prompt 'Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)' -Default $defaultMailDomain -Validate $validateFQDN -ValidateMessage 'Not a valid domain (e.g. contoso.com)'
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
-            if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
+            if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
             } else {
@@ -10916,7 +10926,7 @@ $body
             } else {
                 $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
             }
-            if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
+            if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
             } else {
@@ -10948,7 +10958,6 @@ $body
         if ($selectedMode -in @(1, 6)) {
             if ($selectedMode -eq 1) {
                 $editFields.Add(@{ Key='SourcePath';    Label='Exchange source';      Prompt='Exchange source (folder or .iso)';                               Required=$true;  Validate={ param($v) Test-Path $v }; ValidateMsg='Path not found — enter a valid folder or .iso file path' })
-                $editFields.Add(@{ Key='InstallPath';   Label='Working folder';       Prompt='Working/log folder';                                             Required=$false; Validate=$null;         ValidateMsg='' })
                 $editFields.Add(@{ Key='Organization';  Label='Organization name';    Prompt='Organization name';                                              Required=$false; Validate=$null;         ValidateMsg='' })
                 $editFields.Add(@{ Key='MDBName';       Label='Mailbox DB name';      Prompt='Mailbox DB name        (blank = default name)';                  Required=$false; Validate=$null;         ValidateMsg='' })
                 $editFields.Add(@{ Key='MDBDBPath';     Label='Mailbox DB path';      Prompt='Mailbox DB path        (blank = Exchange default)';              Required=$false; Validate=$null;         ValidateMsg='' })
@@ -11060,6 +11069,9 @@ $body
     # Detect PS2Exe compiled run: MyCommand.Path is empty; Write-Progress is not rendered visually
     $IsPS2Exe = -not $MyInvocation.MyCommand.Path
     $ScriptName = $ScriptFullName.Split("\")[-1]
+    if (-not $PSBoundParameters.ContainsKey('InstallPath')) {
+        $InstallPath = Split-Path $ScriptFullName -Parent
+    }
     $ParameterString = $PSBoundParameters.getEnumerator() -join " "
     $OSVersionParts = (Get-CimInstance -ClassName Win32_OperatingSystem).Version.Split('.')
     $MajorOSVersion = '{0}.{1}' -f $OSVersionParts[0], $OSVersionParts[1]
@@ -11207,7 +11219,7 @@ $body
             # Map menu result back to parameter-equivalent variables so the standard state init below can run
             $mode            = $menuResult['Mode']
             $SourcePath      = $menuResult['SourcePath']
-            $InstallPath     = if ($menuResult['InstallPath']) { $menuResult['InstallPath'] } else { 'C:\Install' }
+            $InstallPath     = if ($menuResult['InstallPath']) { $menuResult['InstallPath'] } else { Split-Path $ScriptFullName -Parent }
             $Organization    = $menuResult['Organization']
             $MDBName         = $menuResult['MDBName']
             $MDBDBPath       = $menuResult['MDBDBPath']
@@ -11291,7 +11303,7 @@ $body
 
             # Paths
             $SourcePath   = Get-CfgValue 'SourcePath'   $SourcePath
-            $InstallPath  = if (Get-CfgValue 'InstallPath' $InstallPath) { Get-CfgValue 'InstallPath' $InstallPath } else { 'C:\Install' }
+            $InstallPath  = if (Get-CfgValue 'InstallPath' $InstallPath) { Get-CfgValue 'InstallPath' $InstallPath } else { Split-Path $ScriptFullName -Parent }
 
             # Exchange config
             $Organization     = Get-CfgValue 'Organization'     $Organization
