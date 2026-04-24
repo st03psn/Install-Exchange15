@@ -9758,6 +9758,8 @@ $body
         # Navigation uses Enter / Backspace / 0 / Esc — never letter keys — so all
         # A-Z letters are available for toggling items without conflicts.
         # Returns a hashtable @{Name=bool} of all toggle states, or $null on cancel.
+        # $InitialValues: pre-seed toggle state (e.g. from a previous C-press in the main menu).
+        param([hashtable]$InitialValues = $null)
 
         $catalog = Get-AdvancedFeatureCatalog
 
@@ -9774,7 +9776,9 @@ $body
         $sel     = @{}
         $visible = @{}
         foreach ($cat in $categoryDefs) { $visible[$cat.Key] = @() }
-        $existing = if ($State['AdvancedFeatures'] -is [hashtable]) { $State['AdvancedFeatures'] } else { @{} }
+        $existing = if ($InitialValues -is [hashtable])                { $InitialValues }
+                    elseif ($State['AdvancedFeatures'] -is [hashtable]) { $State['AdvancedFeatures'] }
+                    else                                                 { @{} }
         foreach ($name in $catalog.Keys) {
             $entry = $catalog[$name]
             if ($entry.ContainsKey('Condition')) {
@@ -9821,19 +9825,19 @@ $body
                 Write-Host ''
                 Write-Host ('  -- {0} {1}' -f $cat.Title, $sep) -ForegroundColor Yellow
                 Write-Host ''
-                $half = [Math]::Ceiling($catNames.Count / 2)
+                $half = [int][Math]::Ceiling($catNames.Count / 2)
                 for ($r = 0; $r -lt $half; $r++) {
                     $li      = $r
                     $ri      = $r + $half
                     $lName   = $catNames[$li]
-                    $lLetter = [char]([byte][char]'A' + $offset + $li)
+                    $lLetter = [char]([int][char]'A' + $offset + $li)
                     $lEntry  = $catalog[$lName]
                     $lMark   = if ($sel[$lName]) { 'X' } else { ' ' }
                     $lColor  = if ($lName -eq $lastName) { [System.ConsoleColor]::Yellow } else { [System.ConsoleColor]::White }
                     Write-Host ('  [{0}] [{1}] {2,-28}' -f $lLetter, $lMark, $lEntry.Label) -ForegroundColor $lColor -NoNewline
                     if ($ri -lt $catNames.Count) {
                         $rName   = $catNames[$ri]
-                        $rLetter = [char]([byte][char]'A' + $offset + $ri)
+                        $rLetter = [char]([int][char]'A' + $offset + $ri)
                         $rEntry  = $catalog[$rName]
                         $rMark   = if ($sel[$rName]) { 'X' } else { ' ' }
                         $rColor  = if ($rName -eq $lastName) { [System.ConsoleColor]::Yellow } else { [System.ConsoleColor]::White }
@@ -10060,7 +10064,7 @@ $body
         }
 
         function Draw-Menu {
-            param([int]$Mode, [hashtable]$ToggState, [string]$StatusMsg = '', [array]$ExtraDisabled = @())
+            param([int]$Mode, [hashtable]$ToggState, [string]$StatusMsg = '', [array]$ExtraDisabled = @(), [int]$AdvCount = 0)
             Clear-Host
             Write-MenuLine ('=' * 60) Cyan
             Write-MenuLine ('  Install-Exchange15 v{0}  —  Copilot' -f $ScriptVersion) Cyan
@@ -10073,7 +10077,7 @@ $body
                 Write-Host ('    [{0}] {1}  {2}' -f $i, $marker, $modes[$i]) -ForegroundColor $color
             }
             Write-Host ''
-            Write-MenuLine '  Switches (press letter to toggle, then ENTER to proceed to inputs):' Yellow
+            Write-MenuLine '  Switches (press letter to toggle, C=Advanced, then ENTER to start):' Yellow
 
             $disabled = @(if ($Mode -gt 0) { $disabledToggles[$Mode] } else { @() }) + $ExtraDisabled
             $letters  = @($toggleDefs.Keys)
@@ -10092,6 +10096,9 @@ $body
                 Write-Host $leftStr  -ForegroundColor $lColor -NoNewline
                 Write-Host $rightStr -ForegroundColor $rColor
             }
+            # Advanced Configuration shortcut
+            $advStatus = if ($AdvCount -gt 0) { "($AdvCount customized)" } else { '(defaults)' }
+            Write-Host ('  [C] Advanced Configuration...          {0}' -f $advStatus) -ForegroundColor Cyan
 
             Write-Host ''
             if ($StatusMsg) { Write-Host "  $StatusMsg" -ForegroundColor Yellow }
@@ -10099,9 +10106,13 @@ $body
 
         Write-MyVerbose 'Menu: Show-InstallationMenu started'
 
+        # Advanced Configuration state — populated when user presses C.
+        # Starts empty (@{}) so Test-Feature falls back to catalog defaults.
+        $advancedFeatures = @{}
+
         # --- Step 1: Mode selection ---
         while ($selectedMode -lt 1 -or $selectedMode -gt 7) {
-            Draw-Menu -Mode $selectedMode -ToggState $toggleState
+            Draw-Menu -Mode $selectedMode -ToggState $toggleState -AdvCount $advancedFeatures.Count
             $raw = Read-Host '  Mode [1-7]'
             if ($raw -match '^[1-7]$') {
                 $selectedMode = [int]$raw
@@ -10128,11 +10139,11 @@ $body
         $statusMsg = ''
         while ($true) {
             $dynDisabled = Get-DynamicDisabled $toggleState
-            Draw-Menu -Mode $selectedMode -ToggState $toggleState -StatusMsg $statusMsg -ExtraDisabled $dynDisabled
+            Draw-Menu -Mode $selectedMode -ToggState $toggleState -StatusMsg $statusMsg -ExtraDisabled $dynDisabled -AdvCount $advancedFeatures.Count
             $statusMsg = ''
 
             if ($useRawKey) {
-                Write-Host '  Press letter to toggle, ENTER to continue: ' -NoNewline -ForegroundColor Cyan
+                Write-Host '  Press letter to toggle, C=Advanced, ENTER to start: ' -NoNewline -ForegroundColor Cyan
                 try {
                     $keyInfo = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
                     $vk  = $keyInfo.VirtualKeyCode
@@ -10148,11 +10159,20 @@ $body
                 }
             }
             else {
-                $raw = (Read-Host '  Toggle letter or ENTER to continue').Trim().ToUpper()
+                $raw = (Read-Host '  Toggle letter / C=Advanced / ENTER to start').Trim().ToUpper()
                 if ($raw -eq '') { break }
             }
 
-            if ($raw.Length -eq 1 -and $toggleDefs.Contains($raw)) {
+            if ($raw -eq 'C') {
+                # Open Advanced Configuration menu; preserve state across multiple C-presses.
+                $advResult = Show-AdvancedMenu -InitialValues $advancedFeatures
+                if ($null -ne $advResult) {
+                    $advancedFeatures = $advResult
+                    $changed = ($advancedFeatures.Keys | Where-Object { $advancedFeatures[$_] -ne [bool](Get-AdvancedFeatureCatalog)[$_].Default }).Count
+                    Write-MyVerbose ('Menu: Advanced Configuration applied — {0} setting(s) differ from defaults' -f $changed)
+                }
+            }
+            elseif ($raw.Length -eq 1 -and $toggleDefs.Contains($raw)) {
                 $dynNow = Get-DynamicDisabled $toggleState
                 if (($disabledToggles[$selectedMode] -contains $raw) -or ($dynNow -contains $raw)) {
                     $statusMsg = "[$raw] is not available in this configuration"
@@ -10172,7 +10192,7 @@ $body
                 }
             }
             elseif ($raw.Length -gt 0) {
-                $statusMsg = "Unknown key '$raw' — press a listed letter to toggle or ENTER to continue"
+                $statusMsg = "Unknown key '$raw' — press a listed letter, C=Advanced, or ENTER to start"
             }
         }
 
@@ -10349,6 +10369,8 @@ $body
         foreach ($k in $toggleDefs.Keys) {
             $cfg[$toggleDefs[$k].Name] = $toggleState[$k]
         }
+        # Advanced Configuration — persisted so state-assignment can pick it up via Test-Feature.
+        $cfg['AdvancedFeatures'] = $advancedFeatures
 
         # --- Step 4: Summary + confirmation ---
         while ($true) {
@@ -10618,11 +10640,10 @@ $body
                 Write-MyVerbose ('Menu: cfg[{0}] = {1}' -f $k, $safeDump[$k])
             }
 
-            # Advanced Configuration menu — offered after main menu confirmation,
-            # 60s auto-skip, default = keep catalog defaults. Skipped in Autopilot
-            # by Invoke-AdvancedConfigurationPrompt itself.
-            if (-not ($State['AdvancedFeatures'] -is [hashtable])) { $State['AdvancedFeatures'] = @{} }
-            $null = Invoke-AdvancedConfigurationPrompt
+            # Advanced Configuration — user configured via C in the main menu.
+            # Seed $State['AdvancedFeatures'] now so Test-Feature picks it up in the
+            # state-assignment block below.
+            $State['AdvancedFeatures'] = if ($menuResult['AdvancedFeatures'] -is [hashtable]) { $menuResult['AdvancedFeatures'] } else { @{} }
         }
         elseif ($ConfigFile) {
             # Headless mode: load all parameters from a .psd1 config file.
