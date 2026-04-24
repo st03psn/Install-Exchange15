@@ -10147,11 +10147,16 @@ $body
     function Start-DisableMSExchangeAutodiscoverAppPoolJob {
 
         $ScriptBlock = {
+            # IIS:\ PSDrive is not available in Start-Job child processes without an explicit import.
+            Import-Module WebAdministration -ErrorAction SilentlyContinue
+
+            $maxWaitSec = 600   # give up after 10 minutes
+            $elapsed    = 0
+            $interval   = 10
             do {
                 # Use Test-Path instead of Get-WebAppPoolState: the latter internally calls
                 # Get-WebItemState which throws PathNotFound and is NOT suppressed by -ErrorAction SilentlyContinue.
                 if (Test-Path 'IIS:\AppPools\MSExchangeAutodiscoverAppPool') {
-
                     Write-Verbose 'Stopping and blocking startup of MSExchangeAutodiscoverAppPool'
                     if ( (Get-WebAppPoolState -Name 'MSExchangeAutodiscoverAppPool').Value -ine 'Stopped') {
                         try {
@@ -10170,11 +10175,11 @@ $body
                     }
                     return $true
                 }
-                else {
-                    Write-Verbose ('MSExchangeAutodiscoverAppPool not found, waiting a bit ..')
-                    Start-Sleep -Seconds 10
-                }
-            } while ($true)
+                Start-Sleep -Seconds $interval
+                $elapsed += $interval
+            } while ($elapsed -lt $maxWaitSec)
+            Write-Verbose 'MSExchangeAutodiscoverAppPool did not appear within 10 minutes — giving up'
+            return $false
         }
 
         $Job = Start-Job -ScriptBlock $ScriptBlock -Name ('DisableMSExchangeAutodiscoverAppPoolJob-{0}' -f $env:COMPUTERNAME)

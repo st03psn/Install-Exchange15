@@ -292,7 +292,7 @@ The following best-practice configurations are automatically applied after Excha
 
 ## Repository Layout
 
-> End users only need `dist\EXpress.ps1`. The layout below is for contributors or users who cloned the full repo.
+> End users download the **release ZIP** from the [Releases page](https://github.com/st03psn/EXpress/releases/latest) — see the [Download](#download) section above. The layout below is for contributors or users who cloned the full repository.
 
 ```
 EXpress/
