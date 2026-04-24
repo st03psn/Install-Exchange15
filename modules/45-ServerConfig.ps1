@@ -271,10 +271,12 @@
         $days = if ($State['LogRetentionDays'] -and [int]$State['LogRetentionDays'] -gt 0) { [int]$State['LogRetentionDays'] } else { 30 }
         Write-MyOutput 'Registering Exchange log cleanup scheduled task'
 
-        # Ask for script destination folder with 2-minute timeout via RawUI (same pattern as Show-InstallationMenu)
+        # Use folder from menu/config if already provided; otherwise prompt interactively
         $defaultScriptFolder = 'C:\#service'
-        $scriptFolder = $defaultScriptFolder
-        if ([Environment]::UserInteractive) {
+        $scriptFolder = if ($State['LogCleanupFolder']) { $State['LogCleanupFolder'] } else { $defaultScriptFolder }
+        if ($State['LogCleanupFolder']) {
+            Write-MyVerbose ('Log cleanup folder from configuration: {0}' -f $scriptFolder)
+        } elseif ([Environment]::UserInteractive) {
             Write-MyOutput ('Enter folder for log cleanup script [{0}] (ENTER = default, S = skip, auto-accept in 2 min):' -f $defaultScriptFolder)
             $inputBuffer = ''
             try {

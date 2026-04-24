@@ -601,59 +601,42 @@
             return
         }
 
-        # ── 2. Email Address Policy — primary SMTP template ─────────────────────
+        # ── 2. Create a new Email Address Policy named after the mail domain ──────
+        # A new policy is created rather than modifying the built-in Default Policy.
+        # Name = mail domain (e.g. "contoso.com"); primary SMTP template = %m@domain.
         try {
-            $policy = Get-EmailAddressPolicy -ErrorAction Stop | Sort-Object Priority | Select-Object -First 1
-            if (-not $policy) {
-                Write-MyWarning 'No Email Address Policy found — skipping policy update'
-                return
-            }
+            $policyName = $ns
+            $nsTemplate = "SMTP:%m@$ns"   # uppercase SMTP = primary; %m = mailbox alias
 
-            $currentTemplates = @($policy.EnabledEmailAddressTemplates)
-            $nsTemplate        = "SMTP:@$ns"   # uppercase SMTP = primary
-
-            # Build non-internal templates (remove .local / nonroutable suffixes as primary/secondary)
-            # but keep any routable domain that is NOT the access namespace as secondary smtp:
-            $keepTemplates = $currentTemplates | Where-Object {
-                $t = $_ -replace '^smtp:|^SMTP:',''
-                # Drop .local, .internal, .lan addresses — these are not routable
-                ($t -notmatch '\.(local|internal|lan|corp)$') -and ($t -ne "@$ns")
-            } | ForEach-Object {
-                # Downcase existing primary markers so we don't have two primaries
-                $_ -replace '^SMTP:', 'smtp:'
-            }
-
-            # Check whether we dropped any internal templates (for logging)
-            $droppedCount = $currentTemplates.Count - $keepTemplates.Count - 1  # -1 for namespace slot
-            if ($droppedCount -gt 0) {
-                Write-MyOutput ("Removing {0} internal-only address template(s) from policy '{1}'" -f $droppedCount, $policy.Name)
-            }
-
-            # Build new list: access namespace first (primary), remaining routable domains second
-            $newTemplates = @($nsTemplate) + @($keepTemplates | Where-Object { $_ })
-
-            # Only update if something actually changed
-            $alreadyPrimary = ($currentTemplates | Select-Object -First 1) -ieq $nsTemplate
-            $sameCount      = ($newTemplates.Count -eq $currentTemplates.Count) -and
-                              (($newTemplates | Sort-Object) -join '|') -eq (($currentTemplates | Sort-Object) -join '|')
-
-            if ($alreadyPrimary -and $sameCount) {
-                Write-MyVerbose ("Email Address Policy '{0}' already configured correctly — no change needed" -f $policy.Name)
-            }
-            else {
-                Set-EmailAddressPolicy -Identity $policy.Identity -EnabledEmailAddressTemplates $newTemplates -ErrorAction Stop
-                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Set-EmailAddressPolicy -Identity '{0}' -EnabledEmailAddressTemplates @('{1}')" -f $policy.Name, ($newTemplates -join "','"))
-                Write-MyOutput ("Email Address Policy '{0}' updated — primary SMTP: @{1}" -f $policy.Name, $ns)
-
-                # ── 3. Apply policy to all mailboxes ────────────────────────────
-                Write-MyOutput ('Applying Email Address Policy to all mailboxes (this may take a moment)...')
-                Update-EmailAddressPolicy -Identity $policy.Identity -ErrorAction Stop
-                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policy.Name)
-                Write-MyOutput ('Email Address Policy applied.')
+            $existing = Get-EmailAddressPolicy -ErrorAction Stop | Where-Object { $_.Name -ieq $policyName }
+            if ($existing) {
+                $alreadyPrimary = (($existing.EnabledEmailAddressTemplates | Select-Object -First 1) -ieq $nsTemplate)
+                if ($alreadyPrimary) {
+                    Write-MyVerbose ("Email Address Policy '{0}' already configured correctly — no change needed" -f $policyName)
+                } else {
+                    Set-EmailAddressPolicy -Identity $existing.Identity `
+                        -EnabledEmailAddressTemplates @($nsTemplate) -ErrorAction Stop
+                    Register-ExecutedCommand -Category 'ExchangePolicy' `
+                        -Command ("Set-EmailAddressPolicy -Identity '{0}' -EnabledEmailAddressTemplates @('{1}')" -f $policyName, $nsTemplate)
+                    Write-MyOutput ("Email Address Policy '{0}' updated — primary SMTP: %m@{1}" -f $policyName, $ns)
+                    Update-EmailAddressPolicy -Identity $existing.Identity -ErrorAction Stop
+                    Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policyName)
+                    Write-MyOutput 'Email Address Policy applied.'
+                }
+            } else {
+                New-EmailAddressPolicy -Name $policyName -IncludedRecipients AllRecipients `
+                    -EnabledEmailAddressTemplates @($nsTemplate) -Priority 1 `
+                    -ErrorAction Stop | Out-Null
+                Register-ExecutedCommand -Category 'ExchangePolicy' `
+                    -Command ("New-EmailAddressPolicy -Name '{0}' -IncludedRecipients AllRecipients -EnabledEmailAddressTemplates @('{1}') -Priority 1" -f $policyName, $nsTemplate)
+                Write-MyOutput ("Email Address Policy '{0}' created — primary SMTP: %m@{1}" -f $policyName, $ns)
+                Update-EmailAddressPolicy -Identity $policyName -ErrorAction Stop
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policyName)
+                Write-MyOutput 'Email Address Policy applied.'
             }
         }
         catch {
-            Write-MyWarning ('Email Address Policy update failed: {0}' -f $_.Exception.Message)
+            Write-MyWarning ('Email Address Policy configuration failed: {0}' -f $_.Exception.Message)
         }
     }
 

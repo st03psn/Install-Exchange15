@@ -693,7 +693,7 @@
                 $certRows2 = [System.Collections.Generic.List[object[]]]::new()
                 foreach ($cert2 in $srvD.Certificates) {
                     $expiry2   = if ($cert2.NotAfter) { $cert2.NotAfter.ToString('yyyy-MM-dd') } else { '?' }
-                    $daysLeft2 = if ($cert2.NotAfter) { ($cert2.NotAfter - (Get-Date)).Days } else { 0 }
+                    $daysLeft2 = if ($cert2.NotAfter) { [int][Math]::Floor(($cert2.NotAfter - (Get-Date)).TotalDays) } else { 0 }
                     $tp2 = if ($cust) { ('{0}...' -f $cert2.Thumbprint.Substring(0, [Math]::Min(8, $cert2.Thumbprint.Length))) } else { $cert2.Thumbprint }
                     $certRows2.Add(@($cert2.Subject, $expiry2, ('{0}d' -f $daysLeft2), $cert2.Services, $tp2))
                 }

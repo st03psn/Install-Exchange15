@@ -24,7 +24,7 @@ Only the **latest CU** of each Exchange line is supported as an install target. 
 
 ## Prerequisites
 
-- PowerShell 5.1 or later
+- Windows PowerShell 5.1 (Exchange PSSnapin requires WinPS 5.1 — PowerShell 7 is not supported)
 - Run as local Administrator (script auto-elevates via UAC if needed)
 - Domain membership (except Edge role)
 - Schema Admin + Enterprise Admin rights for AD preparation

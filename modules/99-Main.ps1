@@ -751,7 +751,7 @@
                     }
 
                     # Access Namespace — Accepted Domain + Email Address Policy (F26)
-                    if ($State['AccessNamespaceMail'] -and $State['Namespace']) {
+                    if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and $State['NewExchangeOrg']) {
                         Enable-AccessNamespaceMailConfig
                     }
 
@@ -1313,7 +1313,7 @@
                 }
 
                 # Access Namespace — Accepted Domain + Email Address Policy (F26)
-                if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and -not $State['InstallEdge']) {
+                if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and $State['NewExchangeOrg'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Access namespace mail config' -PercentComplete 79
                     Enable-AccessNamespaceMailConfig
                 }

@@ -82,6 +82,8 @@
         if ($null -ne (Test-ExchangeOrganization $State['OrganizationName'])) {
             Write-MyOutput "Exchange organization '$($State['OrganizationName'])' does not exist — PrepareAD required"
             $params += '/PrepareAD', "/OrganizationName:`"$($State['OrganizationName'])`""
+            $State['NewExchangeOrg'] = $true   # org created by this run — Enable-AccessNamespaceMailConfig may run
+            Save-State $State
         }
         else {
             $forestlvl = Get-ExchangeForestLevel

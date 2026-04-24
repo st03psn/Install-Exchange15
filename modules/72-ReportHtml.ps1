@@ -311,9 +311,16 @@
         $secRows.Add(('<tr><td>IPv4 over IPv6 preference</td><td>{0}</td><td>0x20 = prefer IPv4 (keep IPv6 loopback)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $ipv4ValText, $ipv4Badge, (Format-RefLink 'https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/configure-ipv6-in-windows' 'Exchange Blog')))
 
         # NetBIOS over TCP/IP
+        # SetTcpipNetbios(2) may return 1 (pending reboot), leaving the live CIM value stale.
+        # Cross-check the registry (NetbiosOptions=2) so the report reflects the pending state.
         try {
             $nbNics = @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction Stop)
-            $nbDisabled = ($nbNics | Where-Object { $_.TcpipNetbiosOptions -eq 2 }).Count
+            $nbDisabled = 0
+            foreach ($nbNic in $nbNics) {
+                if ($nbNic.TcpipNetbiosOptions -eq 2) { $nbDisabled++; continue }
+                $nbReg = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$($nbNic.SettingID)" -Name 'NetbiosOptions' -ErrorAction SilentlyContinue).NetbiosOptions
+                if ($nbReg -eq 2) { $nbDisabled++ }
+            }
             $nbBadge = if ($nbNics.Count -gt 0 -and $nbDisabled -eq $nbNics.Count) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge ('{0}/{1} disabled' -f $nbDisabled, $nbNics.Count) 'warn' }
             $secRows.Add(('<tr><td>NetBIOS over TCP/IP</td><td>{0} of {1} NICs disabled</td><td>Disabled on all NICs (reduces LLMNR/NBT-NS attack surface)</td><td>{2}</td><td>{3}</td><td>CIS §18 / BSI</td></tr>' -f $nbDisabled, $nbNics.Count, $nbBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/disable-netbios-tcp-ip-using-dhcp' 'MS Learn')))
         } catch { }
@@ -333,6 +340,8 @@
                     $siteLabel = if ($owaFe.WebSiteName) { $owaFe.WebSiteName } else { $owaFe.Name }
                     $epVal = [string]$owaFe.ExtendedProtectionTokenChecking
                     if ([string]::IsNullOrEmpty($epVal)) { $epVal = 'None' }
+                    # Normalize integer forms returned when deserializing AD properties
+                    if ($epVal -eq '2') { $epVal = 'Require' } elseif ($epVal -eq '1') { $epVal = 'Allow' } elseif ($epVal -eq '0') { $epVal = 'None' }
                     $epBadge = if ($epVal -in 'Require','Allow') { Format-Badge "$epVal ✓" 'ok' } else { Format-Badge "$epVal (risk)" 'warn' }
                     $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0} — {1}</td><td>Require or Allow</td><td>{2}</td><td>{3}</td><td>MS Exchange</td></tr>' -f $siteLabel, $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
                 }
