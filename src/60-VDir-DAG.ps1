@@ -1,0 +1,677 @@
+﻿    function Set-VirtualDirectoryURLs {
+        if (-not $State['Namespace']) {
+            Write-MyVerbose 'No Namespace specified, skipping Virtual Directory URL configuration'
+            return
+        }
+
+        $ns     = $State['Namespace']
+        $server = $env:COMPUTERNAME
+        $errors = 0
+        $changed = 0
+        Write-MyOutput ('Configuring Virtual Directory URLs for namespace: {0}' -f $ns)
+
+        # Exchange VDir cmdlets call ShouldContinue("host can't be resolved") when the namespace
+        # doesn't resolve in DNS — ShouldContinue cannot be suppressed by -Confirm:$false or
+        # preference variables. Add a temporary hosts entry if needed and remove it afterwards.
+        $hostsFile      = "$env:SystemRoot\System32\drivers\etc\hosts"
+        $tempHostsMark  = '# EXpress-temp-vdir'
+        $hostsBackup    = $null
+        $dlDomain       = $State['DownloadDomain']
+        $nsResolves     = $false
+        $dlResolves     = $false
+        try { [System.Net.Dns]::GetHostEntry($ns) | Out-Null; $nsResolves = $true } catch { }
+        if ($dlDomain) { try { [System.Net.Dns]::GetHostEntry($dlDomain) | Out-Null; $dlResolves = $true } catch { } }
+        if (-not $nsResolves) {
+            Write-MyVerbose ('Namespace {0} not resolvable — adding temporary hosts entry to suppress VDir confirmation prompt' -f $ns)
+            $hostsBackup = [System.IO.File]::ReadAllBytes($hostsFile)
+            "`r`n127.0.0.1`t$ns`t$tempHostsMark" | Add-Content -Path $hostsFile -Encoding ASCII -ErrorAction SilentlyContinue
+        }
+        if ($dlDomain -and -not $dlResolves) {
+            Write-MyVerbose ('Download domain {0} not resolvable — adding temporary hosts entry' -f $dlDomain)
+            if (-not $hostsBackup) { $hostsBackup = [System.IO.File]::ReadAllBytes($hostsFile) }
+            "`r`n127.0.0.1`t$dlDomain`t$tempHostsMark" | Add-Content -Path $hostsFile -Encoding ASCII -ErrorAction SilentlyContinue
+        }
+
+        # Helper: compare a vdir URL property (Uri object or string) to a target string
+        function Test-VdirUrl($current, $target) {
+            if (-not $current) { return $false }
+            return ([string]$current -eq $target)
+        }
+
+        # OWA — set URL and UPN logon format
+        try {
+            $vd = Get-OwaVirtualDirectory -Identity "$server\owa (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            $urlOk    = (Test-VdirUrl $vd.InternalUrl "https://$ns/owa") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/owa")
+            $formatOk = ([string]$vd.LogonFormat -eq 'PrincipalName')
+            if ($urlOk -and $formatOk) {
+                Write-MyVerbose 'OWA: URLs and logon format already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-OwaVirtualDirectory -Identity '$server\owa (Default Web Site)' -InternalUrl 'https://$ns/owa' -ExternalUrl 'https://$ns/owa' -LogonFormat PrincipalName -DefaultDomain ''")
+                Set-OwaVirtualDirectory -Identity "$server\owa (Default Web Site)" `
+                    -InternalUrl "https://$ns/owa" -ExternalUrl "https://$ns/owa" `
+                    -LogonFormat PrincipalName -DefaultDomain '' `
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'OWA virtual directory configured (UPN logon)'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('OWA: {0}' -f $_.Exception.Message); $errors++ }
+
+        # OWA Download Domains — CVE-2021-1730 mitigation (isolates attachment downloads to a separate hostname)
+        if ($dlDomain) {
+            try {
+                $vd = Get-OwaVirtualDirectory -Identity "$server\owa (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+                $dlOk = ([string]$vd.ExternalDownloadHostName -eq $dlDomain) -and ([string]$vd.InternalDownloadHostName -eq $dlDomain)
+                if ($dlOk) {
+                    Write-MyVerbose ('OWA Download Domains already set to {0}, skipping' -f $dlDomain)
+                } else {
+                    Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-OwaVirtualDirectory -Identity '$server\owa (Default Web Site)' -ExternalDownloadHostName '$dlDomain' -InternalDownloadHostName '$dlDomain'")
+                    Set-OwaVirtualDirectory -Identity "$server\owa (Default Web Site)" `
+                        -ExternalDownloadHostName $dlDomain -InternalDownloadHostName $dlDomain `
+                        -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                    Write-MyVerbose ('OWA Download Domains configured: {0} (CVE-2021-1730 mitigation)' -f $dlDomain)
+                    $changed++
+                }
+            }
+            catch { Write-MyWarning ('OWA Download Domains: {0}' -f $_.Exception.Message); $errors++ }
+        }
+
+        # ECP
+        try {
+            $vd = Get-EcpVirtualDirectory -Identity "$server\ecp (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/ecp") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/ecp")) {
+                Write-MyVerbose 'ECP: URLs already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-EcpVirtualDirectory -Identity '$server\ecp (Default Web Site)' -InternalUrl 'https://$ns/ecp' -ExternalUrl 'https://$ns/ecp'")
+                Set-EcpVirtualDirectory -Identity "$server\ecp (Default Web Site)" `
+                    -InternalUrl "https://$ns/ecp" -ExternalUrl "https://$ns/ecp" `
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'ECP virtual directory configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('ECP: {0}' -f $_.Exception.Message); $errors++ }
+
+        # EWS
+        try {
+            $vd = Get-WebServicesVirtualDirectory -Identity "$server\EWS (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/EWS/Exchange.asmx") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/EWS/Exchange.asmx")) {
+                Write-MyVerbose 'EWS: URLs already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-WebServicesVirtualDirectory -Identity '$server\EWS (Default Web Site)' -InternalUrl 'https://$ns/EWS/Exchange.asmx' -ExternalUrl 'https://$ns/EWS/Exchange.asmx'")
+                Set-WebServicesVirtualDirectory -Identity "$server\EWS (Default Web Site)" `
+                    -InternalUrl "https://$ns/EWS/Exchange.asmx" -ExternalUrl "https://$ns/EWS/Exchange.asmx" `
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'EWS virtual directory configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('EWS: {0}' -f $_.Exception.Message); $errors++ }
+
+        # OAB
+        try {
+            $vd = Get-OabVirtualDirectory -Identity "$server\OAB (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/OAB") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/OAB")) {
+                Write-MyVerbose 'OAB: URLs already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-OabVirtualDirectory -Identity '$server\OAB (Default Web Site)' -InternalUrl 'https://$ns/OAB' -ExternalUrl 'https://$ns/OAB'")
+                Set-OabVirtualDirectory -Identity "$server\OAB (Default Web Site)" `
+                    -InternalUrl "https://$ns/OAB" -ExternalUrl "https://$ns/OAB" `
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'OAB virtual directory configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('OAB: {0}' -f $_.Exception.Message); $errors++ }
+
+        # ActiveSync
+        try {
+            $vd = Get-ActiveSyncVirtualDirectory -Identity "$server\Microsoft-Server-ActiveSync (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/Microsoft-Server-ActiveSync") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/Microsoft-Server-ActiveSync")) {
+                Write-MyVerbose 'ActiveSync: URLs already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-ActiveSyncVirtualDirectory -Identity '$server\Microsoft-Server-ActiveSync (Default Web Site)' -InternalUrl 'https://$ns/Microsoft-Server-ActiveSync' -ExternalUrl 'https://$ns/Microsoft-Server-ActiveSync'")
+                Set-ActiveSyncVirtualDirectory -Identity "$server\Microsoft-Server-ActiveSync (Default Web Site)" `
+                    -InternalUrl "https://$ns/Microsoft-Server-ActiveSync" -ExternalUrl "https://$ns/Microsoft-Server-ActiveSync" `
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'ActiveSync virtual directory configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('ActiveSync: {0}' -f $_.Exception.Message); $errors++ }
+
+        # MAPI — URL first, auth methods in a separate try (not available on all builds)
+        try {
+            $vd = Get-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if ((Test-VdirUrl $vd.InternalUrl "https://$ns/mapi") -and (Test-VdirUrl $vd.ExternalUrl "https://$ns/mapi")) {
+                Write-MyVerbose 'MAPI: URLs already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-MapiVirtualDirectory -Identity '$server\mapi (Default Web Site)' -InternalUrl 'https://$ns/mapi' -ExternalUrl 'https://$ns/mapi'")
+                Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
+                    -InternalUrl "https://$ns/mapi" -ExternalUrl "https://$ns/mapi" `
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'MAPI virtual directory URL configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('MAPI URL: {0}' -f $_.Exception.Message); $errors++ }
+
+        try {
+            Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
+                -InternalAuthenticationMethods NTLM,Negotiate,OAuth `
+                -ExternalAuthenticationMethods NTLM,Negotiate,OAuth `
+                -ErrorAction Stop -WarningAction SilentlyContinue
+            Write-MyVerbose 'MAPI authentication methods configured'
+            Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-MapiVirtualDirectory -Identity '$server\mapi (Default Web Site)' -InternalAuthenticationMethods NTLM,Negotiate,OAuth -ExternalAuthenticationMethods NTLM,Negotiate,OAuth")
+        }
+        catch { Write-MyVerbose ('MAPI auth methods not supported on this build: {0}' -f $_.Exception.Message) }
+
+        # Autodiscover SCP — always use autodiscover.<parent-domain>, not the namespace hostname
+        try {
+            $cas = Get-ClientAccessService -Identity $server -ErrorAction Stop
+            $nsParts   = $ns -split '\.'
+            $scpHost   = if ($nsParts[0] -eq 'autodiscover') { $ns } else { 'autodiscover.' + ($nsParts[1..($nsParts.Length-1)] -join '.') }
+            $scpTarget = "https://$scpHost/Autodiscover/Autodiscover.xml"
+            if ([string]$cas.AutoDiscoverServiceInternalUri -eq $scpTarget) {
+                Write-MyVerbose 'Autodiscover SCP: already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-ClientAccessService -Identity '$server' -AutoDiscoverServiceInternalUri '$scpTarget'")
+                Set-ClientAccessService -Identity $server `
+                    -AutoDiscoverServiceInternalUri $scpTarget `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'Autodiscover SCP configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('Autodiscover SCP: {0}' -f $_.Exception.Message); $errors++ }
+
+        # Restore hosts file to exact pre-modification state using the binary backup.
+        if ($hostsBackup) {
+            try {
+                [System.IO.File]::WriteAllBytes($hostsFile, $hostsBackup)
+                Write-MyVerbose 'Temporary hosts entries removed (hosts file restored from backup)'
+            }
+            catch { Write-MyVerbose ('Could not restore hosts file: {0}' -f $_.Exception.Message) }
+        }
+
+        if ($errors -eq 0) {
+            if ($changed -gt 0) {
+                Write-MyOutput ('Virtual Directory URLs configured for https://{0} (OWA logon: UPN)' -f $ns)
+            } else {
+                Write-MyOutput ('Virtual Directory URLs already correct for https://{0} — no changes made' -f $ns)
+            }
+        }
+        else {
+            Write-MyWarning ('{0} virtual directory(s) could not be configured — check warnings above' -f $errors)
+        }
+    }
+
+    function Join-DAG {
+        if (-not $State['DAGName']) {
+            return
+        }
+
+        Write-MyOutput ('Joining Database Availability Group: {0}' -f $State['DAGName'])
+
+        # Ensure Exchange module is loaded
+        Import-ExchangeModule
+
+        try {
+            $dag = Get-DatabaseAvailabilityGroup -Identity $State['DAGName'] -ErrorAction Stop
+            if ($null -eq $dag) {
+                Write-MyError ('DAG {0} not found' -f $State['DAGName'])
+                exit $ERR_DAGJOIN
+            }
+            if ($dag.Servers -contains $env:COMPUTERNAME) {
+                Write-MyOutput ('Server {0} is already a member of DAG {1}' -f $env:COMPUTERNAME, $State['DAGName'])
+                return
+            }
+
+            Register-ExecutedCommand -Category 'DAG' -Command ("Add-DatabaseAvailabilityGroupServer -Identity '$($State['DAGName'])' -MailboxServer '$env:COMPUTERNAME'")
+            Add-DatabaseAvailabilityGroupServer -Identity $State['DAGName'] -MailboxServer $env:COMPUTERNAME -ErrorAction Stop
+            Write-MyOutput ('Successfully joined DAG {0}' -f $State['DAGName'])
+        }
+        catch {
+            Write-MyError ('Failed to join DAG {0}: {1}' -f $State['DAGName'], $_.Exception.Message)
+            exit $ERR_DAGJOIN
+        }
+    }
+
+    function Invoke-HealthChecker {
+        if ($State['SkipHealthCheck']) {
+            Write-MyVerbose 'SkipHealthCheck specified, skipping HealthChecker'
+            return
+        }
+
+        Write-MyOutput 'Running CSS-Exchange HealthChecker'
+        $hcPath = Join-Path $State['InstallPath'] 'HealthChecker.ps1'
+        $hcUrl = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/HealthChecker.ps1'
+
+        # Download if not present
+        if (-not (Test-Path $hcPath)) {
+            $downloaded = $false
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                try {
+                    Write-MyVerbose ('Downloading HealthChecker from {0} (attempt {1}/3)' -f $hcUrl, $attempt)
+                    Start-BitsTransfer -Source $hcUrl -Destination $hcPath -ErrorAction Stop
+                    $downloaded = $true
+                    break
+                }
+                catch {
+                    if ($attempt -eq 3) {
+                        try {
+                            Invoke-WebDownload -Uri $hcUrl -OutFile $hcPath
+                            $downloaded = $true
+                        }
+                        catch {
+                            Write-MyWarning ('Could not download HealthChecker after 3 attempts: {0}' -f $_.Exception.Message)
+                        }
+                    }
+                    else {
+                        Start-Sleep -Seconds ($attempt * 5)
+                    }
+                }
+            }
+            if ($downloaded -and (Test-Path $hcPath)) {
+                $hash = (Get-FileHash -Path $hcPath -Algorithm SHA256).Hash
+                Write-MyVerbose ('HealthChecker downloaded, SHA256: {0}' -f $hash)
+            }
+            elseif (-not $downloaded) {
+                return
+            }
+        }
+
+        if (Test-Path $hcPath) {
+            try {
+                # HC writes ExchangeAllServersReport-*.html to the *current directory*, not -OutputFilePath.
+                # Push-Location so both the XML (-OutputFilePath) and the HTML land in ReportsPath.
+                Push-Location $State['ReportsPath']
+                $hcBefore = [datetime]::Now
+                & $hcPath -OutputFilePath $State['ReportsPath'] -SkipVersionCheck *>&1 | Out-Null
+                & $hcPath -BuildHtmlServersReport -SkipVersionCheck *>&1 | Out-Null
+                Pop-Location
+                $hcReport = Get-ChildItem -Path $State['ReportsPath'] -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -ge $hcBefore -and $_.Extension -match '\.html?' -and $_.Name -match '^(ExchangeAllServersReport|HealthChecker|HCExchangeServerReport)' } |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if ($hcReport) {
+                    # Rename to SERVER_HCExchangeServerReport-<timestamp>.html
+                    $hcTimestamp = $hcReport.Name -replace '^(?:ExchangeAllServersReport|HealthChecker|HCExchangeServerReport)-', ''
+                    $newHcName   = '{0}_HCExchangeServerReport-{1}' -f $env:COMPUTERNAME, $hcTimestamp
+                    $newHcPath   = Join-Path $State['ReportsPath'] $newHcName
+                    try {
+                        Rename-Item -Path $hcReport.FullName -NewName $newHcName -ErrorAction Stop
+                        $State['HCReportPath'] = $newHcPath
+                        Write-MyOutput ('HealthChecker report saved to {0}' -f $newHcPath)
+                    }
+                    catch {
+                        $State['HCReportPath'] = $hcReport.FullName
+                        Write-MyOutput ('HealthChecker report saved to {0}' -f $hcReport.FullName)
+                    }
+                } else {
+                    Write-MyOutput ('HealthChecker completed — report in {0}' -f $State['ReportsPath'])
+                }
+                # On Domain Controllers there are no local security groups — the SAM database is
+                # replaced by AD. HC's "Exchange Server Membership" check enumerates Win32_GroupUser
+                # for the local "Exchange Servers" / "Exchange Trusted Subsystem" groups, which don't
+                # exist on DCs, so it always reports "failed/blank" regardless of AD group membership.
+                # This is a HC limitation; the server IS a member via the domain group.
+                $dcRole = try { (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).DomainRole } catch { 3 }
+                if ($dcRole -ge 4) {
+                    Write-MyWarning 'NOTE: This server is a Domain Controller. HC "Exchange Server Membership" will show failed/blank — DCs have no local security groups. Exchange group membership is via AD domain groups and is correct.'
+                }
+            }
+            catch {
+                Pop-Location -ErrorAction SilentlyContinue
+                Write-MyWarning ('HealthChecker execution failed: {0}' -f $_.Exception.Message)
+            }
+        }
+    }
+
+    function Invoke-SetupAssist {
+        if ($State['SkipSetupAssist']) {
+            Write-MyVerbose 'SkipSetupAssist specified, skipping SetupAssist'
+            return
+        }
+
+        Write-MyOutput 'Running CSS-Exchange SetupAssist to diagnose setup failure'
+        $saPath = Join-Path $State['InstallPath'] 'SetupAssist.ps1'
+        $saUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/SetupAssist.ps1'
+
+        if (-not (Test-Path $saPath)) {
+            $downloaded = $false
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                try {
+                    Write-MyVerbose ('Downloading SetupAssist from {0} (attempt {1}/3)' -f $saUrl, $attempt)
+                    Start-BitsTransfer -Source $saUrl -Destination $saPath -ErrorAction Stop
+                    $downloaded = $true
+                    break
+                }
+                catch {
+                    if ($attempt -eq 3) {
+                        try {
+                            Invoke-WebDownload -Uri $saUrl -OutFile $saPath
+                            $downloaded = $true
+                        }
+                        catch {
+                            Write-MyWarning ('Could not download SetupAssist after 3 attempts: {0}' -f $_.Exception.Message)
+                        }
+                    }
+                    else {
+                        Start-Sleep -Seconds ($attempt * 5)
+                    }
+                }
+            }
+            if ($downloaded -and (Test-Path $saPath)) {
+                Write-MyVerbose ('SetupAssist downloaded, SHA256: {0}' -f (Get-FileHash -Path $saPath -Algorithm SHA256).Hash)
+            }
+            elseif (-not $downloaded) {
+                return
+            }
+        }
+
+        if (Test-Path $saPath) {
+            try {
+                & $saPath
+            }
+            catch {
+                Write-MyWarning ('SetupAssist execution failed: {0}' -f $_.Exception.Message)
+            }
+        }
+
+        # SetupLogReviewer — additional log analysis tool
+        $slrPath = Join-Path $State['InstallPath'] 'SetupLogReviewer.ps1'
+        $slrUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/SetupLogReviewer.ps1'
+
+        if (-not (Test-Path $slrPath)) {
+            $downloaded = $false
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                try {
+                    Write-MyVerbose ('Downloading SetupLogReviewer from {0} (attempt {1}/3)' -f $slrUrl, $attempt)
+                    Start-BitsTransfer -Source $slrUrl -Destination $slrPath -ErrorAction Stop
+                    $downloaded = $true
+                    break
+                }
+                catch {
+                    if ($attempt -eq 3) {
+                        try {
+                            Invoke-WebDownload -Uri $slrUrl -OutFile $slrPath
+                            $downloaded = $true
+                        }
+                        catch {
+                            Write-MyWarning ('Could not download SetupLogReviewer after 3 attempts: {0}' -f $_.Exception.Message)
+                        }
+                    }
+                    else {
+                        Start-Sleep -Seconds ($attempt * 5)
+                    }
+                }
+            }
+            if ($downloaded -and (Test-Path $slrPath)) {
+                Write-MyVerbose ('SetupLogReviewer downloaded, SHA256: {0}' -f (Get-FileHash -Path $slrPath -Algorithm SHA256).Hash)
+            }
+        }
+
+        if (Test-Path $slrPath) {
+            try {
+                Write-MyOutput 'Running CSS-Exchange SetupLogReviewer to analyze setup logs'
+                & $slrPath
+            }
+            catch {
+                Write-MyWarning ('SetupLogReviewer execution failed: {0}' -f $_.Exception.Message)
+            }
+        }
+    }
+
+    function Test-AuthCertificate {
+        try {
+            $authConfig = Get-AuthConfig -ErrorAction Stop
+            if (-not $authConfig) {
+                Write-MyVerbose 'Test-AuthCertificate: Get-AuthConfig returned null — Exchange PS session may not be fully initialized'
+                return
+            }
+            $thumbprint = $authConfig.CurrentCertificateThumbprint
+            if (-not $thumbprint) {
+                Write-MyWarning 'Exchange Auth Certificate: no thumbprint configured in AuthConfig'
+                return
+            }
+            $cert = Get-ExchangeCertificate -Thumbprint $thumbprint -ErrorAction SilentlyContinue
+            if (-not $cert) {
+                Write-MyWarning ('Exchange Auth Certificate (thumbprint {0}) not found on this server' -f $thumbprint)
+                return
+            }
+            $daysLeft = ($cert.NotAfter - (Get-Date)).Days
+            if ($daysLeft -le 0) {
+                Write-MyWarning ('Exchange Auth Certificate EXPIRED {0} day(s) ago (expires {1}, thumbprint {2}). Renew: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f [Math]::Abs($daysLeft), $cert.NotAfter.ToString('yyyy-MM-dd'), $thumbprint)
+            }
+            elseif ($daysLeft -le 60) {
+                Write-MyWarning ('Exchange Auth Certificate expires in {0} days on {1} (thumbprint {2}). Renew soon: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f $daysLeft, $cert.NotAfter.ToString('yyyy-MM-dd'), $thumbprint)
+            }
+            else {
+                Write-MyOutput ('Exchange Auth Certificate valid for {0} days (expires {1}, thumbprint {2})' -f $daysLeft, $cert.NotAfter.ToString('yyyy-MM-dd'), $thumbprint)
+            }
+        }
+        catch {
+            Write-MyVerbose ('Test-AuthCertificate: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Test-DAGReplicationHealth {
+        # F8: Validates mailbox database copy replication after DAG join.
+        if (-not $State['DAGName']) { Write-MyVerbose 'No DAG configured, skipping replication health check'; return }
+        Write-MyOutput ('Checking DAG database copy replication health on {0}' -f $env:computername)
+        try {
+            $copies = @(Get-MailboxDatabaseCopyStatus -Server $env:computername -ErrorAction Stop)
+            if ($copies.Count -eq 0) { Write-MyVerbose 'No mailbox database copies found on this server'; return }
+            $warns = 0
+            foreach ($copy in $copies) {
+                $ok  = $copy.Status -in 'Mounted', 'Healthy'
+                $msg = 'DB copy {0}: Status={1}, CopyQueue={2}, ReplayQueue={3}' -f $copy.DatabaseName, $copy.Status, $copy.CopyQueueLength, $copy.ReplayQueueLength
+                if ($ok) { Write-MyVerbose $msg } else { Write-MyWarning $msg; $warns++ }
+            }
+            if ($warns -eq 0) {
+                Write-MyOutput ('DAG replication health: {0} copy/copies OK' -f $copies.Count)
+            }
+            else {
+                Write-MyWarning ('{0} database copy/copies not healthy — review replication status' -f $warns)
+            }
+        }
+        catch {
+            Write-MyWarning ('DAG replication health check failed: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Test-VSSWriters {
+        # F9: Checks all VSS writers are in a stable state. Unstable writers can break Exchange online backup.
+        Write-MyOutput 'Checking VSS writer health'
+        try {
+            $output = & vssadmin.exe list writers 2>&1
+            $currentWriter = ''
+            $warns = 0
+            foreach ($line in $output) {
+                if ($line -match "Writer name:\s+'(.+)'") { $currentWriter = $Matches[1] }
+                elseif ($line -match 'State:\s*\[\d+\]\s+(.+)') {
+                    $stateText = $Matches[1].Trim()
+                    if ($stateText -notmatch '^Stable') {
+                        Write-MyWarning ('VSS Writer "{0}": {1}' -f $currentWriter, $stateText)
+                        $warns++
+                    }
+                }
+            }
+            if ($warns -eq 0) { Write-MyVerbose 'All VSS writers are stable' }
+            else { Write-MyWarning ('{0} VSS writer(s) not stable — check Volume Shadow Copy Service' -f $warns) }
+        }
+        catch {
+            Write-MyWarning ('VSS writer check failed: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Test-EEMSStatus {
+        # F10: Exchange Emergency Mitigation Service (EEMS) — available from Exchange 2019 CU11+ and SE.
+        # EEMS applies automatic security mitigations for critical CVEs before patches are available.
+        $svc = Get-Service MSExchangeMitigation -ErrorAction SilentlyContinue
+        if (-not $svc) { Write-MyVerbose 'EEMS service not present (Exchange 2016 or 2019 pre-CU11)'; return }
+        $statusLabel = if ($svc.Status -eq 'Running') { 'Running (OK)' } else { $svc.Status.ToString() }
+        Write-MyOutput ('Exchange Emergency Mitigation Service (EEMS): {0}' -f $statusLabel)
+        if ($svc.Status -ne 'Running') {
+            Write-MyWarning 'EEMS is not running — automatic CVE mitigations will not be applied'
+        }
+        try {
+            $orgCfg = Get-OrganizationConfig -ErrorAction Stop
+            if ($orgCfg.PSObject.Properties['MitigationsEnabled']) {
+                if (-not $orgCfg.MitigationsEnabled) {
+                    Write-MyWarning 'EEMS mitigations disabled org-wide (Set-OrganizationConfig -MitigationsEnabled $true to re-enable)'
+                }
+                else {
+                    Write-MyVerbose ('EEMS mitigations enabled: {0}' -f $orgCfg.MitigationsEnabled)
+                }
+                $blocked = $orgCfg.MitigationsBlocked
+                if ($blocked) {
+                    Write-MyWarning ('EEMS blocked mitigations: {0}' -f ($blocked -join ', '))
+                }
+            }
+        }
+        catch {
+            Write-MyVerbose ('EEMS org config check: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Get-ModernAuthReport {
+        # F11: Verifies Modern Authentication (OAuth2) is enabled. Required for Outlook 2016+,
+        # Microsoft Teams, mobile clients, and any Hybrid / Azure AD configuration.
+        Write-MyOutput 'Checking Modern Authentication (OAuth2) configuration'
+        try {
+            $orgCfg = Get-OrganizationConfig -ErrorAction Stop
+            if ($orgCfg.OAuth2ClientProfileEnabled) {
+                Write-MyVerbose 'Modern Authentication (OAuth2): Enabled (OK)'
+            }
+            else {
+                Write-MyWarning 'Modern Authentication (OAuth2) is DISABLED — required for Outlook 2016+, Teams, mobile clients, and Hybrid. Enable: Set-OrganizationConfig -OAuth2ClientProfileEnabled $true'
+            }
+        }
+        catch {
+            Write-MyVerbose ('Modern Auth report: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Get-RemoteServerData {
+        <#
+        .SYNOPSIS
+            Collects hardware/OS/pagefile/volume/NIC data from a remote Exchange server via CIM/WSMan.
+        .DESCRIPTION
+            Uses CIM over WSMan (WinRM TCP 5985/5986, Kerberos). NOT WMI/DCOM.
+            Returns a uniform hashtable; on failure sets Reachable = $false with Error text.
+            Timeout 30 s; always disposes CimSession in finally.
+            Pre-requisites on target: see tools\Enable-EXpressRemoteQuery.ps1 or docs\remote-query-setup.md.
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$ComputerName,
+            [int]$TimeoutSec = 30
+        )
+
+        $result = @{
+            ComputerName = $ComputerName
+            Reachable    = $false
+            Error        = $null
+            OS           = $null
+            CPU          = $null
+            ComputerSys  = $null
+            PageFile     = $null
+            Volumes      = @()
+            NICs         = @()
+        }
+
+        $session = $null
+        try {
+            $opt = New-CimSessionOption -Protocol WSMan
+            $session = New-CimSession -ComputerName $ComputerName -SessionOption $opt `
+                                      -OperationTimeoutSec $TimeoutSec -ErrorAction Stop
+
+            $result.OS          = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem          -ErrorAction Stop
+            $result.CPU         = Get-CimInstance -CimSession $session -ClassName Win32_Processor                -ErrorAction Stop
+            $result.ComputerSys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem           -ErrorAction Stop
+            $result.PageFile    = Get-CimInstance -CimSession $session -ClassName Win32_PageFileSetting          -ErrorAction SilentlyContinue
+            $result.Volumes     = @(Get-CimInstance -CimSession $session -ClassName Win32_Volume -Filter 'DriveType=3' -ErrorAction SilentlyContinue)
+            $result.NICs        = @(Get-CimInstance -CimSession $session -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' -ErrorAction SilentlyContinue)
+            $result.Reachable   = $true
+        }
+        catch {
+            $result.Error = $_.Exception.Message
+            Write-MyVerbose ('Get-RemoteServerData {0}: {1}' -f $ComputerName, $_.Exception.Message)
+        }
+        finally {
+            if ($session) { Remove-CimSession -CimSession $session -ErrorAction SilentlyContinue }
+        }
+
+        return $result
+    }
+
+    function Invoke-RemoteQueryWithPrompt {
+        <#
+        .SYNOPSIS
+            Wraps Get-RemoteServerData with interactive retry/skip prompt on failure.
+        .DESCRIPTION
+            Copilot (interactive) mode: on failure, shows hint pointing to Enable-EXpressRemoteQuery.ps1
+            and offers [R]etry / [S]kip with a 10-minute auto-skip timeout (Write-Progress -Id 2).
+            Autopilot mode or non-interactive session: silent skip.
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$ComputerName,
+            [int]$TimeoutSec = 600
+        )
+
+        $data = Get-RemoteServerData -ComputerName $ComputerName
+        if ($data.Reachable) { return $data }
+
+        $nonInteractive = $State['Autopilot'] -or -not [Environment]::UserInteractive
+        if ($nonInteractive) {
+            Write-MyVerbose ('Remote query skipped (non-interactive) for {0}: {1}' -f $ComputerName, $data.Error)
+            return $data
+        }
+
+        while (-not $data.Reachable) {
+            Write-Host ''
+            Write-MyWarning ('Remote query failed for {0}' -f $ComputerName)
+            Write-Host ('    Error : {0}' -f $data.Error) -ForegroundColor Yellow
+            Write-Host  '    Fix   : Run tools\Enable-EXpressRemoteQuery.ps1 on the target server,' -ForegroundColor Yellow
+            Write-Host  '            or apply GPO per docs\remote-query-setup.md' -ForegroundColor Yellow
+            Write-Host ''
+            Write-Host '    [R] Retry    [S] Skip    (auto-skip in 10:00)' -ForegroundColor Cyan
+
+            $choice = $null
+            try { $host.UI.RawUI.FlushInputBuffer() } catch { }
+            $deadline = [DateTime]::Now.AddSeconds($TimeoutSec)
+            while ([DateTime]::Now -lt $deadline -and -not $choice) {
+                $secsLeft = [int]($deadline - [DateTime]::Now).TotalSeconds
+                $mm = [int]($secsLeft / 60); $ss = $secsLeft % 60
+                Write-Progress -Id 2 -Activity ('Remote query: {0}' -f $ComputerName) `
+                    -Status ('Auto-skip in {0:D2}:{1:D2}  |  [R] Retry  |  [S] Skip' -f $mm, $ss) `
+                    -PercentComplete (($TimeoutSec - $secsLeft) * 100 / $TimeoutSec)
+                if ($host.UI.RawUI.KeyAvailable) {
+                    $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                    switch ($key.Character.ToString().ToUpper()) {
+                        'R' { $choice = 'Retry' }
+                        'S' { $choice = 'Skip'  }
+                    }
+                }
+                Start-Sleep -Milliseconds 100
+            }
+            Write-Progress -Id 2 -Activity ('Remote query: {0}' -f $ComputerName) -Completed
+
+            if (-not $choice) {
+                Write-MyOutput ('Auto-skip: {0}' -f $ComputerName)
+                return $data
+            }
+            if ($choice -eq 'Skip') {
+                Write-MyOutput ('Skipped remote query for {0}' -f $ComputerName)
+                return $data
+            }
+
+            Write-MyOutput ('Retrying remote query for {0}...' -f $ComputerName)
+            $data = Get-RemoteServerData -ComputerName $ComputerName
+        }
+
+        return $data
+    }
+
