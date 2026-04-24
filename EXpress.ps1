@@ -398,7 +398,7 @@
 
     .PARAMETER InstallPath
     Working directory for prereq downloads, state file, transcript, and reports.
-    Default: C:\Install. May be a UNC path to share prereq cache between hosts.
+    Default: the directory containing EXpress.ps1. May be a UNC path to share prereq cache between hosts.
 
     .PARAMETER SourcePath
     Location of the Exchange installation files (setup.exe) or the Exchange ISO.
@@ -566,7 +566,7 @@
     .PARAMETER LogRetentionDays
     Register a Windows Scheduled Task (Exchange Log Cleanup, daily 02:00)
     that removes IIS log files and Exchange transport / tracking logs older
-    than N days (1–365). Task lives in the \Exchange\ task folder.
+    than N days (1–365). 0 = log cleanup disabled. Task lives in the \Exchange\ task folder.
 
     .PARAMETER RelaySubnets
     IP ranges (e.g. '192.168.1.0/24','10.0.0.5') allowed to relay anonymously
@@ -963,7 +963,7 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
     [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
-    [ValidateRange(1, 365)]
+    [ValidateRange(0, 365)]
     [int]$LogRetentionDays,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
