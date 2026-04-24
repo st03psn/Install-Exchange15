@@ -162,7 +162,7 @@ Use `Build.ps1` to compile the script into a self-contained Windows executable v
 
 See `deploy-example.psd1` for a fully documented configuration file template.
 
-**Logo for Word documents** — place `logo.png` (400×80 px recommended) in your `InstallPath` folder (default `C:\Install\`). A sample logo is provided in `assets/logo.png`.
+**Logo for Word documents** — place a `logo.png` (400×80 px recommended) alongside `EXpress.ps1` in your install folder. The sample `logo.png` in the repo root is used automatically if present.
 
 ### Logging
 
