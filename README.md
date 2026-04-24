@@ -267,6 +267,12 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v1.1.2 — April 2026
+- **NuGet auto-install** — `Install-Module -ForceBootstrap` prevents interactive NuGet prompt when `Install-PackageProvider` cannot reach its index URI.
+- **Autopilot RunOnce** — fixed: RunOnce registry key now always points to `EXpress.ps1`, not to the dot-sourced module file (`99-Main.ps1`). Auto-resume after reboot works correctly.
+- **Exchange source default** — Working folder is asked first; ISO default derived from `<InstallPath>\sources\` (was wrongly built from the module directory).
+- **Module parse errors** — all 21 modules are now independently dot-sourceable; PS 5.1 `(if ...)` runtime crashes in menu and hardening fixed.
+
 ### v1.1 — April 2026
 - **`modules/` rename** — source directory renamed from `src/` to `modules/` for clarity; `tools/Merge-Source.ps1` and `Build.ps1` updated accordingly.
 - **CI guard** — `.github/workflows/merge-guard.yml` runs `Merge-Source.ps1`, `Parse-Check.ps1`, `git diff --exit-code dist/EXpress.ps1`, and the full Pester suite on every push or PR that touches `modules/`, `EXpress.ps1`, or `dist/`.

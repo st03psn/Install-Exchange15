@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.1.1
+    Version:     1.1.2
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -1052,7 +1052,7 @@ process {
     # variable to build the Autopilot RunOnce command correctly.
     $EXpressEntryScript = $MyInvocation.MyCommand.Path
 
-    $ScriptVersion = '1.1.1'
+    $ScriptVersion = '1.1.2'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -8282,8 +8282,10 @@ $body
             try {
                 # Ensure NuGet provider present unattended — without this Install-Module
                 # prompts interactively even in non-interactive/Autopilot sessions.
+                # Install-PackageProvider may fail to reach the provider index URI but
+                # Install-Module -ForceBootstrap handles NuGet bootstrap itself without prompting.
                 Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
-                Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+                Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ForceBootstrap -ErrorAction Stop
                 $useModule = $true
                 Write-MyOutput 'PSWindowsUpdate module installed'
             }

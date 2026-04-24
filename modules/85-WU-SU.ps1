@@ -29,8 +29,10 @@
             try {
                 # Ensure NuGet provider present unattended — without this Install-Module
                 # prompts interactively even in non-interactive/Autopilot sessions.
+                # Install-PackageProvider may fail to reach the provider index URI but
+                # Install-Module -ForceBootstrap handles NuGet bootstrap itself without prompting.
                 Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
-                Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+                Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ForceBootstrap -ErrorAction Stop
                 $useModule = $true
                 Write-MyOutput 'PSWindowsUpdate module installed'
             }
