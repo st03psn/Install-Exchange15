@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.1.3
+    Version:     1.1.4
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -1052,7 +1052,7 @@ process {
     # variable to build the Autopilot RunOnce command correctly.
     $EXpressEntryScript = $MyInvocation.MyCommand.Path
 
-    $ScriptVersion = '1.1.3'
+    $ScriptVersion = '1.1.4'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -8332,16 +8332,24 @@ $body
 
         Write-MyOutput ('{0} update(s) found' -f $candidates.Count)
 
-        # --- Phase 2: Per-update prompt (interactive only; Autopilot installs all) ---
-        $approvedKBs = @()
-        $installAll  = -not $isInteractive   # non-interactive session: approve everything immediately
+        # --- Phase 2: Per-update prompt ---
+        # Autopilot auto-approves only when AutoApproveWindowsUpdates is explicitly set in
+        # the Advanced Configuration — security updates are a deliberate opt-in decision.
+        $approvedKBs     = @()
+        $autoApproveAll  = (-not $isInteractive) -and $State['AutoApproveWindowsUpdates']
+
+        if ((-not $isInteractive) -and (-not $State['AutoApproveWindowsUpdates'])) {
+            Write-MyWarning ('Found {0} pending Windows update(s) — skipping in Autopilot because AutoApproveWindowsUpdates is not set. Enable it in Advanced Configuration to install automatically.' -f $candidates.Count)
+            $candidates | ForEach-Object { Write-MyVerbose ('  Pending: {0} ({1})' -f $_.Title, $_.Severity) }
+            return
+        }
 
         for ($idx = 0; $idx -lt $candidates.Count; $idx++) {
             $u = $candidates[$idx]
             $label = '[{0}/{1}] {2} — {3}' -f ($idx + 1), $candidates.Count, $u.Title, $(if ($u.Severity) { $u.Severity } else { 'Unknown' })
 
-            if ($installAll) {
-                Write-MyOutput ('Will install: {0}' -f $label)
+            if ($autoApproveAll) {
+                Write-MyOutput ('Auto-approved: {0}' -f $label)
                 if ($u.KB) { $approvedKBs += $u.KB }
                 continue
             }
@@ -10285,6 +10293,7 @@ $body
             RunEOMT             = @{ Category='PostConfig'; Label='Run EOMT';                Default=$false; Description='Run CSS-Exchange Emergency Mitigation Tool (legacy CUs; no-op on current CUs).' }
 
             # ─── Install-Flow / Debug ────────────────────────────────────────
+            AutoApproveWindowsUpdates = @{ Category='InstallFlow'; Label='Auto-approve Windows Updates'; Default=$false; Description='Autopilot: approve all pending Security/Critical Windows Updates without prompting. Off by default — deliberate opt-in required.' }
             DiagnosticData      = @{ Category='InstallFlow'; Label='Send diagnostic data';   Default=$false; Description='/IAcceptExchangeServerLicenseTerms_DiagnosticDataON — share setup telemetry with Microsoft.' }
             Lock                = @{ Category='InstallFlow'; Label='Lock screen during run'; Default=$false; Description='Lock the console while the installation is in progress (Autopilot only).' }
             SkipRolesCheck      = @{ Category='InstallFlow'; Label='Skip AD roles check';    Default=$false; Description='Skip Schema/Enterprise/Domain Admin membership check (use with caution).' }

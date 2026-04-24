@@ -73,6 +73,7 @@
             RunEOMT             = @{ Category='PostConfig'; Label='Run EOMT';                Default=$false; Description='Run CSS-Exchange Emergency Mitigation Tool (legacy CUs; no-op on current CUs).' }
 
             # ─── Install-Flow / Debug ────────────────────────────────────────
+            AutoApproveWindowsUpdates = @{ Category='InstallFlow'; Label='Auto-approve Windows Updates'; Default=$false; Description='Autopilot: approve all pending Security/Critical Windows Updates without prompting. Off by default — deliberate opt-in required.' }
             DiagnosticData      = @{ Category='InstallFlow'; Label='Send diagnostic data';   Default=$false; Description='/IAcceptExchangeServerLicenseTerms_DiagnosticDataON — share setup telemetry with Microsoft.' }
             Lock                = @{ Category='InstallFlow'; Label='Lock screen during run'; Default=$false; Description='Lock the console while the installation is in progress (Autopilot only).' }
             SkipRolesCheck      = @{ Category='InstallFlow'; Label='Skip AD roles check';    Default=$false; Description='Skip Schema/Enterprise/Domain Admin membership check (use with caution).' }

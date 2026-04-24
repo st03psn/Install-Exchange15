@@ -267,6 +267,9 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v1.1.4 — April 2026
+- **Windows Updates Autopilot** — Security updates are no longer auto-approved in Autopilot. New Advanced Configuration toggle `AutoApproveWindowsUpdates` (default off) required as deliberate opt-in. Without it, pending updates are listed and skipped with a warning.
+
 ### v1.1.3 — April 2026
 - **Windows Updates** — `[A]=all` removed; each update requires individual confirmation. Autopilot approves all silently as before.
 

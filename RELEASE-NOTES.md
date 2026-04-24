@@ -6,6 +6,12 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v1.1.4 (2026-04-24) — bugfix release
+
+- **Windows Updates Autopilot** — Security/Critical updates are no longer auto-approved in Autopilot mode. Without explicit opt-in, pending updates are listed and skipped with a warning. New Advanced Configuration toggle `AutoApproveWindowsUpdates` (default off) enables the previous auto-approve behaviour when deliberately set.
+
+---
+
 ## v1.1.3 (2026-04-24) — bugfix release
 
 - **Windows Updates** — `[A]=all` option removed from per-update confirmation prompt; each Security/Critical update must be confirmed individually. Autopilot (non-interactive) still approves all automatically.
