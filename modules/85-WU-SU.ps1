@@ -79,16 +79,24 @@
 
         Write-MyOutput ('{0} update(s) found' -f $candidates.Count)
 
-        # --- Phase 2: Per-update prompt (interactive only; Autopilot installs all) ---
-        $approvedKBs = @()
-        $installAll  = -not $isInteractive   # non-interactive session: approve everything immediately
+        # --- Phase 2: Per-update prompt ---
+        # Autopilot auto-approves only when AutoApproveWindowsUpdates is explicitly set in
+        # the Advanced Configuration — security updates are a deliberate opt-in decision.
+        $approvedKBs     = @()
+        $autoApproveAll  = (-not $isInteractive) -and $State['AutoApproveWindowsUpdates']
+
+        if ((-not $isInteractive) -and (-not $State['AutoApproveWindowsUpdates'])) {
+            Write-MyWarning ('Found {0} pending Windows update(s) — skipping in Autopilot because AutoApproveWindowsUpdates is not set. Enable it in Advanced Configuration to install automatically.' -f $candidates.Count)
+            $candidates | ForEach-Object { Write-MyVerbose ('  Pending: {0} ({1})' -f $_.Title, $_.Severity) }
+            return
+        }
 
         for ($idx = 0; $idx -lt $candidates.Count; $idx++) {
             $u = $candidates[$idx]
             $label = '[{0}/{1}] {2} — {3}' -f ($idx + 1), $candidates.Count, $u.Title, $(if ($u.Severity) { $u.Severity } else { 'Unknown' })
 
-            if ($installAll) {
-                Write-MyOutput ('Will install: {0}' -f $label)
+            if ($autoApproveAll) {
+                Write-MyOutput ('Auto-approved: {0}' -f $label)
                 if ($u.KB) { $approvedKBs += $u.KB }
                 continue
             }
