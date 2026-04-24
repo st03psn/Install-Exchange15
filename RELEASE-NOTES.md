@@ -6,6 +6,12 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v1.1.3 (2026-04-24) — bugfix release
+
+- **Windows Updates** — `[A]=all` option removed from per-update confirmation prompt; each Security/Critical update must be confirmed individually. Autopilot (non-interactive) still approves all automatically.
+
+---
+
 ## v1.1.2 (2026-04-24) — bugfix release
 
 - **NuGet auto-install** — `Install-Module -ForceBootstrap` added so the NuGet provider prompt is answered automatically when `Install-PackageProvider` cannot reach its index URI but internet is otherwise available.

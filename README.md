@@ -267,6 +267,9 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v1.1.3 — April 2026
+- **Windows Updates** — `[A]=all` removed; each update requires individual confirmation. Autopilot approves all silently as before.
+
 ### v1.1.2 — April 2026
 - **NuGet auto-install** — `Install-Module -ForceBootstrap` prevents interactive NuGet prompt when `Install-PackageProvider` cannot reach its index URI.
 - **Autopilot RunOnce** — fixed: RunOnce registry key now always points to `EXpress.ps1`, not to the dot-sourced module file (`99-Main.ps1`). Auto-resume after reboot works correctly.

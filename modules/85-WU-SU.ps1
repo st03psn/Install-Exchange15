@@ -104,11 +104,11 @@
                 # calls) so a stale keystroke doesn't immediately resolve the prompt as 'N'.
                 try { $host.UI.RawUI.FlushInputBuffer() } catch { }
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                Write-Host ('  Install? [Y/N/A=all/S=skip] (auto-No in {0}s) ' -f $WU_PROMPT_TIMEOUT_SEC) -NoNewline -ForegroundColor DarkCyan
+                Write-Host ('  Install? [Y/N/S=skip remaining] (auto-No in {0}s) ' -f $WU_PROMPT_TIMEOUT_SEC) -NoNewline -ForegroundColor DarkCyan
                 while ($sw.Elapsed.TotalSeconds -lt $WU_PROMPT_TIMEOUT_SEC) {
                     $secsLeft = [int]($WU_PROMPT_TIMEOUT_SEC - $sw.Elapsed.TotalSeconds)
                     Write-Progress -Id 2 -Activity 'Windows Update' `
-                        -Status ('Auto-No in {0}s  |  Y = install  |  N = skip  |  A = all  |  S = skip remaining' -f $secsLeft) `
+                        -Status ('Auto-No in {0}s  |  Y = install  |  N = skip  |  S = skip remaining' -f $secsLeft) `
                         -PercentComplete ($sw.Elapsed.TotalSeconds * 100 / $WU_PROMPT_TIMEOUT_SEC)
                     if ($host.UI.RawUI.KeyAvailable) {
                         $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
@@ -125,11 +125,10 @@
                 }
             }
             else {
-                $ans = (Read-Host '  Install? [Y=yes / N=no / A=all / S=skip remaining] (default: Y)').Trim().ToUpper()
+                $ans = (Read-Host '  Install? [Y=yes / N=no / S=skip remaining] (default: Y)').Trim().ToUpper()
                 if ($ans -eq '') { $ans = 'Y' }
             }
             switch ($ans) {
-                'A' { $installAll = $true;  if ($u.KB) { $approvedKBs += $u.KB }; Write-MyOutput ('Approved (all): {0}' -f $u.Title) }
                 'S' { Write-MyOutput 'Skipping all remaining updates'; $idx = $candidates.Count; continue }
                 'N' { Write-MyOutput ('Skipping: {0}' -f $u.Title) }
                 default { if ($u.KB) { $approvedKBs += $u.KB }; Write-MyOutput ('Approved: {0}' -f $u.Title) }
