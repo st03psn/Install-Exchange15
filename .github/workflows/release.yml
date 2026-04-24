@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release ZIP
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          STAGING="EXpress-v${VERSION}"
+          mkdir -p "$STAGING/tools" "$STAGING/templates" "$STAGING/assets"
+
+          # Main script — dist/ merged file, placed as EXpress.ps1 in ZIP root
+          cp dist/EXpress.ps1 "$STAGING/EXpress.ps1"
+
+          # Optional extras end users may want
+          cp deploy-example.psd1  "$STAGING/"
+          cp Start-EXpress.cmd    "$STAGING/"
+          cp templates/*.docx     "$STAGING/templates/"
+          cp assets/logo.png      "$STAGING/assets/"
+          cp tools/Get-EXpressDownloads.ps1     "$STAGING/tools/"
+          cp tools/Enable-EXpressRemoteQuery.ps1 "$STAGING/tools/"
+
+          zip -r "${STAGING}.zip" "$STAGING/"
+          echo "ZIP=${STAGING}.zip" >> "$GITHUB_ENV"
+          echo "STAGING=${STAGING}"  >> "$GITHUB_ENV"
+
+      - name: Extract release notes for this version
+        id: notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Extract the block for this version from RELEASE-NOTES.md
+          # Block starts at "## vVERSION" and ends before the next "## v" or EOF
+          awk "/^## v${VERSION}[[:space:]]/,/^## v[0-9]/" RELEASE-NOTES.md \
+            | head -n -1 \
+            | sed '/^---$/d' \
+            > release_body.md
+          # Fallback if nothing extracted
+          if [ ! -s release_body.md ]; then
+            echo "Release v${VERSION}" > release_body.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "EXpress v${{ steps.version.outputs.version }}"
+          body_path: release_body.md
+          files: ${{ env.ZIP }}

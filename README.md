@@ -35,33 +35,26 @@ Only the **latest CU** of each Exchange line is supported as an install target. 
 
 ## Download
 
-> **End users** only need a single file — `dist/EXpress.ps1`. No other repo files are required to run the script.
-
-### Option A — Download the single script file (recommended)
+### Recommended — Release ZIP
 
 1. Open the [latest release](https://github.com/st03psn/EXpress/releases/latest) on GitHub.
-2. Download **`EXpress.ps1`** from the release assets.
-3. Place it in your working directory (e.g. `C:\Install\`).
-4. Run it — see [Quick Start](#quick-start) below.
+2. Download **`EXpress-vX.Y.Z.zip`** from the release assets.
+3. Extract to your working directory (e.g. `C:\Install\`).
+4. Run `EXpress.ps1` — see [Quick Start](#quick-start) below.
 
-### Option B — Download from the repository
+The release ZIP contains exactly what an end user needs:
 
-If you want the optional extras (Word templates, example config, pre-staging tool):
-
-1. Click **Code → Download ZIP** on the repository main page, or `git clone https://github.com/st03psn/EXpress`.
-2. Copy `dist\EXpress.ps1` to your working directory.
-3. Optionally copy the folders listed in the table below.
-
-| What to copy | Why |
+| File / Folder | Purpose |
 |---|---|
-| `dist\EXpress.ps1` | **Required** — the script itself (single merged file) |
-| `deploy-example.psd1` | Starting point for a config file (`-ConfigFile`) |
-| `templates\` | Word document templates; needed only when using `-TemplatePath` |
-| `assets\logo.png` | Custom logo printed in reports; EXpress searches for it automatically |
-| `tools\Get-EXpressDownloads.ps1` | Pre-stages all prerequisites on an internet-connected machine for air-gapped deployments |
-| `Start-EXpress.cmd` | Convenience launcher — opens an elevated PowerShell window and starts the script |
+| `EXpress.ps1` | The script — single self-contained file, no other script files required |
+| `deploy-example.psd1` | Fully annotated config file template for `-ConfigFile` |
+| `Start-EXpress.cmd` | Convenience launcher — opens an elevated PowerShell window |
+| `templates\` | Word document templates for `-TemplatePath` (branded handover document) |
+| `assets\logo.png` | Replace with your own logo — automatically embedded in HTML and Word reports |
+| `tools\Get-EXpressDownloads.ps1` | Pre-stages all prerequisites for air-gapped / proxy-restricted installs |
+| `tools\Enable-EXpressRemoteQuery.ps1` | Enables WinRM on remote servers for multi-server Word documentation |
 
-> **Do not copy `modules\` or `tools\Merge-Source.ps1`** — those are for contributors building from source. `dist\EXpress.ps1` already contains everything merged into one file.
+> `docs\`, `modules\`, and most of `tools\` are **not included** — they are for the documentation website and contributors building from source.
 
 ---
 
