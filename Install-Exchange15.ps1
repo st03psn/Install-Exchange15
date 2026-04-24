@@ -748,7 +748,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.94.1'
+    $ScriptVersion = '5.95'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -9670,6 +9670,336 @@ $body
         }
     }
 
+    function Get-AdvancedFeatureCatalog {
+        # Advanced Configuration catalog. Each entry:
+        #   Name        — unique key persisted in $State['AdvancedFeatures'] and config file
+        #   Label       — short display text in the Advanced menu (max ~30 chars)
+        #   Description — one-line explanation shown in description panel
+        #   Default     — $true/$false; matches current behaviour unless noted
+        #   Category    — 'TLS', 'Hardening', 'Performance', 'ExchangePolicy', 'PostConfig', 'InstallFlow'
+        #   Condition   — (optional) scriptblock; entry hidden when it returns $false
+        return [ordered]@{
+            # ─── Security / TLS ──────────────────────────────────────────────
+            DisableSSL3         = @{ Category='TLS'; Label='Disable SSL 3.0';                Default=$true;  Description='Disable legacy SSL 3.0 (POODLE, CVE-2014-3566).' }
+            DisableRC4          = @{ Category='TLS'; Label='Disable RC4 cipher';             Default=$true;  Description='Disable deprecated RC4 stream cipher.' }
+            EnableECC           = @{ Category='TLS'; Label='Prefer ECC key exchange';        Default=$true;  Description='Enable ECC cipher suites and prefer over RSA.' }
+            NoCBC               = @{ Category='TLS'; Label='Disable CBC ciphers';            Default=$false; Description='Disables CBC cipher suites. Not recommended — breaks compatibility with several clients.' }
+            EnableAMSI          = @{ Category='TLS'; Label='Enable AMSI';                    Default=$true;  Description='Antimalware Scan Interface for Exchange transport and OWA.' }
+            EnableTLS12         = @{ Category='TLS'; Label='Enforce TLS 1.2';                Default=$true;  Description='Enforce TLS 1.2; disables TLS 1.0/1.1 on SChannel and .NET StrongCrypto.' }
+            EnableTLS13         = @{ Category='TLS'; Label='Enable TLS 1.3';                 Default=$true;  Description='Enable TLS 1.3 (Windows Server 2022+).'; Condition={ [System.Version]$script:FullOSVersion -ge [System.Version]$script:WS2022_PREFULL } }
+            DoNotEnableEP       = @{ Category='TLS'; Label='Opt-out: Extended Protection';   Default=$false; Description='Skip Extended Protection configuration. Required for Hybrid + Modern Hybrid Topology where EP is incompatible.' }
+
+            # ─── Security / Hardening ────────────────────────────────────────
+            SMBv1Disable        = @{ Category='Hardening'; Label='Disable SMBv1';             Default=$true;  Description='Remove SMBv1 (WannaCry mitigation, MS17-010).' }
+            NetBIOSDisable      = @{ Category='Hardening'; Label='Disable NetBIOS/TCP';       Default=$true;  Description='Disable NetBIOS over TCP/IP on all NICs (reduces attack surface).' }
+            LLMNRDisable        = @{ Category='Hardening'; Label='Disable LLMNR';             Default=$true;  Description='Disable Link-Local Multicast Name Resolution (CIS L1 §18.5.4.2).' }
+            MDNSDisable         = @{ Category='Hardening'; Label='Disable mDNS';              Default=$true;  Description='Disable Multicast DNS responder (WS2022+).' }
+            WDigestDisable      = @{ Category='Hardening'; Label='Disable WDigest caching';   Default=$true;  Description='Prevent plaintext credentials in LSASS memory.' }
+            LSAProtection       = @{ Category='Hardening'; Label='Enable LSA Protection';     Default=$true;  Description='RunAsPPL for LSASS to prevent credential dumping.' }
+            LmCompat5           = @{ Category='Hardening'; Label='LmCompatibilityLevel=5';    Default=$true;  Description='Enforce NTLMv2, refuse LM/NTLMv1.' }
+            SerializedDataSig   = @{ Category='Hardening'; Label='SerializedDataSigning';     Default=$true;  Description='Exchange SerializedDataSigning (MS-mandatory post CVE-2023-21529).' }
+            ShutdownTrackerOff  = @{ Category='Hardening'; Label='Disable Shutdown Tracker';  Default=$true;  Description='Suppress the Shutdown Event Tracker reason dialog on server shutdowns.' }
+            HSTS                = @{ Category='Hardening'; Label='HSTS on OWA/ECP';           Default=$true;  Description='HTTP Strict-Transport-Security header on OWA/ECP virtual directories.' }
+            MAPIEncryption      = @{ Category='Hardening'; Label='Required MAPI encryption';  Default=$true;  Description='Set-RpcClientAccess -EncryptionRequired $true.' }
+            HTTP2Disable        = @{ Category='Hardening'; Label='Disable HTTP/2';            Default=$true;  Description='Workaround for Exchange compatibility issues with HTTP/2.' }
+            CredentialGuardOff  = @{ Category='Hardening'; Label='Disable Credential Guard';  Default=$true;  Description='Exchange is incompatible with Credential Guard; disable if enabled.' }
+            UnnecessaryServices = @{ Category='Hardening'; Label='Disable unneeded services'; Default=$true;  Description='Disable Print Spooler, Xbox, Geolocation and other unneeded services on Exchange servers.' }
+            WindowsSearchOff    = @{ Category='Hardening'; Label='Disable Windows Search';    Default=$true;  Description='Disable Windows Search service (not used by Exchange; uses CPU/IO).' }
+            CRLTimeout          = @{ Category='Hardening'; Label='CRL Check Timeout';         Default=$true;  Description='Tune CRL retrieval timeout to avoid slow startup when OCSP/CRL endpoints are unreachable.' }
+            RootCAAutoUpdate    = @{ Category='Hardening'; Label='Root CA Auto-Update';       Default=$true;  Description='Keep Automatic Root Certificates Update enabled (required for Modern Auth / O365 Hybrid).' }
+            SMTPBannerHarden    = @{ Category='Hardening'; Label='Harden SMTP banner';        Default=$true;  Description='Replace Exchange version banner on Frontend Receive Connectors with "220 Mail Service".' }
+
+            # ─── Performance / Tuning ────────────────────────────────────────
+            MaxConcurrentAPI    = @{ Category='Performance'; Label='MaxConcurrentAPI';        Default=$true;  Description='MS KB 2688798 — raise MaxConcurrentApi to prevent NTLM auth bottlenecks.' }
+            DiskAllocHint       = @{ Category='Performance'; Label='Disk allocation hint';    Default=$true;  Description='Emit warning when DB/log volumes are not formatted with 64K NTFS cluster size.' }
+            CtsProcAffinity     = @{ Category='Performance'; Label='Content conv. affinity';  Default=$true;  Description='Limit Content Conversion processor affinity to stabilise CPU load.' }
+            NodeRunnerMemLimit  = @{ Category='Performance'; Label='NodeRunner RAM cap';      Default=$true;  Description='Cap Exchange Search NodeRunner memory to prevent runaway allocations.' }
+            MapiFeGC            = @{ Category='Performance'; Label='MAPI FrontEnd Server GC'; Default=$true;  Description='Enable Server GC mode for MAPI FrontEnd AppPool.' }
+            NICPowerMgmtOff     = @{ Category='Performance'; Label='NIC Power Management';    Default=$true;  Description='Disable "Allow computer to turn off this device" on all NICs.' }
+            RSSEnable           = @{ Category='Performance'; Label='Receive Side Scaling';    Default=$true;  Description='Enable RSS on all NICs for multi-core packet processing.' }
+            TCPTuning           = @{ Category='Performance'; Label='TCP tuning';              Default=$true;  Description='Autotuning, Chimney offload and related TCP stack tweaks for Exchange workloads.' }
+            TCPOffloadOff       = @{ Category='Performance'; Label='Disable TCP offload';     Default=$true;  Description='Disable TCP checksum/segmentation offload (avoids driver bugs on Exchange).' }
+            IPv4OverIPv6Off     = @{ Category='Performance'; Label='Prefer IPv4 over IPv6';    Default=$true;  Description='Prefer IPv4 over IPv6 (DisabledComponents=0x20) — avoids Exchange DNS-lookup delays on IPv6-only hosts.' }
+
+            # ─── Exchange Org Policy (current Optimization Catalog A–J) ──────
+            ModernAuth          = @{ Category='ExchangePolicy'; Label='Modern Auth (OAuth2)';    Default=$true;  Description='Org-wide OAuth2 / Modern Authentication. Required for Outlook 2016+, Teams, mobile.' }
+            OWASessionTimeout6h = @{ Category='ExchangePolicy'; Label='OWA Session Timeout 6h';  Default=$true;  Description='Activity-based OWA/ECP session timeout at 6h inactivity.' }
+            DisableTelemetry    = @{ Category='ExchangePolicy'; Label='Disable CEIP telemetry';  Default=$true;  Description='Set-OrganizationConfig -CustomerFeedbackEnabled $false (GDPR/DSGVO).' }
+            MapiHttp            = @{ Category='ExchangePolicy'; Label='MAPI over HTTP';          Default=$true;  Description='Explicit MapiHttpEnabled — replaces legacy RPC/HTTP.' }
+            MaxMessageSize150MB = @{ Category='ExchangePolicy'; Label='Max message size 150MB';  Default=$true;  Description='Raise org-wide + Frontend receive connector max message size to 150 MB.' }
+            MessageExpiration7d = @{ Category='ExchangePolicy'; Label='Expiration 7 days';       Default=$true;  Description='Extend transport message expiration to 7 days. Condition: not CopyServerConfig.'; Condition={ -not $script:State['CopyServerConfig'] } }
+            HtmlNDR             = @{ Category='ExchangePolicy'; Label='HTML NDR formatting';     Default=$true;  Description='Set-TransportConfig -InternalDsnSendHtml / -ExternalDsnSendHtml.' }
+            ShadowRedundancy    = @{ Category='ExchangePolicy'; Label='Shadow Redundancy';       Default=$false; Description='Prefer remote DAG member for shadow copies. DAG-only.'; Condition={ [bool]$script:State['DAGName'] } }
+            SafetyNet2d         = @{ Category='ExchangePolicy'; Label='Safety Net 2d hold';      Default=$true;  Description='Safety Net hold time set to 2 days.' }
+
+            # ─── Post-Config / Integration ───────────────────────────────────
+            MECA                = @{ Category='PostConfig'; Label='MECA Auth Cert Renewal';  Default=$true;  Description='Register CSS-Exchange MonitorExchangeAuthCertificate scheduled task for automatic renewal.' }
+            AntispamAgents      = @{ Category='PostConfig'; Label='Install Antispam Agents'; Default=$true;  Description='Install built-in antispam agents (Mailbox role only; no effect on Edge).' }
+            SSLOffloading       = @{ Category='PostConfig'; Label='SSL Offloading tuning';   Default=$true;  Description='IIS/OWA SSL offload settings for load-balanced deployments.' }
+            MRSProxy            = @{ Category='PostConfig'; Label='Enable MRS Proxy';        Default=$true;  Description='Enable MRS Proxy on EWS for cross-forest/cross-org mailbox moves.' }
+            IANATimezone        = @{ Category='PostConfig'; Label='IANA timezone mapping';   Default=$true;  Description='Configure IANA ↔ Windows timezone mapping (iCal interop).' }
+            AnonymousRelay      = @{ Category='PostConfig'; Label='Anonymous relay connector'; Default=$true; Description='Create anonymous internal/external relay connector if RelaySubnets is configured.'; Condition={ [bool]$script:State['RelaySubnets'] -or [bool]$script:State['ExternalRelaySubnets'] } }
+            SkipHealthCheck     = @{ Category='PostConfig'; Label='Opt-out: HealthChecker';  Default=$false; Description='Skip CSS-Exchange HealthChecker run at end of Phase 6.' }
+            RBACReport          = @{ Category='PostConfig'; Label='RBAC Report';             Default=$true;  Description='Generate RBAC (role assignments / role groups) HTML report.' }
+            RunEOMT             = @{ Category='PostConfig'; Label='Run EOMT';                Default=$false; Description='Run CSS-Exchange Emergency Mitigation Tool (legacy CUs; no-op on current CUs).' }
+
+            # ─── Install-Flow / Debug ────────────────────────────────────────
+            DiagnosticData      = @{ Category='InstallFlow'; Label='Send diagnostic data';   Default=$false; Description='/IAcceptExchangeServerLicenseTerms_DiagnosticDataON — share setup telemetry with Microsoft.' }
+            Lock                = @{ Category='InstallFlow'; Label='Lock screen during run'; Default=$false; Description='Lock the console while the installation is in progress (Autopilot only).' }
+            SkipRolesCheck      = @{ Category='InstallFlow'; Label='Skip AD roles check';    Default=$false; Description='Skip Schema/Enterprise/Domain Admin membership check (use with caution).' }
+            NoCheckpoint        = @{ Category='InstallFlow'; Label='Skip System Restore';    Default=$false; Description='Skip pre-install System Restore checkpoints.' }
+            NoNet481            = @{ Category='InstallFlow'; Label='Skip .NET 4.8.1';        Default=$false; Description='Skip .NET 4.8.1 install (debug only — may break Exchange setup).' }
+            WaitForADSync       = @{ Category='InstallFlow'; Label='Wait for AD replication'; Default=$false; Description='After PrepareAD, wait up to 6 min for error-free AD replication before continuing.' }
+        }
+    }
+
+    function Show-AdvancedMenu {
+        # Interactive Advanced Configuration menu. 2 categories per page (~3 pages total).
+        # Navigation uses Enter / Backspace / 0 / Esc — never letter keys — so all
+        # A-Z letters are available for toggling items without conflicts.
+        # Returns a hashtable @{Name=bool} of all toggle states, or $null on cancel.
+
+        $catalog = Get-AdvancedFeatureCatalog
+
+        $categoryDefs = @(
+            @{ Key='TLS';            Title='Security / TLS' }
+            @{ Key='Hardening';      Title='Security / Hardening' }
+            @{ Key='Performance';    Title='Performance / Tuning' }
+            @{ Key='ExchangePolicy'; Title='Exchange Org Policy' }
+            @{ Key='PostConfig';     Title='Post-Config / Integration' }
+            @{ Key='InstallFlow';    Title='Install-Flow / Debug' }
+        )
+
+        # Initialize selection state; filter entries whose Condition is $false.
+        $sel     = @{}
+        $visible = @{}
+        foreach ($cat in $categoryDefs) { $visible[$cat.Key] = @() }
+        $existing = if ($State['AdvancedFeatures'] -is [hashtable]) { $State['AdvancedFeatures'] } else { @{} }
+        foreach ($name in $catalog.Keys) {
+            $entry = $catalog[$name]
+            if ($entry.ContainsKey('Condition')) {
+                try { if (-not (& $entry.Condition)) { continue } } catch { continue }
+            }
+            $sel[$name] = if ($existing.ContainsKey($name)) { [bool]$existing[$name] } else { [bool]$entry.Default }
+            $visible[$entry.Category] += ,$name
+        }
+
+        # Build pages: 2 non-empty categories per page.
+        $activeCats = @($categoryDefs | Where-Object { $visible[$_.Key].Count -gt 0 })
+        if ($activeCats.Count -eq 0) { Write-MyVerbose 'No advanced features applicable'; return $sel }
+        $pages = @()
+        for ($i = 0; $i -lt $activeCats.Count; $i += 2) {
+            $pg = @($activeCats[$i])
+            if ($i + 1 -lt $activeCats.Count) { $pg += $activeCats[$i + 1] }
+            $pages += ,@{ Cats = $pg }
+        }
+
+        $useRawKey = $false
+        try { $null = $host.UI.RawUI.KeyAvailable; $useRawKey = $true } catch { }
+
+        $pageIdx   = 0
+        $lastName  = ''
+        $statusMsg = ''
+
+        while ($true) {
+            # Flatten all visible names on this page in category order (for letter assignment).
+            $pageNames = @()
+            foreach ($cat in $pages[$pageIdx].Cats) { $pageNames += $visible[$cat.Key] }
+            $count = $pageNames.Count
+
+            Clear-Host
+            Write-Host ('=' * 70) -ForegroundColor Cyan
+            Write-Host ('  EXpress v{0} — Advanced Configuration  (page {1}/{2})' -f $script:ScriptVersion, ($pageIdx + 1), $pages.Count) -ForegroundColor Cyan
+            Write-Host ('=' * 70) -ForegroundColor Cyan
+
+            # Render each category section with its own 2-column block.
+            $offset = 0
+            foreach ($cat in $pages[$pageIdx].Cats) {
+                $catNames = @($visible[$cat.Key])
+                if ($catNames.Count -eq 0) { continue }
+                $sep = [string]::new([char]0x2500, [Math]::Max(0, 52 - $cat.Title.Length))
+                Write-Host ''
+                Write-Host ('  -- {0} {1}' -f $cat.Title, $sep) -ForegroundColor Yellow
+                Write-Host ''
+                $half = [Math]::Ceiling($catNames.Count / 2)
+                for ($r = 0; $r -lt $half; $r++) {
+                    $li      = $r
+                    $ri      = $r + $half
+                    $lName   = $catNames[$li]
+                    $lLetter = [char]([byte][char]'A' + $offset + $li)
+                    $lEntry  = $catalog[$lName]
+                    $lMark   = if ($sel[$lName]) { 'X' } else { ' ' }
+                    $lColor  = if ($lName -eq $lastName) { [System.ConsoleColor]::Yellow } else { [System.ConsoleColor]::White }
+                    Write-Host ('  [{0}] [{1}] {2,-28}' -f $lLetter, $lMark, $lEntry.Label) -ForegroundColor $lColor -NoNewline
+                    if ($ri -lt $catNames.Count) {
+                        $rName   = $catNames[$ri]
+                        $rLetter = [char]([byte][char]'A' + $offset + $ri)
+                        $rEntry  = $catalog[$rName]
+                        $rMark   = if ($sel[$rName]) { 'X' } else { ' ' }
+                        $rColor  = if ($rName -eq $lastName) { [System.ConsoleColor]::Yellow } else { [System.ConsoleColor]::White }
+                        Write-Host ('   [{0}] [{1}] {2,-28}' -f $rLetter, $rMark, $rEntry.Label) -ForegroundColor $rColor
+                    } else {
+                        Write-Host ''
+                    }
+                }
+                $offset += $catNames.Count
+            }
+
+            # Description panel
+            Write-Host ''
+            Write-Host ('  ' + [string]::new([char]0x2500, 66)) -ForegroundColor DarkGray
+            if ($lastName -and $catalog.Contains($lastName)) {
+                $opt       = $catalog[$lastName]
+                $dispState = if ($sel[$lastName]) { 'ENABLED' } else { 'DISABLED' }
+                Write-Host ('  {0}  ({1})' -f $opt.Label, $dispState) -ForegroundColor Yellow
+                Write-Host ''
+                $words = ($opt.Description -replace '\s+', ' ').Trim() -split ' '
+                $line  = '  '
+                foreach ($w in $words) {
+                    if (($line + $w).Length -gt 68) { Write-Host $line; $line = '  ' + $w + ' ' }
+                    else { $line += $w + ' ' }
+                }
+                if ($line.Trim()) { Write-Host $line }
+            } else {
+                Write-Host '  Press a letter to toggle it and see its description.' -ForegroundColor DarkGray
+            }
+            Write-Host ('  ' + [string]::new([char]0x2500, 66)) -ForegroundColor DarkGray
+            Write-Host ''
+
+            if ($statusMsg) { Write-Host ('  ' + $statusMsg) -ForegroundColor Yellow; Write-Host ''; $statusMsg = '' }
+
+            $lastLetter = [char]([byte][char]'A' + $count - 1)
+            $navFwd  = if ($pageIdx -lt $pages.Count - 1) { 'Enter=Next' } else { 'Enter=Apply' }
+            $navBack = if ($pageIdx -gt 0) { '  Back=Prev' } else { '' }
+            Write-Host ('  [A-{0}]=Toggle  |  {1}{2}  |  0=Skip-all  |  Esc=Cancel: ' -f $lastLetter, $navFwd, $navBack) -NoNewline -ForegroundColor Cyan
+
+            # Read one key. Nav is encoded as a sentinel string so no letter key is
+            # ever reserved for navigation (fixes A/N/P/S conflicts in the old design).
+            $action = 'UNKNOWN'
+            if ($useRawKey) {
+                try {
+                    $keyInfo = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                    $vk = $keyInfo.VirtualKeyCode
+                    $ch = $keyInfo.Character.ToString().ToUpper()
+                    if     ($vk -eq 27)           { Write-Host ''; $action = 'CANCEL' }
+                    elseif ($vk -eq 13)           { Write-Host ''; $action = 'NEXT'   }
+                    elseif ($vk -in @(8, 37))     { Write-Host ''; $action = 'PREV'   }   # Backspace or Left arrow
+                    elseif ($ch -eq '0')          { Write-Host '0'; $action = 'SKIP'  }
+                    elseif ($ch -match '^[A-Z]$') { Write-Host $ch; $action = $ch     }
+                    else                          { Write-Host '' }
+                } catch {
+                    $useRawKey = $false
+                }
+            }
+            if (-not $useRawKey -and $action -eq 'UNKNOWN') {
+                $typed = (Read-Host '').Trim().ToUpper()
+                if     ($typed -eq '')             { $action = 'NEXT'   }
+                elseif ($typed -in @('-','<','B')) { $action = 'PREV'   }
+                elseif ($typed -eq '0')            { $action = 'SKIP'   }
+                elseif ($typed -eq 'Q')            { $action = 'CANCEL' }
+                elseif ($typed -match '^[A-Z]$')   { $action = $typed   }
+            }
+
+            switch ($action) {
+                'NEXT' {
+                    if ($pageIdx -lt $pages.Count - 1) { $pageIdx++; $lastName = '' }
+                    else { return $sel }
+                }
+                'PREV' {
+                    if ($pageIdx -gt 0) { $pageIdx--; $lastName = '' }
+                    else { $statusMsg = 'Already on first page' }
+                }
+                'SKIP' {
+                    foreach ($n in $sel.Keys.Clone()) { $sel[$n] = [bool]$catalog[$n].Default }
+                    Write-MyOutput 'Advanced configuration skipped — using defaults'
+                    return $sel
+                }
+                'CANCEL' {
+                    Write-MyOutput 'Advanced configuration cancelled — continuing with defaults'
+                    return $null
+                }
+                default {
+                    if ($action -match '^[A-Z]$') {
+                        $idx = [byte][char]$action - [byte][char]'A'
+                        if ($idx -ge 0 -and $idx -lt $count) {
+                            $targetName = $pageNames[$idx]
+                            $sel[$targetName] = -not $sel[$targetName]
+                            $lastName = $targetName
+                        } else {
+                            $statusMsg = "No item on key '$action' — valid range A-$lastLetter"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    function Invoke-AdvancedConfigurationPrompt {
+        # Offers the Advanced Configuration menu with a 60-second auto-skip (default = skip).
+        # Autopilot / non-interactive: returns immediately without prompting.
+        # Returns $true if the menu was shown and settings saved, $false if skipped.
+        if ($State['Autopilot'] -or -not [Environment]::UserInteractive) { return $false }
+        if ($State.ContainsKey('SuppressAdvancedPrompt') -and $State['SuppressAdvancedPrompt']) { return $false }
+
+        $timeoutSec = 60
+        Write-Host ''
+        Write-Host ('  Configure advanced options? [y/N] (auto-skip in {0}s) ' -f $timeoutSec) -NoNewline -ForegroundColor Cyan
+
+        $deadline = (Get-Date).AddSeconds($timeoutSec)
+        $answer   = ''
+        while ((Get-Date) -lt $deadline) {
+            if ($host.UI.RawUI.KeyAvailable) {
+                $k = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                if ($k.VirtualKeyCode -eq 13 -or $k.VirtualKeyCode -eq 27) { break }
+                $answer = $k.Character.ToString().ToUpper()
+                Write-Host $answer
+                break
+            }
+            Start-Sleep -Milliseconds 200
+            $remaining = [int]([Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
+            Write-Progress -Id 2 -Activity 'Advanced configuration prompt' -Status ('Auto-skip in {0}s — press Y to configure, N/Enter to skip' -f $remaining) -SecondsRemaining $remaining
+        }
+        Write-Progress -Id 2 -Activity 'Advanced configuration prompt' -Completed
+
+        if ($answer -ne 'Y') {
+            Write-MyOutput 'Advanced configuration skipped — continuing with defaults'
+            return $false
+        }
+        Write-Host ''
+
+        $result = Show-AdvancedMenu
+        if ($null -eq $result) {
+            Write-MyOutput 'Advanced configuration cancelled — continuing with defaults'
+            return $false
+        }
+
+        $State['AdvancedFeatures'] = $result
+        Save-State $State
+        $changed = @($result.Keys | Where-Object { $result[$_] -ne [bool](Get-AdvancedFeatureCatalog)[$_].Default }).Count
+        Write-MyOutput ('Advanced configuration applied — {0} setting(s) differ from defaults' -f $changed)
+        return $true
+    }
+
+    function Test-Feature {
+        # Returns $true when an Advanced feature is enabled.
+        # Precedence: $State['AdvancedFeatures'][Name] > catalog default.
+        # Unknown names return $false (fail closed) and log a verbose warning.
+        param([Parameter(Mandatory)][string]$Name)
+
+        $features = $State['AdvancedFeatures']
+        if ($features -is [hashtable] -and $features.ContainsKey($Name)) {
+            return [bool]$features[$Name]
+        }
+
+        $catalog = Get-AdvancedFeatureCatalog
+        if ($catalog.Contains($Name)) {
+            return [bool]$catalog[$Name].Default
+        }
+
+        Write-MyVerbose ("Test-Feature: unknown feature name '{0}' — returning `$false" -f $Name)
+        return $false
+    }
+
     function Show-InstallationMenu {
         # Interactive console menu. Returns a hashtable of all chosen settings, or $null if user cancelled.
         # Uses Read-Host for all input so it works reliably over RDP, Hyper-V console and Windows Terminal.
@@ -9685,47 +10015,28 @@ $body
         }
 
         # Toggle definitions: Key=letter, Name=parameter name, Default=initial state
-        # TLS 1.3 requires Windows Server 2022 or later
-        $tls13Default = [System.Version]$FullOSVersion -ge [System.Version]$WS2022_PREFULL
+        # Main menu exposes installation-flow toggles only; ~55 hardening/tuning options
+        # live in the Advanced Configuration menu (see Get-AdvancedFeatureCatalog).
 
         # Name = parameter/cfg key; Label = display text shown in menu
         $toggleDefs = [ordered]@{
-            'A' = @{ Name='Autopilot';             Label='Autopilot (auto-reboot)';      Default=$true  }
-            'B' = @{ Name='IncludeFixes';           Label='Install Exchange SU';           Default=$true  }
-            'C' = @{ Name='DisableSSL3';            Label='Disable SSL 3.0';               Default=$true  }
-            'D' = @{ Name='DisableRC4';             Label='Disable RC4';                   Default=$true  }
-            'E' = @{ Name='EnableECC';              Label='Enable ECC ciphers';            Default=$true  }
-            'F' = @{ Name='NoCBC';                  Label='Disable CBC(not recommended)';  Default=$false }
-            'G' = @{ Name='EnableAMSI';             Label='Enable AMSI';                   Default=$true  }
-            'H' = @{ Name='EnableTLS12';            Label='Enforce TLS 1.2';               Default=$true  }
-            'I' = @{ Name='DoNotEnableEP';          Label='No Extended Protection';        Default=$false }
-            'J' = @{ Name='EnableTLS13';            Label='Enable TLS 1.3';                Default=$tls13Default }
-            'K' = @{ Name='DiagnosticData';         Label='Send diagnostic data';          Default=$false }
-            'L' = @{ Name='Lock';                   Label='Lock screen during install';    Default=$false }
-            'M' = @{ Name='SkipRolesCheck';         Label='Skip AD roles check';           Default=$false }
-            'N' = @{ Name='PreflightOnly';          Label='Preflight only (no install)';   Default=$false }
-            'O' = @{ Name='NoCheckpoint';           Label='Skip restore checkpoints';      Default=$false }
-            'P' = @{ Name='SkipHealthCheck';        Label='Skip HealthChecker';            Default=$false }
-            'Q' = @{ Name='NoNet481';               Label='Skip .NET 4.8.1 install';       Default=$false }
-            'R' = @{ Name='InstallWindowsUpdates';  Label='Install Windows Updates';       Default=$true  }
-            'S' = @{ Name='RunEOMT';                Label='Run EOMT (CVE mitigations)';    Default=$false }
-            'T' = @{ Name='WaitForADSync';          Label='Wait for AD replication';       Default=$false }
-            'U' = @{ Name='GenerateDoc';            Label='Generate Installation Document'; Default=$false }
-            'V' = @{ Name='German';                 Label='Generate document in German (default: English)'; Default=$false }
+            'A' = @{ Name='Autopilot';             Label='Autopilot (auto-reboot)';        Default=$true  }
+            'B' = @{ Name='IncludeFixes';          Label='Install Exchange SU';            Default=$true  }
+            'N' = @{ Name='PreflightOnly';         Label='Preflight only (no install)';    Default=$false }
+            'R' = @{ Name='InstallWindowsUpdates'; Label='Install Windows Updates';        Default=$true  }
+            'U' = @{ Name='GenerateDoc';           Label='Generate Installation Document'; Default=$false }
+            'V' = @{ Name='German';                Label='Document language: German';      Default=$false }
         }
 
         # Toggles disabled per mode (letters that cannot be toggled in that mode)
-        # T=WaitForADSync only makes sense in modes that run PrepareAD (1 and 5)
-        # S=RunEOMT only makes sense for modes that run Exchange post-config (1, 5, 6)
-        # V=German only makes sense where U=GenerateDoc is available (or forced, like mode 7).
         $disabledToggles = @{
             1 = @()
-            2 = @('I','G','S','T','U','V')                                                  # Edge: no installation doc
-            3 = @('B','C','D','E','F','G','H','I','J','K','L','M','N','P','Q','R','S','T','U','V')
-            4 = @('B','I','G','S','T','U','V')                                              # Mgmt tools: no installation doc
+            2 = @('U','V')                                    # Edge: no installation doc
+            3 = @('B','N','R','U','V')                        # Recipient Mgmt: only Autopilot
+            4 = @('B','U','V')                                # Mgmt Tools: no setup, no doc
             5 = @()
-            6 = @('B','I','K','M','N','Q','R','T')                                          # Standalone: no setup, no PrepareAD
-            7 = @('A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U') # Document only: all toggles except V (language) irrelevant
+            6 = @('B','N','R')                                # Standalone Optimize: no setup, no WU, no preflight
+            7 = @('A','B','N','R','U')                        # Document-only: only language matters
         }
 
         # Initialize toggle states from defaults
@@ -9738,9 +10049,8 @@ $body
         function Get-DynamicDisabled {
             param([hashtable]$TS)
             $extra = @()
-            if (-not $TS['A']) { $extra += 'L' }                          # Lock requires Autopilot
-            if (-not $TS['H']) { $extra += 'J'; $extra += 'F' }           # TLS 1.3 + CBC require TLS 1.2
-            if ($TS['N'])      { $extra += @('B','O','P','Q','S','T') }   # PreflightOnly: post-install irrelevant
+            if ($TS['N'])      { $extra += @('B','R') }   # PreflightOnly: SU/WU irrelevant
+            if (-not $TS['U']) { $extra += 'V' }          # V (language) only meaningful when doc is generated
             return $extra
         }
 
@@ -9763,7 +10073,7 @@ $body
                 Write-Host ('    [{0}] {1}  {2}' -f $i, $marker, $modes[$i]) -ForegroundColor $color
             }
             Write-Host ''
-            Write-MenuLine '  Switches (toggle A-U, then ENTER to proceed to inputs):' Yellow
+            Write-MenuLine '  Switches (press letter to toggle, then ENTER to proceed to inputs):' Yellow
 
             $disabled = @(if ($Mode -gt 0) { $disabledToggles[$Mode] } else { @() }) + $ExtraDisabled
             $letters  = @($toggleDefs.Keys)
@@ -9822,7 +10132,7 @@ $body
             $statusMsg = ''
 
             if ($useRawKey) {
-                Write-Host '  Press A-U to toggle, ENTER to continue: ' -NoNewline -ForegroundColor Cyan
+                Write-Host '  Press letter to toggle, ENTER to continue: ' -NoNewline -ForegroundColor Cyan
                 try {
                     $keyInfo = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
                     $vk  = $keyInfo.VirtualKeyCode
@@ -9838,7 +10148,7 @@ $body
                 }
             }
             else {
-                $raw = (Read-Host '  Toggle [A-U] or ENTER to continue').Trim().ToUpper()
+                $raw = (Read-Host '  Toggle letter or ENTER to continue').Trim().ToUpper()
                 if ($raw -eq '') { break }
             }
 
@@ -9862,7 +10172,7 @@ $body
                 }
             }
             elseif ($raw.Length -gt 0) {
-                $statusMsg = "Unknown key '$raw' — press A-T to toggle or ENTER to continue"
+                $statusMsg = "Unknown key '$raw' — press a listed letter to toggle or ENTER to continue"
             }
         }
 
@@ -10253,24 +10563,11 @@ $body
             $EdgeDNSSuffix       = $menuResult['EdgeDNSSuffix']
             $Autopilot           = [switch]($menuResult['Autopilot'])
             $IncludeFixes        = [switch]($menuResult['IncludeFixes'])
-            $DisableSSL3         = [switch]($menuResult['DisableSSL3'])
-            $DisableRC4          = [switch]($menuResult['DisableRC4'])
-            $EnableECC           = [switch]($menuResult['EnableECC'])
-            $NoCBC               = [switch]($menuResult['NoCBC'])
-            $EnableAMSI          = [switch]($menuResult['EnableAMSI'])
-            $EnableTLS12         = [switch]($menuResult['EnableTLS12'])
-            $EnableTLS13         = [switch]($menuResult['EnableTLS13'])
-            $DoNotEnableEP       = [switch]($menuResult['DoNotEnableEP'])
-            $DiagnosticData      = [switch]($menuResult['DiagnosticData'])
-            $Lock                = [switch]($menuResult['Lock'])
-            $SkipRolesCheck      = [switch]($menuResult['SkipRolesCheck'])
             $PreflightOnly       = [switch]($menuResult['PreflightOnly'])
-            $NoCheckpoint        = [switch]($menuResult['NoCheckpoint'])
-            $SkipHealthCheck         = [switch]($menuResult['SkipHealthCheck'])
-            $NoNet481                = [switch]($menuResult['NoNet481'])
             $InstallWindowsUpdates   = [switch]($menuResult['InstallWindowsUpdates'])
-            $RunEOMT             = [switch]($menuResult['RunEOMT'])
-            $WaitForADSync       = [switch]($menuResult['WaitForADSync'])
+            # Non-menu toggles (C/D/E/… removed in v5.95) — values come from Advanced
+            # Configuration menu (Invoke-AdvancedConfigurationPrompt) or $ConfigFile.
+            # Param variables retain their on-cmdline / catalog defaults here.
             $InstallEdge         = [switch]($mode -eq 2)
             $Recover             = [switch]($mode -eq 5)
             $StandaloneOptimize  = [switch]($mode -eq 6)
@@ -10306,9 +10603,9 @@ $body
             if ($CertificatePath) { Write-MyOutput ('Menu: Cert PFX : {0}' -f $CertificatePath) }
             # Active switch labels (same computation the menu summary used)
             $menuSwitchMap = @{
-                'Autopilot'=$Autopilot;'IncludeFixes'=$IncludeFixes;'DisableSSL3'=$DisableSSL3;
-                'DisableRC4'=$DisableRC4;'EnableECC'=$EnableECC;'EnableAMSI'=$EnableAMSI;
-                'EnableTLS12'=$EnableTLS12;'EnableTLS13'=$EnableTLS13;'InstallWindowsUpdates'=$InstallWindowsUpdates
+                'Autopilot'=$Autopilot;'IncludeFixes'=$IncludeFixes;
+                'PreflightOnly'=$PreflightOnly;'InstallWindowsUpdates'=$InstallWindowsUpdates;
+                'GenerateDoc'=(-not [bool]$NoWordDoc);'German'=$German
             }
             $activeSwitches = ($menuSwitchMap.Keys | Where-Object { $menuSwitchMap[$_] }) -join ', '
             if ($activeSwitches) { Write-MyOutput ('Menu: Switches : {0}' -f $activeSwitches) }
@@ -10320,6 +10617,12 @@ $body
             foreach ($k in ($safeDump.Keys | Sort-Object)) {
                 Write-MyVerbose ('Menu: cfg[{0}] = {1}' -f $k, $safeDump[$k])
             }
+
+            # Advanced Configuration menu — offered after main menu confirmation,
+            # 60s auto-skip, default = keep catalog defaults. Skipped in Autopilot
+            # by Invoke-AdvancedConfigurationPrompt itself.
+            if (-not ($State['AdvancedFeatures'] -is [hashtable])) { $State['AdvancedFeatures'] = @{} }
+            $null = Invoke-AdvancedConfigurationPrompt
         }
         elseif ($ConfigFile) {
             # Headless mode: load all parameters from a .psd1 config file.
@@ -10426,6 +10729,27 @@ $body
                 Write-MyWarning ''
             }
 
+            # Advanced Configuration — nested block in .psd1, with backwards-compat
+            # for legacy top-level keys. Precedence: nested > top-level > catalog default.
+            if (-not ($State['AdvancedFeatures'] -is [hashtable])) { $State['AdvancedFeatures'] = @{} }
+            $catalogNames = (Get-AdvancedFeatureCatalog).Keys
+            # Legacy top-level keys (backwards compat)
+            foreach ($name in $catalogNames) {
+                if ($cfg.ContainsKey($name) -and -not $State['AdvancedFeatures'].ContainsKey($name)) {
+                    $State['AdvancedFeatures'][$name] = [bool]$cfg[$name]
+                }
+            }
+            # Nested AdvancedFeatures = @{ ... } block (new canonical form; wins over top-level)
+            if ($cfg.ContainsKey('AdvancedFeatures') -and $cfg['AdvancedFeatures'] -is [hashtable]) {
+                foreach ($k in $cfg['AdvancedFeatures'].Keys) {
+                    if ($catalogNames -contains $k) {
+                        $State['AdvancedFeatures'][$k] = [bool]$cfg['AdvancedFeatures'][$k]
+                    } else {
+                        Write-MyWarning ("Config AdvancedFeatures.{0}: unknown feature name — ignored" -f $k)
+                    }
+                }
+            }
+
             # Recalculate state file path with potentially overridden InstallPath
             $StateFile = "$InstallPath\$($env:computerName)_State.xml"
             Write-MyOutput "Configuration loaded: mode=$(if ($InstallEdge){'Edge'}elseif($Recover){'Recovery'}else{'Mailbox'}), source=$SourcePath, org=$Organization"
@@ -10485,22 +10809,32 @@ $body
         $State["Install481"] = $False
         $State["VCRedist2012"] = $False
         $State["VCRedist2013"] = $False
-        $State["DisableSSL3"] = $DisableSSL3
-        $State["DisableRC4"] = $DisableRC4
-        $State["EnableECC"] = $EnableECC
-        $State["EnableCBC"] = -not $NoCBC
-        $State["EnableTLS12"] = $EnableTLS12
-        $State["EnableTLS13"] = $EnableTLS13
-        if ($State["EnableTLS13"] -and -not $State["EnableTLS12"]) {
-            Write-MyWarning '-EnableTLS13 requires -EnableTLS12; automatically enabling TLS 1.2 enforcement'
-            $State["EnableTLS12"] = $true
+
+        # -- Advanced Configuration catalog ---------------------------------------
+        # Merge explicitly cmdline-bound switches into $State['AdvancedFeatures']
+        # (backwards compat for scripts still passing -DisableSSL3, -EnableECC …).
+        # Precedence already established: menu/config > cmdline-bound > catalog default.
+        if (-not ($State['AdvancedFeatures'] -is [hashtable])) { $State['AdvancedFeatures'] = @{} }
+        $advCatalog = Get-AdvancedFeatureCatalog
+        foreach ($name in $advCatalog.Keys) {
+            if ($PSBoundParameters.ContainsKey($name) -and -not $State['AdvancedFeatures'].ContainsKey($name)) {
+                $v = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue
+                $State['AdvancedFeatures'][$name] = [bool]$v
+            }
         }
-        $State["DoNotEnableEP"] = $DoNotEnableEP
+        # Project every catalog entry to its flat $State[Name] so the rest of the
+        # script (Phase 5 hardening, reports, HealthChecker gates …) keeps reading
+        # $State['DisableSSL3'] etc. unchanged. Test-Feature applies precedence.
+        foreach ($name in $advCatalog.Keys) { $State[$name] = Test-Feature $name }
+        # Derived: EnableCBC is the logical inverse of NoCBC.
+        $State["EnableCBC"]     = -not (Test-Feature 'NoCBC')
+        if ($State["EnableTLS13"] -and -not $State["EnableTLS12"]) {
+            Write-MyWarning 'EnableTLS13 requires EnableTLS12; automatically enabling TLS 1.2 enforcement'
+            $State["EnableTLS12"] = $true
+            $State['AdvancedFeatures']['EnableTLS12'] = $true
+        }
         $State["DoNotEnableEP_FEEWS"] = $DoNotEnableEP_FEEWS
-        $State["SkipRolesCheck"] = $SkipRolesCheck
         $State["SCP"] = $SCP
-        $State["DiagnosticData"] = $DiagnosticData
-        $State["Lock"] = $Lock
         $State["EdgeDNSSuffix"] = $EdgeDNSSuffix
         $State["InstallPath"]  = $InstallPath
         $State["ReportsPath"]  = Join-Path $InstallPath 'reports'
@@ -10515,8 +10849,6 @@ $body
         $State["CertificatePath"] = $CertificatePath
         $State["CertificatePassword"] = $null
         $State["DAGName"] = $DAGName
-        $State["SkipHealthCheck"] = $SkipHealthCheck
-        $State["NoCheckpoint"] = $NoCheckpoint
         $State["ServerConfigExportPath"] = $null
         $State["InstallRecipientManagement"] = [bool]$InstallRecipientManagement
         $State["InstallManagementTools"] = [bool]$InstallManagementTools
@@ -10528,8 +10860,6 @@ $body
         $State["SkipSetupAssist"] = $SkipSetupAssist
         $State["Namespace"]     = $Namespace
         $State["DownloadDomain"] = $DownloadDomain
-        $State["RunEOMT"]          = [bool]$RunEOMT
-        $State["WaitForADSync"]    = [bool]$WaitForADSync
         $State["LogRetentionDays"] = $LogRetentionDays
         $State["RelaySubnets"]         = $RelaySubnets
         $State["ExternalRelaySubnets"] = $ExternalRelaySubnets

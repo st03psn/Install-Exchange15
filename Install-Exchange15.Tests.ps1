@@ -509,3 +509,216 @@ Describe 'Add-BackgroundJob pruning' {
         $Global:BackgroundJobs | Should -Not -BeNullOrEmpty
     }
 }
+
+# ---------------------------------------------------------------------------
+# F25 — Advanced Configuration menu
+#
+# We extract the four catalog/gate functions from Install-Exchange15.ps1 via
+# AST and re-define them at script scope so tests stay in sync with source
+# (no drift risk from copy-paste replication).
+# ---------------------------------------------------------------------------
+Describe 'F25 Advanced Configuration' {
+
+    BeforeAll {
+        $scriptPath = Join-Path $PSScriptRoot 'Install-Exchange15.ps1'
+        $tokens = $null; $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
+        if ($errors) { throw "Parser errors in Install-Exchange15.ps1: $($errors[0].Message)" }
+
+        $wanted = @('Get-AdvancedFeatureCatalog','Show-AdvancedMenu','Invoke-AdvancedConfigurationPrompt','Test-Feature')
+        $funcs = $ast.FindAll({
+            param($n)
+            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ($wanted -contains $n.Name)
+        }, $true)
+
+        # Satisfy $script:-prefixed references from catalog Condition scriptblocks.
+        # The real script sets these in the process{} block; for tests we define
+        # them at script scope so [ref]$script:X resolves.
+        $script:State          = @{}
+        $script:FullOSVersion  = '10.0.20348'   # default: WS2022 (TLS 1.3 visible)
+        $script:WS2016_PREFULL = '10.0.14393'
+        $script:WS2019_PREFULL = '10.0.17763'
+        $script:WS2022_PREFULL = '10.0.20348'
+        $script:WS2025_PREFULL = '10.0.26100'
+        $script:ScriptVersion  = '5.95-test'
+
+        # Stub the write-* helpers referenced by the extracted functions.
+        function Write-MyOutput  { param([Parameter(ValueFromPipeline)]$m) }
+        function Write-MyVerbose { param([Parameter(ValueFromPipeline)]$m) }
+        function Write-MyWarning { param([Parameter(ValueFromPipeline)]$m) }
+        function Save-State      { param($s) }
+
+        foreach ($f in $funcs) {
+            Invoke-Expression $f.Extent.Text
+        }
+    }
+
+    Context 'Get-AdvancedFeatureCatalog' {
+        It 'Returns an ordered hashtable' {
+            $cat = Get-AdvancedFeatureCatalog
+            $cat | Should -BeOfType ([System.Collections.Specialized.OrderedDictionary])
+        }
+
+        It 'Contains the expected minimum number of entries' {
+            (Get-AdvancedFeatureCatalog).Count | Should -BeGreaterOrEqual 55
+        }
+
+        It 'Every entry has Category, Label, Description, Default' {
+            $cat = Get-AdvancedFeatureCatalog
+            foreach ($name in $cat.Keys) {
+                $e = $cat[$name]
+                $e.ContainsKey('Category')    | Should -BeTrue -Because "$name must have Category"
+                $e.ContainsKey('Label')       | Should -BeTrue -Because "$name must have Label"
+                $e.ContainsKey('Description') | Should -BeTrue -Because "$name must have Description"
+                $e.ContainsKey('Default')     | Should -BeTrue -Because "$name must have Default"
+                $e.Default                    | Should -BeOfType ([bool])
+            }
+        }
+
+        It 'Uses only the six documented categories' {
+            $allowed = @('TLS','Hardening','Performance','ExchangePolicy','PostConfig','InstallFlow')
+            $cat = Get-AdvancedFeatureCatalog
+            foreach ($name in $cat.Keys) {
+                $allowed -contains $cat[$name].Category | Should -BeTrue -Because "$name category '$($cat[$name].Category)' must be one of: $($allowed -join ', ')"
+            }
+        }
+    }
+
+    Context 'Get-AdvancedFeatureCatalog Condition gates' {
+        It 'EnableTLS13 Condition is TRUE on WS2022' {
+            $script:FullOSVersion = '10.0.20348'
+            $cat = Get-AdvancedFeatureCatalog
+            (& $cat['EnableTLS13'].Condition) | Should -BeTrue
+        }
+
+        It 'EnableTLS13 Condition is FALSE on WS2019' {
+            $script:FullOSVersion = '10.0.17763'
+            $cat = Get-AdvancedFeatureCatalog
+            (& $cat['EnableTLS13'].Condition) | Should -BeFalse
+        }
+
+        It 'ShadowRedundancy Condition requires DAG' {
+            $script:State = @{ DAGName = $null }
+            (& (Get-AdvancedFeatureCatalog)['ShadowRedundancy'].Condition) | Should -BeFalse
+            $script:State = @{ DAGName = 'DAG01' }
+            (& (Get-AdvancedFeatureCatalog)['ShadowRedundancy'].Condition) | Should -BeTrue
+        }
+
+        It 'AnonymousRelay Condition requires a RelaySubnets value' {
+            $script:State = @{}
+            (& (Get-AdvancedFeatureCatalog)['AnonymousRelay'].Condition) | Should -BeFalse
+            $script:State = @{ RelaySubnets = @('10.0.0.0/24') }
+            (& (Get-AdvancedFeatureCatalog)['AnonymousRelay'].Condition) | Should -BeTrue
+        }
+
+        It 'MessageExpiration7d Condition hidden when CopyServerConfig set' {
+            $script:State = @{ CopyServerConfig = 'exch01.contoso.com' }
+            (& (Get-AdvancedFeatureCatalog)['MessageExpiration7d'].Condition) | Should -BeFalse
+        }
+    }
+
+    Context 'Test-Feature precedence' {
+        BeforeEach {
+            $script:State = @{}
+        }
+
+        It 'Returns catalog default when AdvancedFeatures is empty' {
+            (Test-Feature 'DisableSSL3') | Should -BeTrue
+            (Test-Feature 'NoCBC')       | Should -BeFalse
+            (Test-Feature 'LSAProtection') | Should -BeTrue
+        }
+
+        It 'AdvancedFeatures value wins over catalog default' {
+            $script:State['AdvancedFeatures'] = @{ DisableSSL3 = $false; NoCBC = $true }
+            (Test-Feature 'DisableSSL3') | Should -BeFalse
+            (Test-Feature 'NoCBC')       | Should -BeTrue
+        }
+
+        It 'Unknown feature names return $false (fail closed)' {
+            (Test-Feature 'NotARealFeature') | Should -BeFalse
+        }
+
+        It 'Accepts catalog default when AdvancedFeatures is not a hashtable' {
+            $script:State['AdvancedFeatures'] = 'not-a-hashtable'
+            (Test-Feature 'DisableSSL3') | Should -BeTrue
+        }
+
+        It 'Coerces non-bool AdvancedFeatures values via [bool]' {
+            $script:State['AdvancedFeatures'] = @{ DisableSSL3 = 0; EnableECC = 1 }
+            (Test-Feature 'DisableSSL3') | Should -BeFalse
+            (Test-Feature 'EnableECC')   | Should -BeTrue
+        }
+    }
+
+    Context 'Config-loader precedence (reproduced)' {
+        # This replicates the merge logic Install-Exchange15.ps1 runs in the
+        # -ConfigFile branch (see "Advanced Configuration — nested block in
+        # .psd1" in the main script). Keep this block in sync with the source.
+        BeforeAll {
+            function Merge-Cfg {
+                param([hashtable]$Cfg, [hashtable]$State)
+                if (-not ($State['AdvancedFeatures'] -is [hashtable])) { $State['AdvancedFeatures'] = @{} }
+                $catalogNames = (Get-AdvancedFeatureCatalog).Keys
+                foreach ($name in $catalogNames) {
+                    if ($Cfg.ContainsKey($name) -and -not $State['AdvancedFeatures'].ContainsKey($name)) {
+                        $State['AdvancedFeatures'][$name] = [bool]$Cfg[$name]
+                    }
+                }
+                if ($Cfg.ContainsKey('AdvancedFeatures') -and $Cfg['AdvancedFeatures'] -is [hashtable]) {
+                    foreach ($k in $Cfg['AdvancedFeatures'].Keys) {
+                        if ($catalogNames -contains $k) {
+                            $State['AdvancedFeatures'][$k] = [bool]$Cfg['AdvancedFeatures'][$k]
+                        }
+                    }
+                }
+                return $State
+            }
+        }
+
+        It 'Legacy top-level key seeds AdvancedFeatures' {
+            $state = Merge-Cfg -Cfg @{ DisableSSL3 = $false } -State @{}
+            $state['AdvancedFeatures']['DisableSSL3'] | Should -BeFalse
+        }
+
+        It 'Nested AdvancedFeatures wins over top-level' {
+            $state = Merge-Cfg -Cfg @{
+                DisableSSL3      = $false
+                AdvancedFeatures = @{ DisableSSL3 = $true }
+            } -State @{}
+            $state['AdvancedFeatures']['DisableSSL3'] | Should -BeTrue
+        }
+
+        It 'Unknown keys in nested block are ignored' {
+            $state = Merge-Cfg -Cfg @{ AdvancedFeatures = @{ DefinitelyNotInCatalog = $true } } -State @{}
+            $state['AdvancedFeatures'].ContainsKey('DefinitelyNotInCatalog') | Should -BeFalse
+        }
+
+        It 'Catalog defaults apply for unset names via Test-Feature' {
+            $script:State = Merge-Cfg -Cfg @{ AdvancedFeatures = @{ DisableSSL3 = $false } } -State @{}
+            (Test-Feature 'DisableSSL3') | Should -BeFalse   # overridden
+            (Test-Feature 'EnableECC')   | Should -BeTrue    # catalog default
+            (Test-Feature 'NoCBC')       | Should -BeFalse   # catalog default
+        }
+    }
+
+    Context 'deploy-example.psd1 parses and uses only catalog names' {
+        It 'AdvancedFeatures block references only known catalog entries' {
+            $psd1 = Import-PowerShellDataFile -Path (Join-Path $PSScriptRoot 'deploy-example.psd1')
+            $psd1.ContainsKey('AdvancedFeatures') | Should -BeTrue
+            $catalogNames = (Get-AdvancedFeatureCatalog).Keys
+            foreach ($k in $psd1['AdvancedFeatures'].Keys) {
+                $catalogNames -contains $k | Should -BeTrue -Because "deploy-example.psd1 AdvancedFeatures.$k must exist in catalog"
+            }
+        }
+
+        It 'Legacy top-level keys (DisableSSL3 etc.) are NO LONGER present' {
+            # They moved into the nested AdvancedFeatures block. Keeps tests
+            # honest: once the legacy section is gone, the example stays clean.
+            $psd1 = Import-PowerShellDataFile -Path (Join-Path $PSScriptRoot 'deploy-example.psd1')
+            $legacy = @('DisableSSL3','DisableRC4','EnableECC','NoCBC','EnableAMSI','EnableTLS12','EnableTLS13')
+            foreach ($k in $legacy) {
+                $psd1.ContainsKey($k) | Should -BeFalse -Because "$k was migrated into AdvancedFeatures"
+            }
+        }
+    }
+}

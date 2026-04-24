@@ -56,16 +56,88 @@
     Autopilot = $true
 
     # -------------------------------------------------------------------------
-    # Security hardening  (recommended settings shown below)
+    # Advanced Configuration  (v5.95+; ~55 hardening / tuning / policy knobs)
     # -------------------------------------------------------------------------
+    #
+    # The nested 'AdvancedFeatures' block replaces the old flat top-level keys
+    # (DisableSSL3, EnableECC, …). Omitted entries keep their catalog default
+    # — equivalent to current v5.x behaviour. See Get-AdvancedFeatureCatalog
+    # in Install-Exchange15.ps1 for the full list.
+    #
+    # Precedence: AdvancedFeatures nested block > legacy top-level key
+    #             > -<Name> cmdline switch > catalog default.
 
-    DisableSSL3  = $true    # Disable SSL 3.0 (POODLE vulnerability)
-    DisableRC4   = $true    # Disable RC4 cipher (deprecated)
-    EnableECC    = $true    # Prefer ECC key exchange over RSA
-    NoCBC        = $false   # Keep CBC enabled — Exchange requires it for compatibility
-    EnableAMSI   = $true    # Enable Antimalware Scan Interface for Exchange
-    EnableTLS12  = $true    # Enforce TLS 1.2 (disables TLS 1.0/1.1)
-    EnableTLS13  = $true    # Enable TLS 1.3 (Windows Server 2022+ only, ignored on older OS)
+    AdvancedFeatures = @{
+        # --- Security / TLS ---
+        DisableSSL3         = $true    # POODLE / CVE-2014-3566
+        DisableRC4          = $true    # Deprecated stream cipher
+        EnableECC           = $true    # Prefer ECC key exchange
+        NoCBC               = $false   # Disable CBC ciphers (not recommended)
+        EnableAMSI          = $true
+        EnableTLS12         = $true    # Disables TLS 1.0/1.1 + .NET StrongCrypto
+        EnableTLS13         = $true    # WS2022+; ignored on older OS
+        # DoNotEnableEP     = $false   # Opt-out of Extended Protection
+
+        # --- Security / Hardening ---
+        SMBv1Disable        = $true
+        NetBIOSDisable      = $true
+        LLMNRDisable        = $true
+        MDNSDisable         = $true
+        WDigestDisable      = $true
+        LSAProtection       = $true
+        LmCompat5           = $true
+        SerializedDataSig   = $true
+        ShutdownTrackerOff  = $true
+        HTTP2Disable        = $true
+        CredentialGuardOff  = $true
+        UnnecessaryServices = $true
+        WindowsSearchOff    = $true
+        CRLTimeout          = $true
+        RootCAAutoUpdate    = $true
+        SMTPBannerHarden    = $true
+
+        # --- Performance / Tuning ---
+        MaxConcurrentAPI    = $true
+        DiskAllocHint       = $true
+        CtsProcAffinity     = $true
+        NodeRunnerMemLimit  = $true
+        MapiFeGC            = $true
+        NICPowerMgmtOff     = $true
+        RSSEnable           = $true
+        TCPTuning           = $true
+        TCPOffloadOff       = $true
+        IPv4OverIPv6Off     = $true
+
+        # --- Exchange Org Policy ---
+        ModernAuth          = $true
+        OWASessionTimeout6h = $true
+        DisableTelemetry    = $true
+        MapiHttp            = $true
+        MaxMessageSize150MB = $true
+        MessageExpiration7d = $true
+        HtmlNDR             = $true
+        # ShadowRedundancy  = $false  # DAG-only
+        SafetyNet2d         = $true
+
+        # --- Post-Config / Integration ---
+        MECA                = $true
+        AntispamAgents      = $true
+        SSLOffloading       = $true
+        MRSProxy            = $true
+        IANATimezone        = $true
+        # AnonymousRelay    = $true   # auto-enabled when RelaySubnets set
+        # SkipHealthCheck   = $false
+        RBACReport          = $true
+        # RunEOMT           = $false  # legacy CUs only
+
+        # --- Install-Flow / Debug (defaults $false) ---
+        # DiagnosticData    = $false
+        # Lock              = $false
+        # SkipRolesCheck    = $false
+        # NoCheckpoint      = $false
+        # NoNet481          = $false
+        # WaitForADSync     = $false
+    }
 
     # -------------------------------------------------------------------------
     # Updates
@@ -86,12 +158,10 @@
     # Behaviour flags
     # -------------------------------------------------------------------------
 
-    SkipHealthCheck   = $false   # $true to skip CSS-Exchange HealthChecker at end
-    NoCheckpoint      = $false   # $true to skip System Restore checkpoints
     PreflightOnly     = $false   # $true to generate pre-flight report and exit
-    DiagnosticData    = $false   # $true = /IAcceptExchangeServerLicenseTerms_DiagnosticDataON
     SkipInstallReport = $false   # $true to suppress HTML/PDF installation report at Phase 6
     SkipSetupAssist   = $false   # $true to skip CSS-Exchange SetupAssist on Phase 4 failure
+    # SkipHealthCheck / NoCheckpoint / DiagnosticData moved to AdvancedFeatures above.
 
     # -------------------------------------------------------------------------
     # v5.82 / v5.84 — Word installation document (F22)
@@ -117,20 +187,12 @@
     # Local server is always included. Applies when DocumentScope is All or Local.
     # IncludeServers = @('EX01', 'EX02')
 
-    # DoNotEnableEP = $false   # $true to skip Extended Protection configuration
-    # NoNet481      = $false   # $true to skip .NET 4.8.1 installation
-    # SkipRolesCheck = $false  # $true to skip Schema/Enterprise Admin membership check
-    # Lock          = $false   # $true to lock screen during installation
+    # DoNotEnableEP / NoNet481 / SkipRolesCheck / Lock / RunEOMT / WaitForADSync
+    # moved to AdvancedFeatures above.
 
     # -------------------------------------------------------------------------
-    # v5.2 — Security & relay connectors
+    # Relay connectors (v5.2)
     # -------------------------------------------------------------------------
-
-    # Run CSS-Exchange Emergency Mitigation Tool (EOMT) in Phase 5
-    # RunEOMT = $false
-
-    # Wait for AD replication to be error-free after PrepareAD (max 6 min)
-    # WaitForADSync = $false
 
     # Anonymous internal relay: accepted domains only (no external relay right)
     # Source IPs resolved via SID S-1-5-7 — language-independent (DE/EN/FR/...)

@@ -6,6 +6,24 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.95 (2026-04-24) — feature
+
+### F25 — Advanced Configuration menu
+
+Main menu shrunk to the five installation-flow toggles; ~55 hardening / tuning / policy switches moved into a new paginated Advanced Configuration menu, prompted with a 60-second auto-skip (default = keep current v5.x behaviour).
+
+- **Main menu toggles now A / B / N / R / U / V** — Autopilot, Install Exchange SU, Preflight-only, Install Windows Updates, Generate Installation Document, document language (German).
+- **Advanced menu** — six pages (Security / TLS · Security / Hardening · Performance / Tuning · Exchange Org Policy · Post-Config / Integration · Install-Flow / Debug). Two-column layout, letter-keys to toggle, `N`=Next, `P`=Prev, `A`=Apply on last page, `S`=Skip-all, `ESC`=Cancel. `Read-Host` fallback when `RawUI.KeyAvailable` is unavailable (PS2Exe / redirected host).
+- **`Get-AdvancedFeatureCatalog`** — ordered hashtable keyed by feature Name (`DisableSSL3`, `LSAProtection`, `MaxConcurrentAPI`, …); each entry carries `Category`, `Label`, `Description`, `Default` and an optional `Condition` scriptblock (TLS 1.3 hidden pre-WS2022, Shadow Redundancy hidden without DAG, AnonymousRelay hidden without `RelaySubnets`, etc.).
+- **`Test-Feature -Name`** — single gate used wherever the script reads `$State['<name>']`. Precedence: `$State['AdvancedFeatures'][Name]` > catalog default. Unknown names return `$false` + verbose warning.
+- **`Invoke-AdvancedConfigurationPrompt`** — 60-second countdown offer (`Write-Progress -Id 2`) shown after the main menu. Silently skipped in Autopilot or when `$State['SuppressAdvancedPrompt']` is set. Result persisted in `$State['AdvancedFeatures']` via `Save-State`.
+- **Config-file parity** — new nested `AdvancedFeatures = @{ … }` block in `deploy-example.psd1`. Precedence: nested block > legacy top-level key > cmdline `-<Name>` switch > catalog default. Existing `.psd1` files and `-DisableSSL3` / `-EnableECC` / … cmdline switches keep working unchanged; they're merged into `$State['AdvancedFeatures']` at startup.
+
+### Note
+- Always-on (non-negotiable): Defender Exclusions + transient realtime disable, Page-File fixed size, VDir URLs when namespace set, Exchange log-cleanup scheduled task, High-Performance power plan. These are **not** exposed as toggles.
+
+---
+
 ## v5.94.1 (2026-04-24) — enhancement
 
 ### Word installation document — SIEM guidance and retention-tag detail
