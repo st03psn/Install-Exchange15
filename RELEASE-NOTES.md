@@ -6,6 +6,16 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v1.1.2 (2026-04-24) — bugfix release
+
+- **NuGet auto-install** — `Install-Module -ForceBootstrap` added so the NuGet provider prompt is answered automatically when `Install-PackageProvider` cannot reach its index URI but internet is otherwise available.
+- **Autopilot RunOnce path** — `$MyInvocation.MyCommand.Path` inside a dot-sourced module resolves to that module file, not to `EXpress.ps1`. `Enable-RunOnce` therefore wrote the registry key pointing to `modules\99-Main.ps1`; after reboot Windows ran the module directly (all other modules missing → silent failure). `EXpress.ps1` now captures `$EXpressEntryScript` before the dot-source loop; `99-Main.ps1` prefers it.
+- **Exchange source default path** — prompt order swapped (Working folder first); default ISO derived from `<InstallPath>\sources\` instead of the script parent dir (which resolved to `modules\` when dot-sourced).
+- **Module parse errors / dot-source** — `45-ServerConfig.ps1` here-string was truncated; leaked body removed from `50-Connectors.ps1`; `Show-InstallationMenu` closing `}` moved from `99-Main.ps1` to `95-Menu.ps1` so all 21 modules are independently parseable.
+- **PS 5.1 `(if ...)` crashes** — `-ValidateMessage (if ...)` in menu field-edit and `-f ..., (if ...)` in hardening EP command builder replaced with pre-assigned variables.
+
+---
+
 ## v1.1 (2026-04-24) — feature release
 
 ### Source layout & CI
