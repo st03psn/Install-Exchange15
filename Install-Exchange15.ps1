@@ -2326,7 +2326,7 @@ process {
         Write-MyOutput 'Configuring Windows Features'
 
         if ( $State['InstallEdge']) {
-            $Feats [array]'ADLDS'
+            $Feats = [array]'ADLDS'
         }
         else {
             if ( [System.Version]$WS2019_PREFULL -ge [System.Version]$MajorOSVersion) {
