@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Pester unit tests for Install-Exchange15.ps1 helper functions.
+    Pester unit tests for EXpress.ps1 helper functions.
 
 .NOTES
     Run with: Invoke-Pester .\Install-Exchange15.Tests.ps1 -Output Detailed
@@ -513,7 +513,7 @@ Describe 'Add-BackgroundJob pruning' {
 # ---------------------------------------------------------------------------
 # F25 — Advanced Configuration menu
 #
-# We extract the four catalog/gate functions from Install-Exchange15.ps1 via
+# We extract the four catalog/gate functions from EXpress.ps1 via
 # AST and re-define them at script scope so tests stay in sync with source
 # (no drift risk from copy-paste replication).
 # ---------------------------------------------------------------------------
@@ -521,8 +521,8 @@ Describe 'F25 Advanced Configuration' {
 
     BeforeAll {
         # Use merged dist/ artifact when available (modular layout); fall back to monolith
-        $distPath   = Join-Path $PSScriptRoot 'dist\Install-Exchange15.ps1'
-        $scriptPath = if (Test-Path $distPath) { $distPath } else { Join-Path $PSScriptRoot 'Install-Exchange15.ps1' }
+        $distPath   = Join-Path $PSScriptRoot 'dist\EXpress.ps1'
+        $scriptPath = if (Test-Path $distPath) { $distPath } else { Join-Path $PSScriptRoot 'EXpress.ps1' }
         $tokens = $null; $errors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
         if ($errors) { throw "Parser errors in ${scriptPath}: $($errors[0].Message)" }
@@ -653,7 +653,7 @@ Describe 'F25 Advanced Configuration' {
     }
 
     Context 'Config-loader precedence (reproduced)' {
-        # This replicates the merge logic Install-Exchange15.ps1 runs in the
+        # This replicates the merge logic EXpress.ps1 runs in the
         # -ConfigFile branch (see "Advanced Configuration — nested block in
         # .psd1" in the main script). Keep this block in sync with the source.
         BeforeAll {

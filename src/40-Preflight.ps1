@@ -729,7 +729,7 @@
         }
 
         # Generate HTML report
-        $reportPath = Join-Path $State['ReportsPath'] ('{0}_Preflight_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $reportPath = Join-Path $State['ReportsPath'] ('{0}_EXpress_Preflight_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $failCount = ($results | Where-Object { $_.Status -eq 'FAIL' }).Count
         $warnCount = ($results | Where-Object { $_.Status -eq 'WARN' }).Count
         $statusColor = if ($failCount -gt 0) { '#dc3545' } elseif ($warnCount -gt 0) { '#ffc107' } else { '#28a745' }

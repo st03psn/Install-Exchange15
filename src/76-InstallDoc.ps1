@@ -9,7 +9,7 @@
         $includeFilter = if ($State['IncludeServers']) { @($State['IncludeServers'] -split ',') } else { @() }
         $isAdHoc       = [bool]$State['StandaloneDocument'] -and -not $State['InstallPhase']
         $docStem  = if ($DE) { 'ExchangeServer-Dokumentation' } else { 'ExchangeServer-Documentation' }
-        $docPath  = Join-Path $State['ReportsPath'] ('{0}_{1}_{2}_{3}.docx' -f $env:COMPUTERNAME, $docStem, $lang, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $docPath  = Join-Path $State['ReportsPath'] ('{0}_EXpress_{1}_{2}_{3}.docx' -f $env:COMPUTERNAME, $docStem, $lang, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $docTitle = if ($DE) { 'Exchange Server Installationsdokumentation' } else { 'Exchange Server Installation Documentation' }
         Write-MyOutput ('Generating Word Installation Document ({0}): {1}' -f $lang, $docPath)
 

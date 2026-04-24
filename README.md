@@ -1,12 +1,12 @@
-# Install-Exchange15.ps1
+# EXpress
 
-PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
+PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, post-configuration, security hardening, and Word installation documentation.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.96 (April 2026, last updated 2026-04-24)
+**Version:** 1.0 (April 2026, last updated 2026-04-24)
 **License:** As-Is, without warranty
 
-**Versioning scheme:** `MAJOR.MINOR` = feature release · `MAJOR.MINOR.PATCH` = bugfix / maintenance release. Example: `5.86` introduces features, `5.86.2` contains only bugfixes on top of `5.86`.
+**Versioning scheme:** `MAJOR.MINOR` = feature release · `MAJOR.MINOR.PATCH` = bugfix / maintenance release. Example: `1.1` introduces features, `1.1.1` contains only bugfixes on top of `1.1`.
 
 ---
 
@@ -39,7 +39,7 @@ PowerShell script for fully unattended installation of Microsoft Exchange Server
 Start the script without parameters to open the interactive installation menu:
 
 ```powershell
-.\Install-Exchange15.ps1
+.\EXpress.ps1
 ```
 
 The menu lets you select the installation mode and toggle all options. Press letter keys to toggle switches instantly; press Enter to start.
@@ -50,52 +50,52 @@ If a `config.psd1` file is found in the same folder as the script or `.exe`, you
 
 ```powershell
 # Install Mailbox role — interactive (Copilot mode)
-.\Install-Exchange15.ps1 -SourcePath D:\Exchange
+.\EXpress.ps1 -SourcePath D:\Exchange
 
 # Fully unattended with Autopilot (automatic reboots through all phases)
-.\Install-Exchange15.ps1 -SourcePath D:\Exchange -Autopilot
+.\EXpress.ps1 -SourcePath D:\Exchange -Autopilot
 
 # Load all parameters from a .psd1 config file (skips interactive menu)
-.\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1
+.\EXpress.ps1 -ConfigFile .\deploy-mbx01.psd1
 
 # Install prerequisites only, skip Exchange setup
-.\Install-Exchange15.ps1 -NoSetup -SourcePath D:\Exchange
+.\EXpress.ps1 -NoSetup -SourcePath D:\Exchange
 
 # Edge Transport role
-.\Install-Exchange15.ps1 -InstallEdge -SourcePath D:\Exchange
+.\EXpress.ps1 -InstallEdge -SourcePath D:\Exchange
 
 # Recover a server
-.\Install-Exchange15.ps1 -Recover -SourcePath D:\Exchange
+.\EXpress.ps1 -Recover -SourcePath D:\Exchange
 
 # Pre-flight report only (no installation)
-.\Install-Exchange15.ps1 -SourcePath D:\Exchange -PreflightOnly
+.\EXpress.ps1 -SourcePath D:\Exchange -PreflightOnly
 
 # Swing migration: copy config from source server, import PFX, join DAG
-.\Install-Exchange15.ps1 -SourcePath D:\Exchange -Autopilot `
+.\EXpress.ps1 -SourcePath D:\Exchange -Autopilot `
     -CopyServerConfig EX01 -CertificatePath D:\certs\mail.pfx -DAGName DAG01
 
 # Install Recipient Management Tools on an admin workstation
-.\Install-Exchange15.ps1 -InstallRecipientManagement -SourcePath D:\Exchange
+.\EXpress.ps1 -InstallRecipientManagement -SourcePath D:\Exchange
 
 # Install Exchange Management Tools only (Server OS)
-.\Install-Exchange15.ps1 -InstallManagementTools -SourcePath D:\Exchange
+.\EXpress.ps1 -InstallManagementTools -SourcePath D:\Exchange
 
 # Run all post-install optimizations on an existing Exchange server (no setup required)
-.\Install-Exchange15.ps1 -StandaloneOptimize -Namespace mail.contoso.com `
+.\EXpress.ps1 -StandaloneOptimize -Namespace mail.contoso.com `
     -CertificatePath C:\certs\mail.pfx -LogRetentionDays 30 `
     -RelaySubnets '10.0.1.0/24' -ExternalRelaySubnets '10.0.2.5'
 
 # Generate a Word document for the full organisation on an existing server (ad-hoc inventory)
-.\Install-Exchange15.ps1 -StandaloneDocument -Language DE
+.\EXpress.ps1 -StandaloneDocument -Language DE
 
 # Generate a customer-ready Word document — full org + all servers, sensitive values redacted
-.\Install-Exchange15.ps1 -StandaloneDocument -Language EN -CustomerDocument
+.\EXpress.ps1 -StandaloneDocument -Language EN -CustomerDocument
 
 # Document only org-wide configuration (no per-server hardware queries)
-.\Install-Exchange15.ps1 -StandaloneDocument -DocumentScope Org -Language DE
+.\EXpress.ps1 -StandaloneDocument -DocumentScope Org -Language DE
 
 # Document specific servers only in a large farm
-.\Install-Exchange15.ps1 -StandaloneDocument -IncludeServers EX01,EX02 -Language DE
+.\EXpress.ps1 -StandaloneDocument -IncludeServers EX01,EX02 -Language DE
 ```
 
 ### Compile to .exe (optional)
@@ -104,7 +104,7 @@ Use `Build.ps1` to compile the script into a self-contained Windows executable v
 
 ```powershell
 .\Build.ps1
-# Output: .\Install-Exchange15.exe (runs elevated, all parameters preserved)
+# Output: .\EXpress.exe (runs elevated, all parameters preserved)
 ```
 
 ---
@@ -330,7 +330,7 @@ The following best-practice configurations are automatically applied after Excha
 - **UAC/IE ESC re-enable before reports** — `Enable-UAC` and `Enable-IEESC` now run before `New-InstallationReport` and `New-InstallationDocument` in Phase 6, so the captured security state reflects the final hardened configuration.
 - **Word-document error diagnostics** — the `New-InstallationDocument` catch block now logs the failing script line number and a stack-trace verbose line (same detail level as `New-InstallationReport`).
 - **Autodiscover AppPool job: suppressed table output** — `Start-DisableMSExchangeAutodiscoverAppPoolJob` return value is now discarded by the caller; the verbose Id/Name/State/… table from `Start-Job` no longer clutters the console.
-- **Start-EXpress.cmd quickstart launcher** — new batch file in the repo root; opens an elevated PowerShell with `-NoExit` and runs `C:\install\Install-Exchange15.ps1 -Debug`, passing through additional arguments. Window stays open after exit for inspection.
+- **Start-EXpress.cmd quickstart launcher** — new batch file in the repo root; opens an elevated PowerShell with `-NoExit` and runs `C:\install\EXpress.ps1 -Debug`, passing through additional arguments. Window stays open after exit for inspection.
 
 ### v5.85 — April 2026
 - **Conditional Phase 2→3 reboot** — new `Test-RebootPending` helper (CBS / WindowsUpdate / `PendingFileRenameOperations` / pending rename / CCM ClientSDK) gates the Autopilot reboot between Phase 2 and Phase 3; when nothing reboot-relevant was installed (typical on WS2025 + Exchange SE where .NET 4.8.1 ships in-box), Phase 3 runs directly in the same process — saves one reboot cycle
@@ -574,7 +574,13 @@ Code quality and robustness improvements; no new parameters.
 - All reports (Preflight, Installation, RBAC, HealthChecker) written to `<InstallPath>\reports\`
 - With `-Autopilot`: AutoLogon is temporarily enabled and removed after next login
 - All downloads use BITS with `Invoke-WebDownload` fallback (PS 5.1-compatible, handles certificate bypass)
-- Pester tests (54 total): `Invoke-Pester .\Install-Exchange15.Tests.ps1 -Output Detailed` (requires Pester 5.x)
+- Pester tests (54 total): `Invoke-Pester .\EXpress.Tests.ps1 -Output Detailed` (requires Pester 5.x)
+
+---
+
+## Acknowledgement
+
+EXpress stands on the shoulders of giants. **Michel de Rooij's** [Install-Exchange15.ps1](http://eightwone.com) laid the groundwork — a solid, community-proven script that guided Exchange deployments for years. EXpress takes that legacy forward: full automation, security hardening, modular architecture, and a modern deployment experience. Thank you, [Michel](http://eightwone.com).
 
 ---
 
@@ -584,3 +590,4 @@ Code quality and robustness improvements; no new parameters.
 - [Exchange 2019 Prerequisites](https://learn.microsoft.com/en-us/exchange/plan-and-deploy/prerequisites)
 - [CSS-Exchange HealthChecker](https://github.com/microsoft/CSS-Exchange)
 - [eightwone.com Blog](http://eightwone.com)
+- [GitHub — st03psn/EXpress](https://github.com/st03psn/EXpress)

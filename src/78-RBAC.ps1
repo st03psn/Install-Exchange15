@@ -1,6 +1,6 @@
 ﻿    function Get-RBACReport {
         Write-MyOutput 'Generating RBAC role group membership report'
-        $reportPath = Join-Path $State['ReportsPath'] ('{0}_RBAC_{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $reportPath = Join-Path $State['ReportsPath'] ('{0}_EXpress_RBAC_{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
 
         $roleGroups = @(
             'Organization Management',
@@ -257,7 +257,7 @@
             param([string]$Status = '', [string]$LastKey = '')
             Clear-Host
             Write-Host ('=' * 62) -ForegroundColor Cyan
-            Write-Host ('  Install-Exchange15 v{0} — Exchange Optimizations' -f $script:ScriptVersion) -ForegroundColor Cyan
+            Write-Host ('  EXpress v{0} — Exchange Optimizations' -f $script:ScriptVersion) -ForegroundColor Cyan
             Write-Host ('=' * 62) -ForegroundColor Cyan
             Write-Host ''
             Write-Host '  Toggle optimizations to apply in Phase 5:' -ForegroundColor Yellow

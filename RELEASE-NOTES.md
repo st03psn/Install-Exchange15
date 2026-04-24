@@ -6,6 +6,28 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v1.0 (2026-04-24) — major release: EXpress rename + modularization
+
+### EXpress rename (formerly Install-Exchange15.ps1)
+
+- Script renamed `Install-Exchange15.ps1` → `EXpress.ps1`; tests renamed accordingly.
+- GitHub repository renamed: `st03psn/Install-Exchange15` → `st03psn/EXpress`.
+- `$ScriptVersion` jumps to `1.0` (new identity — not a continuation of v5.x numbering).
+- State file: `{PC}_State.xml` → `{PC}_EXpress_State.xml` (prevent conflict with legacy state files).
+- All generated output files gain `EXpress` as second filename segment: `{PC}_EXpress_{Tag}_...` (Install log, Preflight, Report, RBAC, Config, InstallDoc).
+- Menu headers, HTML/DOCX footers, and report branding updated to `EXpress v1.0`.
+- `Build.ps1`: now runs `Merge-Source.ps1` automatically before PS2Exe; new `-SkipMerge` switch; output is `EXpress.exe`.
+- README: renamed, URL updated, Michel de Rooij acknowledgement section added.
+
+### Modularization
+
+- Source split into 21 `src/*.ps1` modules with numeric load-order prefixes (`00-Constants.ps1` … `99-Main.ps1`).
+- Entry script `EXpress.ps1` uses `#region SOURCE-LOADER` for dev-mode dot-sourcing; `tools/Merge-Source.ps1` produces `dist/EXpress.ps1` for release.
+- `tools/Parse-Check.ps1` — AST syntax gate; runs against `dist/EXpress.ps1`.
+- `dist/EXpress.ps1` is byte-identical to the pre-split monolith (SHA256 verified).
+
+---
+
 ## v5.96 (2026-04-24) — feature
 
 ### F24 — Installation-Document Template (hybrid)
@@ -420,7 +442,7 @@ Phase 6 `New-InstallationDocument` catch block now writes the failing script lin
 
 ### Start-EXpress.cmd quickstart launcher
 
-New batch file in the repo root that opens an elevated PowerShell (`-NoExit -ExecutionPolicy Bypass -NoProfile -Debug`), changes to `C:\install`, and invokes `Install-Exchange15.ps1`. Additional arguments are forwarded. Window stays open after script exit for inspection.
+New batch file in the repo root that opens an elevated PowerShell (`-NoExit -ExecutionPolicy Bypass -NoProfile -Debug`), changes to `C:\install`, and invokes `EXpress.ps1`. Additional arguments are forwarded. Window stays open after script exit for inspection.
 
 ---
 
@@ -540,9 +562,9 @@ Download Domain value is now logged next to Namespace in the post-menu summary, 
 
 | Invocation | Tiers written |
 |---|---|
-| `.\Install-Exchange15.ps1` (default) | `INFO`, `WARNING`, `ERROR`, `EXE` |
-| `.\Install-Exchange15.ps1 -Verbose` | + `VERBOSE` |
-| `.\Install-Exchange15.ps1 -Debug` | + `DEBUG` + `SUPPRESSED-ERROR` lines |
+| `.\EXpress.ps1` (default) | `INFO`, `WARNING`, `ERROR`, `EXE` |
+| `.\EXpress.ps1 -Verbose` | + `VERBOSE` |
+| `.\EXpress.ps1 -Debug` | + `DEBUG` + `SUPPRESSED-ERROR` lines |
 
 **`SUPPRESSED-ERROR` in debug mode:** `Write-ToTranscript` snapshots `$Error.Count` and reconstructs every error that appeared since the previous call — including those silently swallowed by `try/catch`. Line format: `[SUPPRESSED-ERROR] (Exception.Type) at line N: <offending line> :: <message>`. Essential for diagnosing BITS / MSI / CIM failures that would otherwise leave no trace.
 

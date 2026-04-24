@@ -3,8 +3,8 @@
     EXpress — unattended Exchange Server 2016/2019/SE installation, hardening,
     post-configuration, documentation, and day-2 standalone modes.
 
-    Script file: Install-Exchange15.ps1
-    Version:     5.94.1
+    Script file: EXpress.ps1
+    Version:     1.0
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -56,13 +56,13 @@
       6 Services, IIS, DAG join, connectors, HealthChecker, HTML+PDF report,
         Word installation document, cleanup
 
-    State is persisted in `<computername>_State.xml` under InstallPath
+    State is persisted in `<computername>_EXpress_State.xml` under InstallPath
     (Export-Clixml); resumable across reboots. Credentials are DPAPI-
     encrypted (user+machine bound). Transcript is always written to disk;
     console output respects $State['LogVerbose'] / $State['LogDebug'].
 
     .LINK
-    https://github.com/st03psn/Install-Exchange15
+    https://github.com/st03psn/EXpress
 
     .LINK
     http://eightwone.com
@@ -668,79 +668,79 @@
 
     .EXAMPLE
     # Start interactively — opens the installation menu (mode, toggles, inputs)
-    .\Install-Exchange15.ps1
+    .\EXpress.ps1
 
     .EXAMPLE
     # Load all parameters from a config file (skips the interactive menu)
-    .\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1
+    .\EXpress.ps1 -ConfigFile .\deploy-mbx01.psd1
 
     .EXAMPLE
     # Fully unattended mailbox install with Autopilot (automatic reboots through all phases)
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -Organization Contoso -Autopilot
+    .\EXpress.ps1 -SourcePath D:\Exchange -Organization Contoso -Autopilot
 
     .EXAMPLE
     # Full install with custom DB paths, Autodiscover SCP, and certificate
     $Cred = Get-Credential
-    .\Install-Exchange15.ps1 -SourcePath C:\Install\ExchangeServerSE-x64.iso -Organization Contoso `
+    .\EXpress.ps1 -SourcePath C:\Install\ExchangeServerSE-x64.iso -Organization Contoso `
         -MDBName MDB01 -MDBDBPath D:\MailboxData\MDB01\DB -MDBLogPath D:\MailboxData\MDB01\Log `
         -SCP https://autodiscover.contoso.com/autodiscover/autodiscover.xml `
         -CertificatePath C:\Certs\mail.pfx -Autopilot -Credentials $Cred
 
     .EXAMPLE
     # Swing migration: copy config from source server, import PFX, join DAG
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -Autopilot `
+    .\EXpress.ps1 -SourcePath D:\Exchange -Autopilot `
         -CopyServerConfig EX01 -CertificatePath D:\Certs\mail.pfx -DAGName DAG01
 
     .EXAMPLE
     # Generate pre-flight HTML report only (no installation)
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -PreflightOnly
+    .\EXpress.ps1 -SourcePath D:\Exchange -PreflightOnly
 
     .EXAMPLE
     # Install prerequisites only, skip Exchange setup
-    .\Install-Exchange15.ps1 -NoSetup -SourcePath D:\Exchange
+    .\EXpress.ps1 -NoSetup -SourcePath D:\Exchange
 
     .EXAMPLE
     # Recover a failed server
-    .\Install-Exchange15.ps1 -Recover -SourcePath D:\Exchange -Autopilot
+    .\EXpress.ps1 -Recover -SourcePath D:\Exchange -Autopilot
 
     .EXAMPLE
     # Edge Transport role
-    .\Install-Exchange15.ps1 -InstallEdge -SourcePath D:\Exchange -Autopilot
+    .\EXpress.ps1 -InstallEdge -SourcePath D:\Exchange -Autopilot
 
     .EXAMPLE
     # Install Recipient Management Tools on an admin workstation
-    .\Install-Exchange15.ps1 -InstallRecipientManagement -SourcePath D:\Exchange -Autopilot
+    .\EXpress.ps1 -InstallRecipientManagement -SourcePath D:\Exchange -Autopilot
 
     .EXAMPLE
     # Install Exchange Management Tools only (Server OS)
-    .\Install-Exchange15.ps1 -InstallManagementTools -SourcePath D:\Exchange
+    .\EXpress.ps1 -InstallManagementTools -SourcePath D:\Exchange
 
     .EXAMPLE
     # Run all post-install optimizations on an existing Exchange server (no setup required)
-    .\Install-Exchange15.ps1 -StandaloneOptimize -Namespace mail.contoso.com `
+    .\EXpress.ps1 -StandaloneOptimize -Namespace mail.contoso.com `
         -CertificatePath C:\Certs\mail.pfx -LogRetentionDays 30 `
         -RelaySubnets '10.0.1.0/24' -ExternalRelaySubnets '10.0.2.5'
 
     .EXAMPLE
     # Generate the default English Word document for the full organisation (org + all servers) — ad-hoc on any Exchange server
-    .\Install-Exchange15.ps1 -StandaloneDocument
+    .\EXpress.ps1 -StandaloneDocument
 
     .EXAMPLE
     # Generate a German Word document (same scope) using the -German shorthand
-    .\Install-Exchange15.ps1 -StandaloneDocument -German
+    .\EXpress.ps1 -StandaloneDocument -German
 
     .EXAMPLE
     # Generate an English Word document masked for customer handover, scoped to two specific servers
-    .\Install-Exchange15.ps1 -StandaloneDocument -CustomerDocument `
+    .\EXpress.ps1 -StandaloneDocument -CustomerDocument `
         -DocumentScope All -IncludeServers EX01,EX02
 
     .EXAMPLE
     # Document only the org-wide configuration (no per-server hardware queries), German
-    .\Install-Exchange15.ps1 -StandaloneDocument -DocumentScope Org -German
+    .\EXpress.ps1 -StandaloneDocument -DocumentScope Org -German
 
     .EXAMPLE
     # Full mailbox install; suppress Word doc
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -Organization Contoso -Autopilot -NoWordDoc
+    .\EXpress.ps1 -SourcePath D:\Exchange -Organization Contoso -Autopilot -NoWordDoc
 
 #>
 [cmdletbinding(DefaultParameterSetName = 'Autopilot')]

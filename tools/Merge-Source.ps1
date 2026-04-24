@@ -1,8 +1,8 @@
 #Requires -Version 5.1
 param(
-    [string]$EntryScript   = (Join-Path (Split-Path $PSScriptRoot) 'Install-Exchange15.ps1'),
+    [string]$EntryScript   = (Join-Path (Split-Path $PSScriptRoot) 'EXpress.ps1'),
     [string]$SrcDir        = (Join-Path (Split-Path $PSScriptRoot) 'src'),
-    [string]$Output        = (Join-Path (Split-Path $PSScriptRoot) 'dist\Install-Exchange15.ps1'),
+    [string]$Output        = (Join-Path (Split-Path $PSScriptRoot) 'dist\EXpress.ps1'),
     [string]$ReferenceFile = '',
     [switch]$Quiet
 )

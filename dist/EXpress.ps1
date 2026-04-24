@@ -3,8 +3,8 @@
     EXpress — unattended Exchange Server 2016/2019/SE installation, hardening,
     post-configuration, documentation, and day-2 standalone modes.
 
-    Script file: Install-Exchange15.ps1
-    Version:     5.94.1
+    Script file: EXpress.ps1
+    Version:     1.0
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -56,13 +56,13 @@
       6 Services, IIS, DAG join, connectors, HealthChecker, HTML+PDF report,
         Word installation document, cleanup
 
-    State is persisted in `<computername>_State.xml` under InstallPath
+    State is persisted in `<computername>_EXpress_State.xml` under InstallPath
     (Export-Clixml); resumable across reboots. Credentials are DPAPI-
     encrypted (user+machine bound). Transcript is always written to disk;
     console output respects $State['LogVerbose'] / $State['LogDebug'].
 
     .LINK
-    https://github.com/st03psn/Install-Exchange15
+    https://github.com/st03psn/EXpress
 
     .LINK
     http://eightwone.com
@@ -668,79 +668,79 @@
 
     .EXAMPLE
     # Start interactively — opens the installation menu (mode, toggles, inputs)
-    .\Install-Exchange15.ps1
+    .\EXpress.ps1
 
     .EXAMPLE
     # Load all parameters from a config file (skips the interactive menu)
-    .\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1
+    .\EXpress.ps1 -ConfigFile .\deploy-mbx01.psd1
 
     .EXAMPLE
     # Fully unattended mailbox install with Autopilot (automatic reboots through all phases)
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -Organization Contoso -Autopilot
+    .\EXpress.ps1 -SourcePath D:\Exchange -Organization Contoso -Autopilot
 
     .EXAMPLE
     # Full install with custom DB paths, Autodiscover SCP, and certificate
     $Cred = Get-Credential
-    .\Install-Exchange15.ps1 -SourcePath C:\Install\ExchangeServerSE-x64.iso -Organization Contoso `
+    .\EXpress.ps1 -SourcePath C:\Install\ExchangeServerSE-x64.iso -Organization Contoso `
         -MDBName MDB01 -MDBDBPath D:\MailboxData\MDB01\DB -MDBLogPath D:\MailboxData\MDB01\Log `
         -SCP https://autodiscover.contoso.com/autodiscover/autodiscover.xml `
         -CertificatePath C:\Certs\mail.pfx -Autopilot -Credentials $Cred
 
     .EXAMPLE
     # Swing migration: copy config from source server, import PFX, join DAG
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -Autopilot `
+    .\EXpress.ps1 -SourcePath D:\Exchange -Autopilot `
         -CopyServerConfig EX01 -CertificatePath D:\Certs\mail.pfx -DAGName DAG01
 
     .EXAMPLE
     # Generate pre-flight HTML report only (no installation)
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -PreflightOnly
+    .\EXpress.ps1 -SourcePath D:\Exchange -PreflightOnly
 
     .EXAMPLE
     # Install prerequisites only, skip Exchange setup
-    .\Install-Exchange15.ps1 -NoSetup -SourcePath D:\Exchange
+    .\EXpress.ps1 -NoSetup -SourcePath D:\Exchange
 
     .EXAMPLE
     # Recover a failed server
-    .\Install-Exchange15.ps1 -Recover -SourcePath D:\Exchange -Autopilot
+    .\EXpress.ps1 -Recover -SourcePath D:\Exchange -Autopilot
 
     .EXAMPLE
     # Edge Transport role
-    .\Install-Exchange15.ps1 -InstallEdge -SourcePath D:\Exchange -Autopilot
+    .\EXpress.ps1 -InstallEdge -SourcePath D:\Exchange -Autopilot
 
     .EXAMPLE
     # Install Recipient Management Tools on an admin workstation
-    .\Install-Exchange15.ps1 -InstallRecipientManagement -SourcePath D:\Exchange -Autopilot
+    .\EXpress.ps1 -InstallRecipientManagement -SourcePath D:\Exchange -Autopilot
 
     .EXAMPLE
     # Install Exchange Management Tools only (Server OS)
-    .\Install-Exchange15.ps1 -InstallManagementTools -SourcePath D:\Exchange
+    .\EXpress.ps1 -InstallManagementTools -SourcePath D:\Exchange
 
     .EXAMPLE
     # Run all post-install optimizations on an existing Exchange server (no setup required)
-    .\Install-Exchange15.ps1 -StandaloneOptimize -Namespace mail.contoso.com `
+    .\EXpress.ps1 -StandaloneOptimize -Namespace mail.contoso.com `
         -CertificatePath C:\Certs\mail.pfx -LogRetentionDays 30 `
         -RelaySubnets '10.0.1.0/24' -ExternalRelaySubnets '10.0.2.5'
 
     .EXAMPLE
     # Generate the default English Word document for the full organisation (org + all servers) — ad-hoc on any Exchange server
-    .\Install-Exchange15.ps1 -StandaloneDocument
+    .\EXpress.ps1 -StandaloneDocument
 
     .EXAMPLE
     # Generate a German Word document (same scope) using the -German shorthand
-    .\Install-Exchange15.ps1 -StandaloneDocument -German
+    .\EXpress.ps1 -StandaloneDocument -German
 
     .EXAMPLE
     # Generate an English Word document masked for customer handover, scoped to two specific servers
-    .\Install-Exchange15.ps1 -StandaloneDocument -CustomerDocument `
+    .\EXpress.ps1 -StandaloneDocument -CustomerDocument `
         -DocumentScope All -IncludeServers EX01,EX02
 
     .EXAMPLE
     # Document only the org-wide configuration (no per-server hardware queries), German
-    .\Install-Exchange15.ps1 -StandaloneDocument -DocumentScope Org -German
+    .\EXpress.ps1 -StandaloneDocument -DocumentScope Org -German
 
     .EXAMPLE
     # Full mailbox install; suppress Word doc
-    .\Install-Exchange15.ps1 -SourcePath D:\Exchange -Organization Contoso -Autopilot -NoWordDoc
+    .\EXpress.ps1 -SourcePath D:\Exchange -Organization Contoso -Autopilot -NoWordDoc
 
 #>
 [cmdletbinding(DefaultParameterSetName = 'Autopilot')]
@@ -1042,7 +1042,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.96'
+    $ScriptVersion = '1.0'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -2212,7 +2212,7 @@ process {
         }
     }
 
-    function Install-Exchange15_ {
+    function Install-EXpress_ {
         $ver = $State['MajorSetupVersion']
         Write-MyOutput "Installing Microsoft Exchange Server ($ver)"
         $PresenceKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{CD981244-E9B8-405A-9026-6AEB9DCEF1F1}'
@@ -3058,7 +3058,7 @@ process {
         }
 
         # Generate HTML report
-        $reportPath = Join-Path $State['ReportsPath'] ('{0}_Preflight_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $reportPath = Join-Path $State['ReportsPath'] ('{0}_EXpress_Preflight_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $failCount = ($results | Where-Object { $_.Status -eq 'FAIL' }).Count
         $warnCount = ($results | Where-Object { $_.Status -eq 'WARN' }).Count
         $statusColor = if ($failCount -gt 0) { '#dc3545' } elseif ($warnCount -gt 0) { '#ffc107' } else { '#28a745' }
@@ -3104,7 +3104,7 @@ $($htmlRows -join "`n")
     function Export-SourceServerConfig {
         param([string]$SourceServer)
         Write-MyOutput ('Exporting configuration from source server {0}' -f $SourceServer)
-        $configPath = Join-Path $State['InstallPath'] ('{0}_Config.xml' -f $SourceServer)
+        $configPath = Join-Path $State['InstallPath'] ('{0}_EXpress_Config.xml' -f $SourceServer)
 
         try {
             $session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri ('http://{0}/PowerShell/' -f $SourceServer) -Authentication Kerberos -ErrorAction Stop
@@ -3435,7 +3435,7 @@ $($htmlRows -join "`n")
         $logFolder  = Join-Path $scriptFolder 'logs'
 
         $cleanupScript = @"
-# Exchange Log Cleanup Script — generated by Install-Exchange15.ps1
+# Exchange Log Cleanup Script — generated by EXpress.ps1
 # Runs daily via Scheduled Task; retention: $days days for Exchange/IIS logs, 30 days for own logs
 
 param([int]`$DaysToKeep = $days)
@@ -5148,7 +5148,7 @@ Write-Log 'Exchange log cleanup finished'
 
     function New-InstallationReport {
         Write-MyOutput 'Generating Installation Report'
-        $reportPath = Join-Path $State['ReportsPath'] ('{0}_Report_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $reportPath = Join-Path $State['ReportsPath'] ('{0}_EXpress_Report_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $reportDate = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
         function Format-Badge($text, $type) {
@@ -5162,7 +5162,7 @@ Write-Log 'Exchange log cleanup finished'
         # ── 1. INSTALLATION PARAMETERS ────────────────────────────────────────
         $instRows = [System.Collections.Generic.List[string]]::new()
         $instMode = if ($State['InstallEdge']) { 'Edge Transport' } elseif ($State['InstallRecipientManagement']) { 'Recipient Management Tools' } elseif ($State['InstallManagementTools']) { 'Management Tools' } elseif ($State['StandaloneOptimize']) { 'Standalone Optimize' } elseif ($State['NoSetup']) { 'Optimization Only' } else { 'Mailbox Server' }
-        $instRows.Add('<tr><td>Script Version</td><td>Install-Exchange15.ps1 v{0}</td></tr>' -f $ScriptVersion)
+        $instRows.Add('<tr><td>Script Version</td><td>EXpress v{0}</td></tr>' -f $ScriptVersion)
         $instRows.Add('<tr><td>Report Generated</td><td>{0}</td></tr>' -f $reportDate)
         $instRows.Add('<tr><td>Server</td><td>{0}</td></tr>' -f $env:COMPUTERNAME)
         $instRows.Add('<tr><td>Installation Mode</td><td>{0}</td></tr>' -f $instMode)
@@ -5825,7 +5825,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
   <div class="logo">Ex</div>
   <div>
     <h1>Exchange Server Installation Report</h1>
-    <div style="font-size:12px;opacity:.65;margin-top:4px">Generated by Install-Exchange15.ps1 v$ScriptVersion</div>
+    <div style="font-size:12px;opacity:.65;margin-top:4px">Generated by EXpress v$ScriptVersion</div>
   </div>
 </header>
 <div class="summary-bar">
@@ -5838,7 +5838,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
   <nav class="toc">$($toc -join '')</nav>
   <main>$($sections -join '')</main>
 </div>
-<footer>Exchange Server Installation Report &bull; $env:COMPUTERNAME &bull; $reportDate &bull; Install-Exchange15.ps1 v$ScriptVersion &bull; promiseIT</footer>
+<footer>Exchange Server Installation Report &bull; $env:COMPUTERNAME &bull; $reportDate &bull; EXpress v$ScriptVersion</footer>
 </body>
 </html>
 "@
@@ -6337,7 +6337,7 @@ $body
         $includeFilter = if ($State['IncludeServers']) { @($State['IncludeServers'] -split ',') } else { @() }
         $isAdHoc       = [bool]$State['StandaloneDocument'] -and -not $State['InstallPhase']
         $docStem  = if ($DE) { 'ExchangeServer-Dokumentation' } else { 'ExchangeServer-Documentation' }
-        $docPath  = Join-Path $State['ReportsPath'] ('{0}_{1}_{2}_{3}.docx' -f $env:COMPUTERNAME, $docStem, $lang, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $docPath  = Join-Path $State['ReportsPath'] ('{0}_EXpress_{1}_{2}_{3}.docx' -f $env:COMPUTERNAME, $docStem, $lang, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $docTitle = if ($DE) { 'Exchange Server Installationsdokumentation' } else { 'Exchange Server Installation Documentation' }
         Write-MyOutput ('Generating Word Installation Document ({0}): {1}' -f $lang, $docPath)
 
@@ -7749,7 +7749,7 @@ $body
 
     function Get-RBACReport {
         Write-MyOutput 'Generating RBAC role group membership report'
-        $reportPath = Join-Path $State['ReportsPath'] ('{0}_RBAC_{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $reportPath = Join-Path $State['ReportsPath'] ('{0}_EXpress_RBAC_{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
 
         $roleGroups = @(
             'Organization Management',
@@ -8006,7 +8006,7 @@ $body
             param([string]$Status = '', [string]$LastKey = '')
             Clear-Host
             Write-Host ('=' * 62) -ForegroundColor Cyan
-            Write-Host ('  Install-Exchange15 v{0} — Exchange Optimizations' -f $script:ScriptVersion) -ForegroundColor Cyan
+            Write-Host ('  EXpress v{0} — Exchange Optimizations' -f $script:ScriptVersion) -ForegroundColor Cyan
             Write-Host ('=' * 62) -ForegroundColor Cyan
             Write-Host ''
             Write-Host '  Toggle optimizations to apply in Phase 5:' -ForegroundColor Yellow
@@ -10471,7 +10471,7 @@ $body
             param([int]$Mode, [hashtable]$ToggState, [string]$StatusMsg = '', [array]$ExtraDisabled = @(), [int]$AdvCount = 0)
             Clear-Host
             Write-MenuLine ('=' * 60) Cyan
-            Write-MenuLine ('  Install-Exchange15 v{0}  —  Copilot' -f $ScriptVersion) Cyan
+            Write-MenuLine ('  EXpress v{0}  —  Copilot' -f $ScriptVersion) Cyan
             Write-MenuLine ('=' * 60) Cyan
             Write-Host ''
             Write-MenuLine '  Installation Mode:' Yellow
@@ -10603,7 +10603,7 @@ $body
         # --- Step 3: String inputs (context-dependent) ---
         Clear-Host
         Write-MenuLine ('=' * 60) Cyan
-        Write-MenuLine ("  Install-Exchange15 v{0} - Mode: {1}" -f $ScriptVersion, $modes[$selectedMode]) Cyan
+        Write-MenuLine ("  EXpress v{0} - Mode: {1}" -f $ScriptVersion, $modes[$selectedMode]) Cyan
         Write-MenuLine ('=' * 60) Cyan
         Write-Host ''
         Write-MenuLine '  Enter values (leave blank for default, shown in [brackets]):' Yellow
@@ -10836,7 +10836,7 @@ $body
     $FullOSVersion  = '{0}.{1}' -f $MajorOSVersion, $MinorOSVersion
 
     $State = @{}
-    $StateFile = "$InstallPath\$($env:computerName)_State.xml"
+    $StateFile = "$InstallPath\$($env:computerName)_EXpress_State.xml"
     $State = Restore-State
     # Ensure reports folder exists on Autopilot resume (state restored from XML)
     if ($State['ReportsPath'] -and -not (Test-Path $State['ReportsPath'])) {
@@ -10875,7 +10875,7 @@ $body
     $earlyReports = if ($State['ReportsPath']) { $State['ReportsPath'] } else { Join-Path $InstallPath 'reports' }
     if (-not (Test-Path $earlyReports)) { New-Item -Path $earlyReports -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null }
     if (-not $State['TranscriptFile']) {
-        $State['TranscriptFile'] = Join-Path $earlyReports ('{0}_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $State['TranscriptFile'] = Join-Path $earlyReports ('{0}_EXpress_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
     }
     if ($State['LogVerbose'] -or $State['LogDebug']) {
         $tier = if ($State['LogDebug']) { 'DEBUG' } else { 'VERBOSE' }
@@ -11013,7 +11013,7 @@ $body
             $RelaySubnets        = $menuResult['RelaySubnets']
             $ExternalRelaySubnets = $menuResult['ExternalRelaySubnets']
             # Reload state file path with potentially updated InstallPath
-            $StateFile = "$InstallPath\$($env:computerName)_State.xml"
+            $StateFile = "$InstallPath\$($env:computerName)_EXpress_State.xml"
 
             # Log confirmed menu selection (here in the caller so Write-MyOutput / Write-MyVerbose
             # don't pollute Show-InstallationMenu's return pipeline with extra string values).
@@ -11177,7 +11177,7 @@ $body
             }
 
             # Recalculate state file path with potentially overridden InstallPath
-            $StateFile = "$InstallPath\$($env:computerName)_State.xml"
+            $StateFile = "$InstallPath\$($env:computerName)_EXpress_State.xml"
             Write-MyOutput "Configuration loaded: mode=$(if ($InstallEdge){'Edge'}elseif($Recover){'Recovery'}else{'Mailbox'}), source=$SourcePath, org=$Organization"
         }
         elseif ( $($PsCmdlet.ParameterSetName) -eq "Autopilot") {
@@ -11268,7 +11268,7 @@ $body
         # TranscriptFile may have been pre-seeded by the early block; keep that so pre-menu
         # messages end up in the same single log file.
         if (-not $State["TranscriptFile"]) {
-            $State["TranscriptFile"] = Join-Path $State["ReportsPath"] ('{0}_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            $State["TranscriptFile"] = Join-Path $State["ReportsPath"] ('{0}_EXpress_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         }
         $State["PreflightOnly"] = $PreflightOnly
         $State["CopyServerConfig"] = $CopyServerConfig
@@ -11743,7 +11743,7 @@ $body
 
                 $null = Start-DisableMSExchangeAutodiscoverAppPoolJob
 
-                Install-Exchange15_
+                Install-EXpress_
 
                 # Cleanup any background jobs
                 Stop-BackgroundJobs

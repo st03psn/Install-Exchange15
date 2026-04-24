@@ -30,7 +30,7 @@
     $FullOSVersion  = '{0}.{1}' -f $MajorOSVersion, $MinorOSVersion
 
     $State = @{}
-    $StateFile = "$InstallPath\$($env:computerName)_State.xml"
+    $StateFile = "$InstallPath\$($env:computerName)_EXpress_State.xml"
     $State = Restore-State
     # Ensure reports folder exists on Autopilot resume (state restored from XML)
     if ($State['ReportsPath'] -and -not (Test-Path $State['ReportsPath'])) {
@@ -69,7 +69,7 @@
     $earlyReports = if ($State['ReportsPath']) { $State['ReportsPath'] } else { Join-Path $InstallPath 'reports' }
     if (-not (Test-Path $earlyReports)) { New-Item -Path $earlyReports -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null }
     if (-not $State['TranscriptFile']) {
-        $State['TranscriptFile'] = Join-Path $earlyReports ('{0}_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+        $State['TranscriptFile'] = Join-Path $earlyReports ('{0}_EXpress_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
     }
     if ($State['LogVerbose'] -or $State['LogDebug']) {
         $tier = if ($State['LogDebug']) { 'DEBUG' } else { 'VERBOSE' }
@@ -207,7 +207,7 @@
             $RelaySubnets        = $menuResult['RelaySubnets']
             $ExternalRelaySubnets = $menuResult['ExternalRelaySubnets']
             # Reload state file path with potentially updated InstallPath
-            $StateFile = "$InstallPath\$($env:computerName)_State.xml"
+            $StateFile = "$InstallPath\$($env:computerName)_EXpress_State.xml"
 
             # Log confirmed menu selection (here in the caller so Write-MyOutput / Write-MyVerbose
             # don't pollute Show-InstallationMenu's return pipeline with extra string values).
@@ -371,7 +371,7 @@
             }
 
             # Recalculate state file path with potentially overridden InstallPath
-            $StateFile = "$InstallPath\$($env:computerName)_State.xml"
+            $StateFile = "$InstallPath\$($env:computerName)_EXpress_State.xml"
             Write-MyOutput "Configuration loaded: mode=$(if ($InstallEdge){'Edge'}elseif($Recover){'Recovery'}else{'Mailbox'}), source=$SourcePath, org=$Organization"
         }
         elseif ( $($PsCmdlet.ParameterSetName) -eq "Autopilot") {
@@ -462,7 +462,7 @@
         # TranscriptFile may have been pre-seeded by the early block; keep that so pre-menu
         # messages end up in the same single log file.
         if (-not $State["TranscriptFile"]) {
-            $State["TranscriptFile"] = Join-Path $State["ReportsPath"] ('{0}_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            $State["TranscriptFile"] = Join-Path $State["ReportsPath"] ('{0}_EXpress_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         }
         $State["PreflightOnly"] = $PreflightOnly
         $State["CopyServerConfig"] = $CopyServerConfig
@@ -937,7 +937,7 @@
 
                 $null = Start-DisableMSExchangeAutodiscoverAppPoolJob
 
-                Install-Exchange15_
+                Install-EXpress_
 
                 # Cleanup any background jobs
                 Stop-BackgroundJobs

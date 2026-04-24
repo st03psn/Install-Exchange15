@@ -395,7 +395,7 @@
             param([int]$Mode, [hashtable]$ToggState, [string]$StatusMsg = '', [array]$ExtraDisabled = @(), [int]$AdvCount = 0)
             Clear-Host
             Write-MenuLine ('=' * 60) Cyan
-            Write-MenuLine ('  Install-Exchange15 v{0}  —  Copilot' -f $ScriptVersion) Cyan
+            Write-MenuLine ('  EXpress v{0}  —  Copilot' -f $ScriptVersion) Cyan
             Write-MenuLine ('=' * 60) Cyan
             Write-Host ''
             Write-MenuLine '  Installation Mode:' Yellow
@@ -527,7 +527,7 @@
         # --- Step 3: String inputs (context-dependent) ---
         Clear-Host
         Write-MenuLine ('=' * 60) Cyan
-        Write-MenuLine ("  Install-Exchange15 v{0} - Mode: {1}" -f $ScriptVersion, $modes[$selectedMode]) Cyan
+        Write-MenuLine ("  EXpress v{0} - Mode: {1}" -f $ScriptVersion, $modes[$selectedMode]) Cyan
         Write-MenuLine ('=' * 60) Cyan
         Write-Host ''
         Write-MenuLine '  Enter values (leave blank for default, shown in [brackets]):' Yellow

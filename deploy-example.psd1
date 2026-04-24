@@ -1,7 +1,7 @@
 #
-# Install-Exchange15.ps1 — Configuration file example
+# EXpress.ps1 — Configuration file example
 #
-# Usage:  .\Install-Exchange15.ps1 -ConfigFile .\deploy-mbx01.psd1
+# Usage:  .\EXpress.ps1 -ConfigFile .\deploy-mbx01.psd1
 #
 # The interactive menu is automatically skipped when -ConfigFile is used.
 # Parameters specified on the command line take precedence over the config file.
@@ -62,7 +62,7 @@
     # The nested 'AdvancedFeatures' block replaces the old flat top-level keys
     # (DisableSSL3, EnableECC, …). Omitted entries keep their catalog default
     # — equivalent to current v5.x behaviour. See Get-AdvancedFeatureCatalog
-    # in Install-Exchange15.ps1 for the full list.
+    # in EXpress.ps1 for the full list.
     #
     # Precedence: AdvancedFeatures nested block > legacy top-level key
     #             > -<Name> cmdline switch > catalog default.

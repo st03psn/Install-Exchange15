@@ -10,15 +10,15 @@
 
 .PARAMETER Path
     Path to the .ps1 file to check.
-    Defaults to dist/Install-Exchange15.ps1.
+    Defaults to dist/EXpress.ps1.
 
 .EXAMPLE
     .\tools\Parse-Check.ps1
-    .\tools\Parse-Check.ps1 -Path .\Install-Exchange15.ps1
+    .\tools\Parse-Check.ps1 -Path .\EXpress.ps1
 #>
 [CmdletBinding()]
 param(
-    [string]$Path = (Join-Path (Split-Path $PSScriptRoot) 'dist\Install-Exchange15.ps1')
+    [string]$Path = (Join-Path (Split-Path $PSScriptRoot) 'dist\EXpress.ps1')
 )
 $ErrorActionPreference = 'Stop'
 

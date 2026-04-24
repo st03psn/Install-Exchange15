@@ -1,4 +1,4 @@
-﻿    function Install-Exchange15_ {
+﻿    function Install-EXpress_ {
         $ver = $State['MajorSetupVersion']
         Write-MyOutput "Installing Microsoft Exchange Server ($ver)"
         $PresenceKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{CD981244-E9B8-405A-9026-6AEB9DCEF1F1}'
