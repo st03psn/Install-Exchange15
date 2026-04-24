@@ -6,6 +6,22 @@ Full version history for EXpress. See [README.md](README.md) for overview and qu
 
 ---
 
+## v1.1.8 (2026-04-24) — bugfix / enhancement release
+
+- **Word Installation Document: phantom certificates** — Certificates with `NotAfter = DateTime.MinValue` (year 0001) leaked through into the Word doc certificate table as in the HTML report. Filtered at source in `Get-ServerReportData` (Thumbprint empty or `NotAfter ≤ 1970-01-01`) and belt-and-suspenders in `New-InstallationDocument`.
+- **Word Installation Document: readable Exchange version** — Sections 5.x.1 (per-server identity) and Section 7 (installation table) now show the friendly version string (e.g. "Exchange Server 2019 Cumulative Update 15") alongside the build number. Evaluation/Trial editions show a prominent warning note.
+- **Word Installation Document: Extended Protection per VDir** — Section 5.x.4 (Virtual Directories) table now includes an EP column with `None`/`Allow`/`Require` per service (integer values 0/1/2 normalized to enum name).
+- **Word Installation Document: hardware type and time zone** — Section 5.x.2 (System Details) now shows hardware type (VMware/Hyper-V/KVM/Physical with manufacturer+model), time zone (StandardName + Caption), and uptime in days alongside the last boot timestamp.
+- **Word Installation Document: NIC driver details** — Section 5.x.2 now includes NIC driver version, driver date, and link speed rows from `Get-NetAdapter`.
+- **Word Installation Document: VC++ runtime table** — Section 7 now includes a dedicated table of installed Visual C++ Redistributables (package name, version, install date) for HC compliance verification.
+- **Word Installation Document: TLS cipher suite inventory** — Section 8.1 now includes a table of active TLS cipher suites from `Get-TlsCipherSuite` (suite name, key exchange, hash, algorithm).
+- **Word Installation Document: HSTS and Download Domains** — Section 8.4 now includes HSTS (`Strict-Transport-Security` IIS header value) and CVE-2021-1730 Download Domains status (`EnableDownloadDomains` + configured domain).
+- **HTML report: hardware type, time zone, readable Exchange version** — Server detail section now shows hardware type (VMware/Hyper-V/Physical), time zone, and friendly Exchange version string alongside the build number.
+- **HTML report: per-VDir Extended Protection table** — Security section now shows a dedicated inline table with EP status per virtual directory (OWA/ECP/EWS/OAB/EAS/MAPI/Autodiscover).
+- **HTML report: HSTS and Download Domains** — Security section now shows the IIS `Strict-Transport-Security` header value and CVE-2021-1730 `EnableDownloadDomains` org flag + configured domain.
+
+---
+
 ## v1.1.7 (2026-04-24) — bugfix release
 
 - **HTML report: phantom certificates** — `Get-ExchangeCertificate` returns entries with `NotAfter = DateTime.MinValue` (year 0001) and empty Subject/Thumbprint for internal/orphan certificate objects. These were rendered as "Expires -739729d!" rows with blank cells and inflated the "expiring within 90 days" summary count. Phantom entries are now filtered before processing.

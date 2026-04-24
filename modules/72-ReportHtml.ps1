@@ -55,6 +55,16 @@
         try {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
             $sysRows.Add(('<tr><td>Computer Name (FQDN)</td><td>{0}.{1}</td><td></td></tr>' -f $cs.DNSHostName, $cs.Domain))
+            $hwType = if ($cs.Manufacturer -like '*VMware*' -or $cs.Model -like '*VMware*') { 'Virtual — VMware' }
+                      elseif ($cs.Manufacturer -like '*Microsoft*' -and $cs.Model -like '*Virtual*') { 'Virtual — Hyper-V' }
+                      elseif ($cs.Manufacturer -like '*QEMU*' -or $cs.Model -like '*KVM*') { 'Virtual — KVM/QEMU' }
+                      elseif ($cs.HypervisorPresent) { 'Virtual — unknown hypervisor' }
+                      else { 'Physical ({0} {1})' -f $cs.Manufacturer.Trim(), $cs.Model.Trim() }
+            $sysRows.Add(('<tr><td>Hardware Type</td><td>{0}</td><td></td></tr>' -f $hwType))
+        } catch { }
+        try {
+            $tz = Get-CimInstance Win32_TimeZone -ErrorAction Stop
+            $sysRows.Add(('<tr><td>Time Zone</td><td>{0}</td><td></td></tr>' -f $tz.Caption))
         } catch { }
         # Volumes — exclude DVD-ROM and removable drives
         try {
@@ -118,7 +128,8 @@
         try {
             $exSrv = Get-ExchangeServer $env:COMPUTERNAME -ErrorAction Stop
             $exVersion = $exSrv.AdminDisplayVersion.ToString()
-            $exRows.Add('<tr><td>Exchange Version</td><td>{0}</td><td></td></tr>' -f $exSrv.AdminDisplayVersion)
+            $exReadable = Get-SetupTextVersion $State['SetupVersion']
+            $exRows.Add(('<tr><td>Exchange Version</td><td>{0}</td><td>{1}</td></tr>' -f $exSrv.AdminDisplayVersion, $exReadable))
             $exRows.Add('<tr><td>Server Role</td><td>{0}</td><td></td></tr>' -f ($exSrv.ServerRole -join ', '))
             $exRows.Add('<tr><td>Edition</td><td>{0}</td><td></td></tr>' -f $exSrv.Edition)
             $exRows.Add('<tr><td>AD Site</td><td>{0}</td><td></td></tr>' -f $exSrv.Site)
@@ -348,6 +359,64 @@
                     $epBadge = if ($epVal -in 'Require','Allow') { Format-Badge "$epVal ✓" 'ok' } else { Format-Badge "$epVal (risk)" 'warn' }
                     $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0} — {1}</td><td>Require or Allow</td><td>{2}</td><td>{3}</td><td>MS Exchange</td></tr>' -f $siteLabel, $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
                 }
+            } catch { }
+        }
+
+        # Extended Protection — per-VDir breakdown (Frontend only; Back End EP=None by design)
+        if (-not $State['InstallEdge']) {
+            try {
+                $epCmdlets = @(
+                    @{ Name='OWA';         Get={ @(Get-OwaVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='ECP';         Get={ @(Get-EcpVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='EWS';         Get={ @(Get-WebServicesVirtualDirectory  -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='OAB';         Get={ @(Get-OabVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='ActiveSync';  Get={ @(Get-ActiveSyncVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='MAPI';        Get={ @(Get-MapiVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='PowerShell';  Get={ @(Get-PowerShellVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                )
+                $epVdirRows = [System.Collections.Generic.List[string]]::new()
+                foreach ($ep in $epCmdlets) {
+                    try {
+                        $vd = & $ep.Get | Select-Object -First 1
+                        if ($vd) {
+                            $epv = [string]$vd.ExtendedProtectionTokenChecking
+                            if ([string]::IsNullOrEmpty($epv)) { $epv = 'None' }
+                            if ($epv -eq '2') { $epv = 'Require' } elseif ($epv -eq '1') { $epv = 'Allow' } elseif ($epv -eq '0') { $epv = 'None' }
+                            $epvBadge = if ($epv -in 'Require','Allow') { Format-Badge $epv 'ok' } else { Format-Badge "$epv" 'warn' }
+                            $epVdirRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f $ep.Name, $epv, $epvBadge))
+                        }
+                    } catch { }
+                }
+                if ($epVdirRows.Count -gt 0) {
+                    $secRows.Add(('<tr><td>Extended Protection (per VDir)</td><td colspan="4"><table style="width:100%;font-size:12px"><tr><th style="text-align:left">VDir</th><th style="text-align:left">Setting</th><th style="text-align:left">Status</th></tr>{0}</table></td><td>MS Exchange</td></tr>' -f ($epVdirRows -join '')))
+                }
+            } catch { }
+        }
+
+        # HSTS (Strict-Transport-Security header on OWA/ECP)
+        if (-not $State['InstallEdge']) {
+            try {
+                Import-Module WebAdministration -ErrorAction Stop
+                $hstsSite  = 'IIS:\Sites\Default Web Site'
+                $hstsFilter = 'system.webServer/httpProtocol/customHeaders/add[@name="Strict-Transport-Security"]'
+                $hstsOk = 0; $hstsVdirs = @('owa','ecp')
+                foreach ($hv in $hstsVdirs) {
+                    $hx = Get-WebConfigurationProperty -PSPath "$hstsSite\$hv" -Filter $hstsFilter -Name '.' -ErrorAction SilentlyContinue
+                    if ($hx) { $hstsOk++ }
+                }
+                $hstsBadge = if ($hstsOk -eq $hstsVdirs.Count) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge ('{0}/{1} configured' -f $hstsOk, $hstsVdirs.Count) 'warn' }
+                $secRows.Add(('<tr><td>HSTS (OWA/ECP)</td><td>{0}/{1} virtual directories</td><td>Enabled (max-age=31536000)</td><td>{2}</td><td>{3}</td><td>CIS / BSI</td></tr>' -f $hstsOk, $hstsVdirs.Count, $hstsBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/iis/configuration/system.webserver/security/requestfiltering/alwaysallowedurls/' 'IIS Docs')))
+            } catch { }
+        }
+
+        # OWA Download Domains (CVE-2021-1730)
+        if (-not $State['InstallEdge']) {
+            try {
+                $orgCfgDL = Get-OrganizationConfig -ErrorAction Stop
+                $dlEnabled = $orgCfgDL.EnableDownloadDomains
+                $dlBadge = if ($dlEnabled) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge 'Not enabled (CVE-2021-1730)' 'warn' }
+                $dlDomainInfo = if ($State['DownloadDomain']) { $State['DownloadDomain'] } else { '(not configured)' }
+                $secRows.Add(('<tr><td>OWA Download Domains</td><td>Org flag: {0} / Domain: {1}</td><td>EnableDownloadDomains = True + separate download FQDN</td><td>{2}</td><td>{3}</td><td>CVE-2021-1730</td></tr>' -f $dlEnabled, $dlDomainInfo, $dlBadge, (Format-RefLink 'https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-1730' 'MSRC')))
             } catch { }
         }
 

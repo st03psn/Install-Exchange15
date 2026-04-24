@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.1.7
+    Version:     1.1.8
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -5246,8 +5246,8 @@ Write-Log 'Exchange log cleanup finished'
             try { $srv.PopSettings  = Get-PopSettings  -Server $ServerName -ErrorAction Stop } catch { }
         }
 
-        # Certificates
-        try { $srv.Certificates = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop) } catch { $srv.Certificates = @() }
+        # Certificates — filter phantom entries (DateTime.MinValue from Get-ExchangeCertificate)
+        try { $srv.Certificates = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }) } catch { $srv.Certificates = @() }
 
         # Transport agents (only present on servers with Hub Transport)
         try { $srv.TransportAgents = @(Get-TransportAgent -ErrorAction Stop) } catch { $srv.TransportAgents = @() }
@@ -5293,15 +5293,19 @@ Write-Log 'Exchange log cleanup finished'
         # Hardware/OS data — direct CIM for local server, CIM/WSMan + prompt for remote
         if ($ServerName -ieq $env:COMPUTERNAME) {
             $srv.RemoteData = @{
-                ComputerName = $ServerName
-                Reachable    = $true
-                Error        = $null
-                OS           = Get-CimInstance Win32_OperatingSystem          -ErrorAction SilentlyContinue
-                CPU          = Get-CimInstance Win32_Processor                 -ErrorAction SilentlyContinue
-                ComputerSys  = Get-CimInstance Win32_ComputerSystem            -ErrorAction SilentlyContinue
-                PageFile     = Get-CimInstance Win32_PageFileSetting           -ErrorAction SilentlyContinue
-                Volumes      = @(Get-CimInstance Win32_Volume -Filter 'DriveType=3'                          -ErrorAction SilentlyContinue)
-                NICs         = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE'  -ErrorAction SilentlyContinue)
+                ComputerName    = $ServerName
+                Reachable       = $true
+                Error           = $null
+                OS              = Get-CimInstance Win32_OperatingSystem          -ErrorAction SilentlyContinue
+                CPU             = Get-CimInstance Win32_Processor                 -ErrorAction SilentlyContinue
+                ComputerSys     = Get-CimInstance Win32_ComputerSystem            -ErrorAction SilentlyContinue
+                PageFile        = Get-CimInstance Win32_PageFileSetting           -ErrorAction SilentlyContinue
+                Volumes         = @(Get-CimInstance Win32_Volume -Filter 'DriveType=3'                          -ErrorAction SilentlyContinue)
+                NICs            = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE'  -ErrorAction SilentlyContinue)
+                TimeZone        = Get-CimInstance Win32_TimeZone                  -ErrorAction SilentlyContinue
+                NICDrivers      = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Disconnected' } | Select-Object Name, DriverVersion, DriverDate, LinkSpeed, InterfaceDescription)
+                TlsCipherSuites = @(Get-TlsCipherSuite -ErrorAction SilentlyContinue | Select-Object Name, Exchange, Hash, KeyExchange)
+                VCRuntimes      = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Microsoft Visual C++ *' } | Select-Object DisplayName, DisplayVersion, InstallDate | Sort-Object DisplayName)
             }
         } else {
             $srv.RemoteData = Invoke-RemoteQueryWithPrompt -ComputerName $ServerName
@@ -5414,6 +5418,16 @@ Write-Log 'Exchange log cleanup finished'
         try {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
             $sysRows.Add(('<tr><td>Computer Name (FQDN)</td><td>{0}.{1}</td><td></td></tr>' -f $cs.DNSHostName, $cs.Domain))
+            $hwType = if ($cs.Manufacturer -like '*VMware*' -or $cs.Model -like '*VMware*') { 'Virtual — VMware' }
+                      elseif ($cs.Manufacturer -like '*Microsoft*' -and $cs.Model -like '*Virtual*') { 'Virtual — Hyper-V' }
+                      elseif ($cs.Manufacturer -like '*QEMU*' -or $cs.Model -like '*KVM*') { 'Virtual — KVM/QEMU' }
+                      elseif ($cs.HypervisorPresent) { 'Virtual — unknown hypervisor' }
+                      else { 'Physical ({0} {1})' -f $cs.Manufacturer.Trim(), $cs.Model.Trim() }
+            $sysRows.Add(('<tr><td>Hardware Type</td><td>{0}</td><td></td></tr>' -f $hwType))
+        } catch { }
+        try {
+            $tz = Get-CimInstance Win32_TimeZone -ErrorAction Stop
+            $sysRows.Add(('<tr><td>Time Zone</td><td>{0}</td><td></td></tr>' -f $tz.Caption))
         } catch { }
         # Volumes — exclude DVD-ROM and removable drives
         try {
@@ -5477,7 +5491,8 @@ Write-Log 'Exchange log cleanup finished'
         try {
             $exSrv = Get-ExchangeServer $env:COMPUTERNAME -ErrorAction Stop
             $exVersion = $exSrv.AdminDisplayVersion.ToString()
-            $exRows.Add('<tr><td>Exchange Version</td><td>{0}</td><td></td></tr>' -f $exSrv.AdminDisplayVersion)
+            $exReadable = Get-SetupTextVersion $State['SetupVersion']
+            $exRows.Add(('<tr><td>Exchange Version</td><td>{0}</td><td>{1}</td></tr>' -f $exSrv.AdminDisplayVersion, $exReadable))
             $exRows.Add('<tr><td>Server Role</td><td>{0}</td><td></td></tr>' -f ($exSrv.ServerRole -join ', '))
             $exRows.Add('<tr><td>Edition</td><td>{0}</td><td></td></tr>' -f $exSrv.Edition)
             $exRows.Add('<tr><td>AD Site</td><td>{0}</td><td></td></tr>' -f $exSrv.Site)
@@ -5707,6 +5722,64 @@ Write-Log 'Exchange log cleanup finished'
                     $epBadge = if ($epVal -in 'Require','Allow') { Format-Badge "$epVal ✓" 'ok' } else { Format-Badge "$epVal (risk)" 'warn' }
                     $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0} — {1}</td><td>Require or Allow</td><td>{2}</td><td>{3}</td><td>MS Exchange</td></tr>' -f $siteLabel, $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
                 }
+            } catch { }
+        }
+
+        # Extended Protection — per-VDir breakdown (Frontend only; Back End EP=None by design)
+        if (-not $State['InstallEdge']) {
+            try {
+                $epCmdlets = @(
+                    @{ Name='OWA';         Get={ @(Get-OwaVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='ECP';         Get={ @(Get-EcpVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='EWS';         Get={ @(Get-WebServicesVirtualDirectory  -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='OAB';         Get={ @(Get-OabVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='ActiveSync';  Get={ @(Get-ActiveSyncVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='MAPI';        Get={ @(Get-MapiVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='PowerShell';  Get={ @(Get-PowerShellVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                )
+                $epVdirRows = [System.Collections.Generic.List[string]]::new()
+                foreach ($ep in $epCmdlets) {
+                    try {
+                        $vd = & $ep.Get | Select-Object -First 1
+                        if ($vd) {
+                            $epv = [string]$vd.ExtendedProtectionTokenChecking
+                            if ([string]::IsNullOrEmpty($epv)) { $epv = 'None' }
+                            if ($epv -eq '2') { $epv = 'Require' } elseif ($epv -eq '1') { $epv = 'Allow' } elseif ($epv -eq '0') { $epv = 'None' }
+                            $epvBadge = if ($epv -in 'Require','Allow') { Format-Badge $epv 'ok' } else { Format-Badge "$epv" 'warn' }
+                            $epVdirRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f $ep.Name, $epv, $epvBadge))
+                        }
+                    } catch { }
+                }
+                if ($epVdirRows.Count -gt 0) {
+                    $secRows.Add(('<tr><td>Extended Protection (per VDir)</td><td colspan="4"><table style="width:100%;font-size:12px"><tr><th style="text-align:left">VDir</th><th style="text-align:left">Setting</th><th style="text-align:left">Status</th></tr>{0}</table></td><td>MS Exchange</td></tr>' -f ($epVdirRows -join '')))
+                }
+            } catch { }
+        }
+
+        # HSTS (Strict-Transport-Security header on OWA/ECP)
+        if (-not $State['InstallEdge']) {
+            try {
+                Import-Module WebAdministration -ErrorAction Stop
+                $hstsSite  = 'IIS:\Sites\Default Web Site'
+                $hstsFilter = 'system.webServer/httpProtocol/customHeaders/add[@name="Strict-Transport-Security"]'
+                $hstsOk = 0; $hstsVdirs = @('owa','ecp')
+                foreach ($hv in $hstsVdirs) {
+                    $hx = Get-WebConfigurationProperty -PSPath "$hstsSite\$hv" -Filter $hstsFilter -Name '.' -ErrorAction SilentlyContinue
+                    if ($hx) { $hstsOk++ }
+                }
+                $hstsBadge = if ($hstsOk -eq $hstsVdirs.Count) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge ('{0}/{1} configured' -f $hstsOk, $hstsVdirs.Count) 'warn' }
+                $secRows.Add(('<tr><td>HSTS (OWA/ECP)</td><td>{0}/{1} virtual directories</td><td>Enabled (max-age=31536000)</td><td>{2}</td><td>{3}</td><td>CIS / BSI</td></tr>' -f $hstsOk, $hstsVdirs.Count, $hstsBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/iis/configuration/system.webserver/security/requestfiltering/alwaysallowedurls/' 'IIS Docs')))
+            } catch { }
+        }
+
+        # OWA Download Domains (CVE-2021-1730)
+        if (-not $State['InstallEdge']) {
+            try {
+                $orgCfgDL = Get-OrganizationConfig -ErrorAction Stop
+                $dlEnabled = $orgCfgDL.EnableDownloadDomains
+                $dlBadge = if ($dlEnabled) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge 'Not enabled (CVE-2021-1730)' 'warn' }
+                $dlDomainInfo = if ($State['DownloadDomain']) { $State['DownloadDomain'] } else { '(not configured)' }
+                $secRows.Add(('<tr><td>OWA Download Domains</td><td>Org flag: {0} / Domain: {1}</td><td>EnableDownloadDomains = True + separate download FQDN</td><td>{2}</td><td>{3}</td><td>CVE-2021-1730</td></tr>' -f $dlEnabled, $dlDomainInfo, $dlBadge, (Format-RefLink 'https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-1730' 'MSRC')))
             } catch { }
         }
 
@@ -6592,20 +6665,33 @@ $body
                 $rows.Add(@((L 'Systemdetails' 'System details'), (L ('Nicht abrufbar: {0} — Abhilfe: tools\Enable-EXpressRemoteQuery.ps1' -f $errMsg) ('Not available: {0} — Fix: tools\Enable-EXpressRemoteQuery.ps1' -f $errMsg))))
                 return ,$rows
             }
+            if ($remData.ComputerSys) {
+                $cs = $remData.ComputerSys
+                $hwType = if ($cs.Manufacturer -like '*VMware*' -or $cs.Model -like '*VMware*') { 'Virtual — VMware' }
+                          elseif ($cs.Manufacturer -like '*Microsoft*' -and $cs.Model -like '*Virtual*') { 'Virtual — Hyper-V' }
+                          elseif ($cs.Manufacturer -like '*QEMU*' -or $cs.Model -like '*KVM*') { 'Virtual — KVM/QEMU' }
+                          elseif ($cs.HypervisorPresent) { (L 'Virtual — unbekannter Hypervisor' 'Virtual — unknown hypervisor') }
+                          else { 'Physical ({0} {1})' -f $cs.Manufacturer.Trim(), $cs.Model.Trim() }
+                $rows.Add(@((L 'Hardwaretyp' 'Hardware type'), $hwType))
+                $rows.Add(@((L 'Computername (FQDN)' 'Computer name (FQDN)'), ('{0}.{1}' -f $cs.DNSHostName, $cs.Domain)))
+            }
             if ($remData.OS) {
                 $rows.Add(@((L 'Betriebssystem' 'Operating system'), $remData.OS.Caption))
                 $rows.Add(@((L 'OS-Build' 'OS build'), $remData.OS.Version))
-                $rows.Add(@((L 'Letzter Neustart' 'Last boot'), $remData.OS.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss')))
+                $lastBoot = $remData.OS.LastBootUpTime
+                $uptimeDays = if ($lastBoot) { [int][Math]::Floor(((Get-Date) - $lastBoot).TotalDays) } else { $null }
+                $uptimeStr = if ($null -ne $uptimeDays) { '{0} — {1}d {2}' -f $lastBoot.ToString('yyyy-MM-dd HH:mm:ss'), $uptimeDays, (L 'Betriebszeit' 'uptime') } else { '?' }
+                $rows.Add(@((L 'Letzter Neustart' 'Last boot'), $uptimeStr))
                 $rows.Add(@((L 'RAM gesamt' 'Total RAM'), ('{0} GB' -f [math]::Round($remData.OS.TotalVisibleMemorySize / 1MB, 0))))
+            }
+            if ($remData.TimeZone) {
+                $rows.Add(@((L 'Zeitzone' 'Time zone'), ('{0} ({1})' -f $remData.TimeZone.StandardName, $remData.TimeZone.Caption)))
             }
             if ($remData.CPU) {
                 $cpuList = @($remData.CPU)
                 $totalCores   = ($cpuList | Measure-Object NumberOfCores -Sum).Sum
                 $totalLogical = ($cpuList | Measure-Object NumberOfLogicalProcessors -Sum).Sum
                 $rows.Add(@('CPU', ('{0} — {1} {2} / {3} {4}' -f $cpuList[0].Name.Trim(), $totalCores, (L 'Kerne' 'cores'), $totalLogical, (L 'logisch' 'logical'))))
-            }
-            if ($remData.ComputerSys) {
-                $rows.Add(@((L 'Computername (FQDN)' 'Computer name (FQDN)'), ('{0}.{1}' -f $remData.ComputerSys.DNSHostName, $remData.ComputerSys.Domain)))
             }
             foreach ($vol in $remData.Volumes) {
                 if ($vol.DriveLetter -and $vol.Capacity -gt 0) {
@@ -6626,6 +6712,13 @@ $body
                 $ips = if ($nic.IPAddress) { (Mask-Ip ($nic.IPAddress -join ', ')) } else { (L '(keine IP)' '(no IP)') }
                 $dns = if ($nic.DNSServerSearchOrder) { (Mask-Ip ($nic.DNSServerSearchOrder -join ', ')) } else { (L '(nicht gesetzt)' '(not set)') }
                 $rows.Add(@(('NIC: {0}' -f $nic.Description), ('{0} — DNS: {1}' -f $ips, $dns)))
+            }
+            if ($remData.NICDrivers -and $remData.NICDrivers.Count -gt 0) {
+                foreach ($drv in $remData.NICDrivers) {
+                    $drvDate = if ($drv.DriverDate) { $drv.DriverDate.ToString('yyyy-MM-dd') } else { '?' }
+                    $speed   = if ($drv.LinkSpeed) { ('{0}' -f $drv.LinkSpeed) } else { '?' }
+                    $rows.Add(@((L ('NIC-Treiber: {0}' -f $drv.Name) ('NIC driver: {0}' -f $drv.Name)), ('{0} — v{1} — {2} — {3}' -f $drv.InterfaceDescription, $drv.DriverVersion, $drvDate, $speed)))
+                }
             }
             return ,$rows
         }
@@ -7152,10 +7245,14 @@ $body
                 $null = $parts.Add((New-WdHeading (L 'Identität' 'Identity') 3))
                 $idRows = [System.Collections.Generic.List[object[]]]::new()
                 if ($exSrv2) {
-                    $idRows.Add(@((L 'Exchange-Version' 'Exchange version'), $exSrv2.AdminDisplayVersion.ToString()))
+                    $exReadable2 = try { Get-SetupTextVersion $State['SetupVersion'] } catch { '' }
+                    $exVerStr2 = if ($exReadable2) { '{0} ({1})' -f $exSrv2.AdminDisplayVersion.ToString(), $exReadable2 } else { $exSrv2.AdminDisplayVersion.ToString() }
+                    $idRows.Add(@((L 'Exchange-Version' 'Exchange version'), $exVerStr2))
                     $idRows.Add(@('FQDN', (SafeVal $exSrv2.Fqdn)))
                     $idRows.Add(@((L 'Serverrolle' 'Server role'), ($exSrv2.ServerRole -join ', ')))
-                    $idRows.Add(@((L 'Edition' 'Edition'), $exSrv2.Edition.ToString()))
+                    $editionStr2 = $exSrv2.Edition.ToString()
+                    if ($editionStr2 -like '*Evaluation*' -or $editionStr2 -like '*Trial*') { $editionStr2 += (L ' — ACHTUNG: Testlizenz, vor Produktiveinsatz in Standardlizenz umwandeln' ' — WARNING: evaluation licence, convert to standard before production use') }
+                    $idRows.Add(@((L 'Edition' 'Edition'), $editionStr2))
                     $idRows.Add(@((L 'AD-Standort' 'AD site'), $exSrv2.Site.ToString()))
                     $idRows.Add(@((L 'Installiert am' 'Installed on'), (SafeVal $exSrv2.WhenCreated)))
                 }
@@ -7193,10 +7290,13 @@ $body
                     if ($vd3) {
                         $int2 = if ($vd3.InternalUrl) { $vd3.InternalUrl.AbsoluteUri } else { (L '(nicht gesetzt)' '(not set)') }
                         $ext2 = if ($vd3.ExternalUrl) { $vd3.ExternalUrl.AbsoluteUri } else { (L '(nicht gesetzt)' '(not set)') }
-                        $vd2Rows.Add(@($vde.Name, (Mask-Ip $int2), (Mask-Ip $ext2)))
+                        $epRaw2 = "$($vd3.ExtendedProtectionTokenChecking)"
+                        if ($epRaw2 -eq '2') { $epRaw2 = 'Require' } elseif ($epRaw2 -eq '1') { $epRaw2 = 'Allow' } elseif ($epRaw2 -eq '0') { $epRaw2 = 'None' }
+                        $ep2 = if ($epRaw2) { $epRaw2 } else { '—' }
+                        $vd2Rows.Add(@($vde.Name, (Mask-Ip $int2), (Mask-Ip $ext2), $ep2))
                     }
                 }
-                $null = $parts.Add((New-WdTable -Headers @((L 'Dienst' 'Service'), (L 'Intern' 'Internal'), (L 'Extern' 'External')) -Rows $vd2Rows.ToArray()))
+                $null = $parts.Add((New-WdTable -Headers @((L 'Dienst' 'Service'), (L 'Intern' 'Internal'), (L 'Extern' 'External'), 'EP') -Rows $vd2Rows.ToArray()))
 
                 # 5.x.5 Receive Connectors — split into two tables (network / security)
                 # A single 8-column table wraps every cell in portrait Word; splitting into
@@ -7243,8 +7343,10 @@ $body
                 $null = $parts.Add((New-WdHeading (L 'Zertifikate' 'Certificates') 3))
                 $certRows2 = [System.Collections.Generic.List[object[]]]::new()
                 foreach ($cert2 in $srvD.Certificates) {
-                    $expiry2   = if ($cert2.NotAfter) { $cert2.NotAfter.ToString('yyyy-MM-dd') } else { '?' }
-                    $daysLeft2 = if ($cert2.NotAfter) { [int][Math]::Floor(($cert2.NotAfter - (Get-Date)).TotalDays) } else { 0 }
+                    # phantom certs already filtered in Get-ServerReportData; belt-and-suspenders guard
+                    if (-not $cert2.Thumbprint -or $cert2.NotAfter -le [datetime]'1970-01-01') { continue }
+                    $expiry2   = $cert2.NotAfter.ToString('yyyy-MM-dd')
+                    $daysLeft2 = [int][Math]::Floor(($cert2.NotAfter - (Get-Date)).TotalDays)
                     $tp2 = if ($cust) { ('{0}...' -f $cert2.Thumbprint.Substring(0, [Math]::Min(8, $cert2.Thumbprint.Length))) } else { $cert2.Thumbprint }
                     $certRows2.Add(@($cert2.Subject, $expiry2, ('{0}d' -f $daysLeft2), $cert2.Services, $tp2))
                 }
@@ -7348,13 +7450,29 @@ $body
             $exInstRows2 = [System.Collections.Generic.List[object[]]]::new()
             try {
                 $exSrvLocal = Get-ExchangeServer $env:COMPUTERNAME -ErrorAction Stop
-                $exInstRows2.Add(@((L 'Exchange-Version' 'Exchange version'), $exSrvLocal.AdminDisplayVersion.ToString()))
+                $exReadableInst = try { Get-SetupTextVersion $State['SetupVersion'] } catch { '' }
+                $exVerStrInst = if ($exReadableInst) { '{0} ({1})' -f $exSrvLocal.AdminDisplayVersion.ToString(), $exReadableInst } else { $exSrvLocal.AdminDisplayVersion.ToString() }
+                $exInstRows2.Add(@((L 'Exchange-Version' 'Exchange version'), $exVerStrInst))
                 $exInstRows2.Add(@((L 'Serverrolle' 'Server role'), ($exSrvLocal.ServerRole -join ', ')))
-                $exInstRows2.Add(@((L 'Edition' 'Edition'), $exSrvLocal.Edition.ToString()))
+                $editionInst = $exSrvLocal.Edition.ToString()
+                if ($editionInst -like '*Evaluation*' -or $editionInst -like '*Trial*') { $editionInst += (L ' — ACHTUNG: Testlizenz' ' — WARNING: evaluation licence') }
+                $exInstRows2.Add(@((L 'Edition' 'Edition'), $editionInst))
                 $exInstRows2.Add(@((L 'AD-Standort' 'AD site'), $exSrvLocal.Site.ToString()))
             } catch { }
             $exInstRows2.Add(@((L 'Installationspfad' 'Install path'), (SafeVal $State['InstallPath'])))
             $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $exInstRows2.ToArray()))
+
+            # 7.x VC++ Runtimes
+            $null = $parts.Add((New-WdHeading (L '7.x Visual C++ Runtimes' '7.x Visual C++ Runtimes') 2))
+            $null = $parts.Add((New-WdParagraph (L 'Exchange Server setzt bestimmte Visual C++ Redistributable-Versionen voraus (VC++ 2012 und VC++ 2013 x64). HealthChecker prüft das Mindest-Build (VC++ 2013: 12.0.40664). Fehlende oder veraltete Redistributables führen zu Setup-Fehlern oder HC-Warnungen.' 'Exchange Server requires specific Visual C++ Redistributable versions (VC++ 2012 and VC++ 2013 x64). HealthChecker validates the minimum build (VC++ 2013: 12.0.40664). Missing or outdated redistributables cause setup errors or HC warnings.')))
+            $vcRows = [System.Collections.Generic.List[object[]]]::new()
+            $vcInstalled = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Microsoft Visual C++ *' } | Select-Object DisplayName, DisplayVersion, InstallDate | Sort-Object DisplayName)
+            foreach ($vc in $vcInstalled) {
+                $vcDate = if ($vc.InstallDate) { $vc.InstallDate } else { '—' }
+                $vcRows.Add(@((SafeVal $vc.DisplayName), (SafeVal $vc.DisplayVersion), $vcDate))
+            }
+            if ($vcRows.Count -eq 0) { $vcRows.Add(@((L '(keine VC++ Redistributables gefunden)' '(no VC++ redistributables found)'), '', '')) }
+            $null = $parts.Add((New-WdTable -Headers @((L 'Paket' 'Package'), (L 'Version' 'Version'), (L 'Installiert am' 'Install date')) -Rows $vcRows.ToArray()))
 
             # 7.1 Geplante Tasks (MEAC + Log Cleanup) — operative Exchange-Aufgaben, keine OS-Härtungen
             if ($rd.Org -and $rd.Org.ScheduledTasks -and $rd.Org.ScheduledTasks.Count -gt 0) {
@@ -7430,6 +7548,16 @@ $body
         $tlsRows.Add(@('.NET Strong Crypto (v2)', (Format-RegBool (Get-SecReg 'HKLM:\SOFTWARE\Microsoft\.NETFramework\v2.0.50727' 'SchUseStrongCrypto'))))
         $null = $parts.Add((New-WdTable -Headers @((L 'Maßnahme' 'Measure'), (L 'Registrierungswert / Status' 'Registry value / status')) -Rows $tlsRows.ToArray()))
 
+        # TLS Cipher Suite inventory
+        $null = $parts.Add((New-WdParagraph (L 'TLS Cipher Suites (aktiv auf diesem Server):' 'TLS Cipher Suites (active on this server):')))
+        $cipherRows = [System.Collections.Generic.List[object[]]]::new()
+        $cipherSuites = @(Get-TlsCipherSuite -ErrorAction SilentlyContinue | Select-Object Name, Exchange, Hash, KeyExchange)
+        foreach ($cs2 in $cipherSuites) {
+            $cipherRows.Add(@($cs2.Name, (SafeVal $cs2.Exchange '—'), (SafeVal $cs2.Hash '—'), (SafeVal $cs2.KeyExchange '—')))
+        }
+        if ($cipherRows.Count -eq 0) { $cipherRows.Add(@((L '(nicht abrufbar)' '(not available)'), '', '', '')) }
+        $null = $parts.Add((New-WdTable -Compact -Headers @((L 'Suite' 'Suite'), (L 'Schlüsseltausch' 'Key exchange'), (L 'Hash' 'Hash'), (L 'Algorithmus' 'Algorithm')) -Rows $cipherRows.ToArray()))
+
         $null = $parts.Add((New-WdHeading (L '8.2 Authentifizierung und Credential-Schutz' '8.2 Authentication and Credential Protection') 2))
         $null = $parts.Add((New-WdParagraph (L 'WDigest-Authentifizierung speichert Anmeldeinformationen im Klartextformat im LSASS-Speicher und ist für Pass-the-Hash- und Credential-Dumping-Angriffe (Mimikatz) anfällig. Sie wurde deaktiviert. LSA-Schutz (RunAsPPL) verhindert das Injizieren von unsigniertem Code in den LSASS-Prozess — ein zentraler Schutz gegen moderne Angriffswerkzeuge. Der LM-Kompatibilitätslevel bestimmt, welche Authentifizierungsprotokolle zugelassen werden; Level 5 (nur NTLMv2/Kerberos) entspricht dem aktuellen Sicherheitsstandard. Credential Guard (VBS) isoliert Credential-Hashes in einer virtualisierten Umgebung und ist auf Exchange-Servern zu deaktivieren, da Exchange interne Dienst-Konten mit NTLM-Authentifizierung nutzt.' 'WDigest authentication stores credentials in cleartext in LSASS memory and is vulnerable to pass-the-hash and credential dumping attacks (Mimikatz). It has been disabled. LSA protection (RunAsPPL) prevents injection of unsigned code into the LSASS process — a central protection against modern attack tools. The LM compatibility level determines which authentication protocols are permitted; level 5 (NTLMv2/Kerberos only) meets the current security standard. Credential Guard (VBS) isolates credential hashes in a virtualised environment and must be disabled on Exchange servers, as Exchange uses internal service accounts with NTLM authentication.')))
         $authRows = [System.Collections.Generic.List[object[]]]::new()
@@ -7498,6 +7626,20 @@ $body
                 $exHardRows.Add(@('Exchange SettingOverrides', (SafeVal $ovList), (L 'Aktive Konfigurations-Overrides (CVE-Mitigationen, Features)' 'Active configuration overrides (CVE mitigations, features)')))
             }
         } catch { }
+        # HSTS — HTTP Strict Transport Security
+        $hstsVal = try {
+            Import-Module WebAdministration -ErrorAction SilentlyContinue
+            $hh = Get-WebConfigurationProperty -Filter "system.webServer/httpProtocol/customHeaders/add[@name='Strict-Transport-Security']" -PSPath 'IIS:\Sites\Default Web Site' -Name 'value' -ErrorAction Stop
+            if ($hh) { 'max-age={0}' -f $hh } else { (L 'nicht gesetzt' 'not set') }
+        } catch { (L 'nicht gesetzt / nicht abrufbar' 'not set / not available') }
+        $exHardRows.Add(@('HSTS (Strict-Transport-Security)', $hstsVal, (L 'Verhindert HTTP-Downgrade-Angriffe (RFC 6797)' 'Prevents HTTP downgrade attacks (RFC 6797)')))
+        # CVE-2021-1730 Download Domains
+        $dlEnabled = try {
+            $dlCfg = Get-OrganizationConfig -ErrorAction Stop
+            if ($null -ne $dlCfg.EnableDownloadDomains) { $dlCfg.EnableDownloadDomains.ToString() } else { (L 'nicht gesetzt' 'not set') }
+        } catch { '(unknown)' }
+        $dlDomain = if ($State['DownloadDomain']) { $State['DownloadDomain'] } else { '—' }
+        $exHardRows.Add(@('EnableDownloadDomains (CVE-2021-1730)', ('{0} — Domain: {1}' -f $dlEnabled, $dlDomain), (L 'Isoliert OWA-Anhänge auf Subdomain (verhindert CSRF/Cookie-Hijacking)' 'Isolates OWA attachments on subdomain (prevents CSRF/cookie hijacking)')))
         $null = $parts.Add((New-WdTable -Headers @((L 'Härtungsmaßnahme' 'Hardening measure'), (L 'Status / Wert' 'Status / value'), (L 'Zweck' 'Purpose')) -Rows $exHardRows.ToArray()))
 
         # 8.5 Windows Defender Exclusions
