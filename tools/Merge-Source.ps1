@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 param(
     [string]$EntryScript   = (Join-Path (Split-Path $PSScriptRoot) 'EXpress.ps1'),
-    [string]$SrcDir        = (Join-Path (Split-Path $PSScriptRoot) 'src'),
+    [string]$SrcDir        = (Join-Path (Split-Path $PSScriptRoot) 'modules'),
     [string]$Output        = (Join-Path (Split-Path $PSScriptRoot) 'dist\EXpress.ps1'),
     [string]$ReferenceFile = '',
     [switch]$Quiet

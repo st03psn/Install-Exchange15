@@ -34,3 +34,8 @@ word.txt
 docs/ROADMAP.md
 docs/plan-*.md
 docs/archive/
+
+# Prerequisite downloads cache — populated by tools/Get-EXpressDownloads.ps1
+# Not committed: large binaries (UCMA 240 MB, .NET 115 MB) and frequently-updated
+# CSS-Exchange scripts. Place your own logo.png in assets/ and commit that instead.
+sources/

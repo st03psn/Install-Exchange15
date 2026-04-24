@@ -4,7 +4,7 @@
             return
         }
         Write-MyOutput 'Running CSS-Exchange Emergency Mitigation Tool (EOMT)'
-        $eomtPath = Join-Path $State['InstallPath'] 'EOMT.ps1'
+        $eomtPath = Join-Path $State['SourcesPath'] 'EOMT.ps1'
         $eomtUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/EOMT.ps1'
 
         if (-not (Test-Path $eomtPath)) {

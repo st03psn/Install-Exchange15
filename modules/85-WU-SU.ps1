@@ -245,7 +245,7 @@
         # Exchange SE RTM (15.02.2562.017) -> Feb 2026 SU (KB5074992)
         # No URL: the WU-catalog CAB is not installable via DISM/expand.exe.
         # Place ExchangeSubscriptionEdition-KB5074992-x64-en.exe (from Microsoft Download Center)
-        # in InstallPath before running, or apply via Windows Update / WSUS.
+        # in <InstallPath>\sources\ before running, or apply via Windows Update / WSUS.
         '15.02.2562.017' = @{
             KB            = 'KB5074992'
             FileName      = 'ExchangeSubscriptionEdition-KB5074992-x64-en.exe'
@@ -305,7 +305,7 @@
     function Get-LatestSUBuildFromHC {
         # Parses HealthChecker.ps1's GetExchangeBuildDictionary to find the latest known SU
         # build for the installed Exchange CU. Returns a version string ('15.02.1748.043') or $null.
-        $hcPath = Join-Path $State['InstallPath'] 'HealthChecker.ps1'
+        $hcPath = Join-Path $State['SourcesPath'] 'HealthChecker.ps1'
         if (-not (Test-Path $hcPath)) { return $null }
 
         # Map setup.exe version to HC CU key
@@ -378,11 +378,11 @@
             }
             else {
                 Write-MyOutput ('Exchange Security Update {0} available for build {1} -> {2}' -f $su.KB, $State['SetupVersion'], $su.TargetVersion)
-                $suPath = Join-Path $State['InstallPath'] $su.FileName
+                $suPath = Join-Path $State['SourcesPath'] $su.FileName
                 if (-not (Test-Path $suPath)) {
                     if ($su.URL) {
                         Write-MyOutput ('Downloading {0}' -f $su.KB)
-                        $null = Get-MyPackage -Package $su.KB -URL $su.URL -FileName $su.FileName -InstallPath $State['InstallPath']
+                        $null = Get-MyPackage -Package $su.KB -URL $su.URL -FileName $su.FileName -InstallPath $State['SourcesPath']
                     }
                     if (-not (Test-Path $suPath)) {
                         Write-MyWarning ('Exchange SU {0}: installer not available for automatic download.' -f $su.KB)
@@ -400,7 +400,7 @@
                                 while ([DateTime]::Now -lt $suDeadline) {
                                     $secsLeft = [int]($suDeadline - [DateTime]::Now).TotalSeconds
                                     Write-Progress -Id 2 -Activity ('Exchange SU {0}' -f $su.KB) `
-                                        -Status ('Place {0} in {1} then ENTER  |  auto-skip in {2}s' -f $su.FileName, $State['InstallPath'], $secsLeft) `
+                                        -Status ('Place {0} in {1} then ENTER  |  auto-skip in {2}s' -f $su.FileName, $State['SourcesPath'], $secsLeft) `
                                         -PercentComplete ([int](($suTotalSecs - $secsLeft) * 100 / $suTotalSecs))
                                     if ($host.UI.RawUI.KeyAvailable) {
                                         $key = $host.UI.RawUI.ReadKey('IncludeKeyDown,NoEcho')
@@ -430,7 +430,7 @@
                     }
                     # Exchange SU installers only accept /passive or /silent — /norestart is not supported.
                     # Exit code 3010 = success + reboot required; handled below.
-                    $rc = Invoke-Process -FilePath $State['InstallPath'] -FileName $su.FileName -ArgumentList '/passive'
+                    $rc = Invoke-Process -FilePath $State['SourcesPath'] -FileName $su.FileName -ArgumentList '/passive'
                     if ($rc -eq 0 -or $rc -eq 3010) {
                         Write-MyOutput ('Exchange SU {0} installed successfully' -f $su.KB)
                         # Persist a per-KB installed flag immediately so phase-5 re-entry after
@@ -452,7 +452,7 @@
 
         # P6 — Dynamic gap-check: download HC.ps1 if not present and compare installed
         # build against HC's GetExchangeBuildDictionary (single attempt, non-blocking).
-        $hcPath = Join-Path $State['InstallPath'] 'HealthChecker.ps1'
+        $hcPath = Join-Path $State['SourcesPath'] 'HealthChecker.ps1'
         if (-not (Test-Path $hcPath)) {
             try {
                 Write-MyVerbose 'Downloading HealthChecker.ps1 for Exchange SU version check'

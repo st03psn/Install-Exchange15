@@ -104,7 +104,14 @@
         $company  = SafeVal $State['CompanyName'] ''
         $author   = SafeVal $State['Author']      ''
         $coverSub = (L 'Installation, Hybridbereitstellung, Mailflow' 'Installation, Hybrid deployment, Mail flow')
-        $logoFile = Join-Path $State['InstallPath'] 'logo.png'
+        # Logo probe: sources\logo.png (user-placed) → beside the script → assets\logo.png (repo default)
+        $_logoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { $State['InstallPath'] }
+        $logoFile = @(
+            (Join-Path $State['SourcesPath'] 'logo.png'),
+            (Join-Path $_logoRoot 'logo.png'),
+            (Join-Path $_logoRoot 'assets\logo.png')
+        ) | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+        if (-not $logoFile) { $logoFile = Join-Path $State['SourcesPath'] 'logo.png' }   # fallback path (will fail Test-Path gracefully)
 
         if (-not $useTpl) {
         # ── Deckblatt (Cover Page) ───────────────────────────────────────────────

@@ -127,7 +127,7 @@ Write-Log 'Exchange log cleanup finished'
             return
         }
         Write-MyOutput 'Registering Auth Certificate renewal (MEAC / CSS-Exchange MonitorExchangeAuthCertificate.ps1)'
-        $meacPath = Join-Path $State['InstallPath'] 'MonitorExchangeAuthCertificate.ps1'
+        $meacPath = Join-Path $State['SourcesPath'] 'MonitorExchangeAuthCertificate.ps1'
         $meacUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/MonitorExchangeAuthCertificate.ps1'
         if (-not (Test-Path $meacPath)) {
             try {
@@ -623,6 +623,110 @@ Write-Log 'Exchange log cleanup finished'
         }
         else {
             Write-MyWarning 'One or more relay connectors failed — Default Frontend connector was NOT modified'
+        }
+    }
+
+    function Enable-AccessNamespaceMailConfig {
+        # F26 — Configure the Access Namespace as an Accepted Domain and update the
+        # default Email Address Policy so that mailboxes get a primary SMTP address
+        # @<AccessNamespace> (e.g. @mail.contoso.com).
+        #
+        # Steps:
+        #  1. Add the Access Namespace as an Authoritative Accepted Domain (skip if present).
+        #  2. Update the default Email Address Policy to make @<namespace> the primary
+        #     SMTP template; retain the AD/internal domain as a secondary address.
+        #  3. Remove pure-internal domains (.local / nonroutable) from the policy
+        #     templates — they serve no purpose as email addresses.
+        #  4. Apply the updated policy to all mailboxes via Update-EmailAddressPolicy.
+        #
+        # Safety: the function is idempotent.  Running it a second time re-checks each
+        # step and skips anything already in place.
+        #
+        if ($State['InstallEdge']) { Write-MyVerbose 'Enable-AccessNamespaceMailConfig: skipped (Edge Transport)'; return }
+        if (-not $State['Namespace']) { Write-MyVerbose 'Enable-AccessNamespaceMailConfig: no namespace set — skipping'; return }
+
+        # MailDomain is the root domain used for email addresses (e.g. contoso.com).
+        # It defaults to the parent of the access namespace (drop leftmost label).
+        # e.g. Namespace=outlook.domain.de → MailDomain=domain.de
+        $ns = if ($State['MailDomain']) {
+            $State['MailDomain']
+        } else {
+            $part = ($State['Namespace'] -split '\.', 2)[1]
+            if ($part -match '\.') { $part } else { $State['Namespace'] }
+        }
+
+        Write-MyOutput ('Configuring access namespace mail settings — mail domain: {0}' -f $ns)
+
+        # ── 1. Accepted Domain ──────────────────────────────────────────────────
+        try {
+            $existing = Get-AcceptedDomain -ErrorAction Stop | Where-Object { $_.DomainName -eq $ns }
+            if ($existing) {
+                Write-MyVerbose ('Accepted domain already present: {0} ({1})' -f $ns, $existing.DomainType)
+            }
+            else {
+                New-AcceptedDomain -Name $ns -DomainName $ns -DomainType Authoritative -ErrorAction Stop | Out-Null
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("New-AcceptedDomain -Name '{0}' -DomainName '{0}' -DomainType Authoritative" -f $ns)
+                Write-MyOutput ('Accepted domain added: {0} (Authoritative)' -f $ns)
+            }
+        }
+        catch {
+            Write-MyWarning ('Could not create accepted domain {0}: {1}' -f $ns, $_.Exception.Message)
+            return
+        }
+
+        # ── 2. Email Address Policy — primary SMTP template ─────────────────────
+        try {
+            $policy = Get-EmailAddressPolicy -ErrorAction Stop | Sort-Object Priority | Select-Object -First 1
+            if (-not $policy) {
+                Write-MyWarning 'No Email Address Policy found — skipping policy update'
+                return
+            }
+
+            $currentTemplates = @($policy.EnabledEmailAddressTemplates)
+            $nsTemplate        = "SMTP:@$ns"   # uppercase SMTP = primary
+
+            # Build non-internal templates (remove .local / nonroutable suffixes as primary/secondary)
+            # but keep any routable domain that is NOT the access namespace as secondary smtp:
+            $keepTemplates = $currentTemplates | Where-Object {
+                $t = $_ -replace '^smtp:|^SMTP:',''
+                # Drop .local, .internal, .lan addresses — these are not routable
+                ($t -notmatch '\.(local|internal|lan|corp)$') -and ($t -ne "@$ns")
+            } | ForEach-Object {
+                # Downcase existing primary markers so we don't have two primaries
+                $_ -replace '^SMTP:', 'smtp:'
+            }
+
+            # Check whether we dropped any internal templates (for logging)
+            $droppedCount = $currentTemplates.Count - $keepTemplates.Count - 1  # -1 for namespace slot
+            if ($droppedCount -gt 0) {
+                Write-MyOutput ("Removing {0} internal-only address template(s) from policy '{1}'" -f $droppedCount, $policy.Name)
+            }
+
+            # Build new list: access namespace first (primary), remaining routable domains second
+            $newTemplates = @($nsTemplate) + @($keepTemplates | Where-Object { $_ })
+
+            # Only update if something actually changed
+            $alreadyPrimary = ($currentTemplates | Select-Object -First 1) -ieq $nsTemplate
+            $sameCount      = ($newTemplates.Count -eq $currentTemplates.Count) -and
+                              (($newTemplates | Sort-Object) -join '|') -eq (($currentTemplates | Sort-Object) -join '|')
+
+            if ($alreadyPrimary -and $sameCount) {
+                Write-MyVerbose ("Email Address Policy '{0}' already configured correctly — no change needed" -f $policy.Name)
+            }
+            else {
+                Set-EmailAddressPolicy -Identity $policy.Identity -EnabledEmailAddressTemplates $newTemplates -ErrorAction Stop
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Set-EmailAddressPolicy -Identity '{0}' -EnabledEmailAddressTemplates @('{1}')" -f $policy.Name, ($newTemplates -join "','"))
+                Write-MyOutput ("Email Address Policy '{0}' updated — primary SMTP: @{1}" -f $policy.Name, $ns)
+
+                # ── 3. Apply policy to all mailboxes ────────────────────────────
+                Write-MyOutput ('Applying Email Address Policy to all mailboxes (this may take a moment)...')
+                Update-EmailAddressPolicy -Identity $policy.Identity -ErrorAction Stop
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policy.Name)
+                Write-MyOutput ('Email Address Policy applied.')
+            }
+        }
+        catch {
+            Write-MyWarning ('Email Address Policy update failed: {0}' -f $_.Exception.Message)
         }
     }
 

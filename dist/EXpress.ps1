@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.0
+    Version:     1.1
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -944,6 +944,11 @@ param(
     [string]$Namespace,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    # Root mail domain for Accepted Domain + Email Address Policy (e.g. contoso.com).
+    # Defaults to the parent of -Namespace when omitted (e.g. mail.contoso.com → contoso.com).
+    [string]$MailDomain,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
     [string]$DownloadDomain,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'E')]
@@ -1042,7 +1047,7 @@ param(
 
 process {
 
-    $ScriptVersion = '1.0'
+    $ScriptVersion = '1.1'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -1445,7 +1450,12 @@ process {
                     }
                 }
                 $ProgressPreference = $savedPP
-                if (-not $downloaded) { $res = $false }
+                if (-not $downloaded) {
+                    $res = $false
+                    Write-MyWarning ('Could not download {0}. For offline or proxy-restricted deployments:' -f $FileName)
+                    Write-MyOutput  ('  1. Run  .\tools\Get-EXpressDownloads.ps1  on an internet-connected machine.')
+                    Write-MyOutput  ('  2. Copy the sources\ folder to {0}' -f $InstallPath)
+                }
             }
             else {
                 Write-MyWarning "$FileName not present, skipping"
@@ -2441,7 +2451,10 @@ process {
             Write-MyOutput "Processing $Package"
             $PresenceKey = $false
         }
-        $RunFrom = $State['InstallPath']
+        # All downloads land in <InstallPath>\sources\; falls back to InstallPath if
+        # SourcesPath wasn't initialized yet (safety guard — Install-MyPackage may be
+        # called before the dedicated sources folder is set up).
+        $RunFrom = if ($State['SourcesPath']) { $State['SourcesPath'] } else { $State['InstallPath'] }
         if ( !( $PresenceKey )) {
 
             if ( $FileName.contains('|')) {
@@ -2573,11 +2586,23 @@ process {
                 exit $ERR_CANTCREATETEMPFOLDER
             }
 
+            # Downloads cache: all prerequisite packages (.NET, VC++, UCMA, URL Rewrite, hotfixes,
+            # Exchange SUs) and CSS-Exchange scripts (HealthChecker, EOMT, SetupAssist,
+            # ExchangeExtendedProtection, MEAC, etc.) land here. Pre-staging is automatic —
+            # when a file is already present the download is skipped (air-gapped / proxy scenarios).
+            $State['SourcesPath'] = Join-Path $State['InstallPath'] 'sources'
+            New-Item -Path $State['SourcesPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+            if ( !( Test-Path $State['SourcesPath'])) {
+                Write-MyError "Can't create downloads folder $($State['SourcesPath'])"
+                exit $ERR_CANTCREATETEMPFOLDER
+            }
+            Write-MyVerbose ('Downloads cache: {0}' -f $State['SourcesPath'])
+
             if ( [System.Version]$MajorOSVersion -ge [System.Version]$WS2016_MAJOR ) {
                 Write-MyOutput "Operating System is $($MajorOSVersion).$($MinorOSVersion)"
             }
             else {
-                Write-MyError 'The following Operating Systems are supported: Windows Server 2019, Windows Server 2022 (Exchange 2019) or Windows Server 2025 (Exchange 2019 CU15+)'
+                Write-MyError 'Supported operating systems: Windows Server 2016 (Exchange 2016 CU23), Windows Server 2019/2022/2025 (Exchange 2019 CU15+ or Exchange Server SE)'
                 exit $ERR_UNEXPECTEDOS
             }
             Write-MyOutput ('Server core mode: {0}' -f (Test-ServerCore))
@@ -2750,9 +2775,14 @@ process {
         $State['MajorSetupVersion'] = $MajorSetupVersion
         $State['MinorSetupVersion'] = $MinorSetupVersion
 
-        if ( ($MajorSetupVersion -eq $EX2019_MAJOR -and [System.Version]$SetupVersion -lt [System.Version]$EX2019SETUPEXE_CU10) -or
+        # Target install supports only the latest CU of each Exchange line:
+        # Ex2016 CU23 (final), Ex2019 CU15+, Exchange SE RTM+.
+        # Older Ex2019 CUs (CU10–CU14) are out of Microsoft SU support and rejected here.
+        # Note: Export-SourceServerConfig queries remote source servers independently and still
+        # accepts older CUs as migration sources — this gate only governs the local install target.
+        if ( ($MajorSetupVersion -eq $EX2019_MAJOR -and [System.Version]$SetupVersion -lt [System.Version]$EX2019SETUPEXE_CU15) -or
             ($MajorSetupVersion -eq $EX2016_MAJOR -and [System.Version]$SetupVersion -lt [System.Version]$EX2016SETUPEXE_CU23) ) {
-            Write-MyError 'Unsupported version of Exchange detected; only Exchange SE, Exchange 2019 CU10 or later, or Exchange 2016 CU23 are supported'
+            Write-MyError 'Unsupported Exchange target version. Supported install targets: Exchange 2016 CU23 (final), Exchange 2019 CU15+, or Exchange Server SE. Older Exchange 2019 CUs (CU10–CU14) are out of Microsoft SU support — please install CU15 or Exchange Server SE.'
             exit $ERR_UNSUPPORTEDEX
         }
 
@@ -2772,23 +2802,28 @@ process {
             }
         }
 
-        if ( [System.Version]$FullOSVersion -ge $WS2025_PREFULL -and [System.Version]$SetupVersion -lt $EX2019SETUPEXE_CU15) {
-            Write-MyError 'Windows Server 2025 is only supported for Exchange 2019 CU15 or later, or Exchange Server SE'
-            exit $ERR_UNEXPECTEDOS
-        }
-
+        # OS gate for Exchange Server SE — supported on WS2019, WS2022, WS2025
         if ( [System.Version]$SetupVersion -ge [System.Version]$EXSESETUPEXE_RTM -and [System.Version]$FullOSVersion -lt $WS2019_PREFULL) {
             Write-MyError 'Exchange Server SE requires Windows Server 2019, Windows Server 2022 or Windows Server 2025'
             exit $ERR_UNEXPECTEDOS
         }
 
-        if ( [System.Version]$FullOSVersion -lt [System.Version]$WS2016_MAJOR -and $MajorSetupVersion -eq $EX2016_MAJOR) {
-            Write-MyError 'Exchange 2016 requires Windows Server 2016 or later'
-            exit $ERR_UNEXPECTEDOS
+        # OS gate for Exchange 2016 CU23 — target only on WS2016 per Microsoft supportability matrix
+        # (WS2012/R2 are past extended support; WS2019+ are not supported by Exchange 2016 setup).
+        if ( $MajorSetupVersion -eq $EX2016_MAJOR ) {
+            if ( [System.Version]$FullOSVersion -lt [System.Version]$WS2016_MAJOR ) {
+                Write-MyError 'Exchange 2016 CU23 requires Windows Server 2016'
+                exit $ERR_UNEXPECTEDOS
+            }
+            if ( [System.Version]$FullOSVersion -ge $WS2019_PREFULL ) {
+                Write-MyError 'Exchange 2016 CU23 is only supported on Windows Server 2016. For newer Windows Server releases install Exchange 2019 CU15+ or Exchange Server SE.'
+                exit $ERR_UNEXPECTEDOS
+            }
         }
 
-        if ( [System.Version]$FullOSVersion -ge $WS2022_PREFULL -and [System.Version]$FullOSVersion -lt $WS2025_PREFULL -and [System.Version]$SetupVersion -lt $EX2019SETUPEXE_CU12) {
-            Write-MyError 'Windows Server 2022 is only supported for Exchange Server 2019 CU12 or later, or Exchange Server SE'
+        # OS gate for Exchange 2019 CU15+ — supported on WS2019, WS2022, WS2025
+        if ( $MajorSetupVersion -eq $EX2019_MAJOR -and [System.Version]$FullOSVersion -lt $WS2019_PREFULL ) {
+            Write-MyError 'Exchange 2019 CU15+ requires Windows Server 2019, Windows Server 2022 or Windows Server 2025'
             exit $ERR_UNEXPECTEDOS
         }
 
@@ -2803,18 +2838,9 @@ process {
             }
         }
 
-        if ( $State["MajorSetupVersion"] -eq $EX2019_MAJOR -and [System.Version]$State["SetupVersion"] -lt [System.Version]$EX2019SETUPEXE_CU14 ) {
-            if ( $State['DoNotEnableEP']) {
-                Write-MyWarning 'DoNotEnableEP is not supported with this Exchange version, ignoring this switch'
-                $State['DoNotEnableEP'] = $false
-            }
-            if ( $State['DoNotEnableEP_FEEWS']) {
-                Write-MyWarning 'DoNotEnableEP_FEEWS is not supported with this Exchange version, ignoring this switch'
-                $State['DoNotEnableEP_FEEWS'] = $false
-            }
-        }
-
-        if ( ($State["MajorSetupVersion"] -eq $EX2019_MAJOR) -and [System.Version]$State["SetupVersion"] -ge [System.Version]$EX2019SETUPEXE_CU11 ) {
+        # Ex2019 CU15+ and Exchange SE always support DiagnosticData switch.
+        # Ex2016 CU23 uses the legacy non-DiagnosticData license-accept switch.
+        if ( $State["MajorSetupVersion"] -eq $EX2019_MAJOR ) {
             if ( $State['DiagnosticData']) {
                 $State['IAcceptSwitch'] = '/IAcceptExchangeServerLicenseTerms_DiagnosticDataON'
                 Write-MyOutput 'Will deploy Exchange with Data Collection enabled'
@@ -3576,7 +3602,7 @@ Write-Log 'Exchange log cleanup finished'
             return
         }
         Write-MyOutput 'Registering Auth Certificate renewal (MEAC / CSS-Exchange MonitorExchangeAuthCertificate.ps1)'
-        $meacPath = Join-Path $State['InstallPath'] 'MonitorExchangeAuthCertificate.ps1'
+        $meacPath = Join-Path $State['SourcesPath'] 'MonitorExchangeAuthCertificate.ps1'
         $meacUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/MonitorExchangeAuthCertificate.ps1'
         if (-not (Test-Path $meacPath)) {
             try {
@@ -4075,13 +4101,117 @@ Write-Log 'Exchange log cleanup finished'
         }
     }
 
+    function Enable-AccessNamespaceMailConfig {
+        # F26 — Configure the Access Namespace as an Accepted Domain and update the
+        # default Email Address Policy so that mailboxes get a primary SMTP address
+        # @<AccessNamespace> (e.g. @mail.contoso.com).
+        #
+        # Steps:
+        #  1. Add the Access Namespace as an Authoritative Accepted Domain (skip if present).
+        #  2. Update the default Email Address Policy to make @<namespace> the primary
+        #     SMTP template; retain the AD/internal domain as a secondary address.
+        #  3. Remove pure-internal domains (.local / nonroutable) from the policy
+        #     templates — they serve no purpose as email addresses.
+        #  4. Apply the updated policy to all mailboxes via Update-EmailAddressPolicy.
+        #
+        # Safety: the function is idempotent.  Running it a second time re-checks each
+        # step and skips anything already in place.
+        #
+        if ($State['InstallEdge']) { Write-MyVerbose 'Enable-AccessNamespaceMailConfig: skipped (Edge Transport)'; return }
+        if (-not $State['Namespace']) { Write-MyVerbose 'Enable-AccessNamespaceMailConfig: no namespace set — skipping'; return }
+
+        # MailDomain is the root domain used for email addresses (e.g. contoso.com).
+        # It defaults to the parent of the access namespace (drop leftmost label).
+        # e.g. Namespace=outlook.domain.de → MailDomain=domain.de
+        $ns = if ($State['MailDomain']) {
+            $State['MailDomain']
+        } else {
+            $part = ($State['Namespace'] -split '\.', 2)[1]
+            if ($part -match '\.') { $part } else { $State['Namespace'] }
+        }
+
+        Write-MyOutput ('Configuring access namespace mail settings — mail domain: {0}' -f $ns)
+
+        # ── 1. Accepted Domain ──────────────────────────────────────────────────
+        try {
+            $existing = Get-AcceptedDomain -ErrorAction Stop | Where-Object { $_.DomainName -eq $ns }
+            if ($existing) {
+                Write-MyVerbose ('Accepted domain already present: {0} ({1})' -f $ns, $existing.DomainType)
+            }
+            else {
+                New-AcceptedDomain -Name $ns -DomainName $ns -DomainType Authoritative -ErrorAction Stop | Out-Null
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("New-AcceptedDomain -Name '{0}' -DomainName '{0}' -DomainType Authoritative" -f $ns)
+                Write-MyOutput ('Accepted domain added: {0} (Authoritative)' -f $ns)
+            }
+        }
+        catch {
+            Write-MyWarning ('Could not create accepted domain {0}: {1}' -f $ns, $_.Exception.Message)
+            return
+        }
+
+        # ── 2. Email Address Policy — primary SMTP template ─────────────────────
+        try {
+            $policy = Get-EmailAddressPolicy -ErrorAction Stop | Sort-Object Priority | Select-Object -First 1
+            if (-not $policy) {
+                Write-MyWarning 'No Email Address Policy found — skipping policy update'
+                return
+            }
+
+            $currentTemplates = @($policy.EnabledEmailAddressTemplates)
+            $nsTemplate        = "SMTP:@$ns"   # uppercase SMTP = primary
+
+            # Build non-internal templates (remove .local / nonroutable suffixes as primary/secondary)
+            # but keep any routable domain that is NOT the access namespace as secondary smtp:
+            $keepTemplates = $currentTemplates | Where-Object {
+                $t = $_ -replace '^smtp:|^SMTP:',''
+                # Drop .local, .internal, .lan addresses — these are not routable
+                ($t -notmatch '\.(local|internal|lan|corp)$') -and ($t -ne "@$ns")
+            } | ForEach-Object {
+                # Downcase existing primary markers so we don't have two primaries
+                $_ -replace '^SMTP:', 'smtp:'
+            }
+
+            # Check whether we dropped any internal templates (for logging)
+            $droppedCount = $currentTemplates.Count - $keepTemplates.Count - 1  # -1 for namespace slot
+            if ($droppedCount -gt 0) {
+                Write-MyOutput ("Removing {0} internal-only address template(s) from policy '{1}'" -f $droppedCount, $policy.Name)
+            }
+
+            # Build new list: access namespace first (primary), remaining routable domains second
+            $newTemplates = @($nsTemplate) + @($keepTemplates | Where-Object { $_ })
+
+            # Only update if something actually changed
+            $alreadyPrimary = ($currentTemplates | Select-Object -First 1) -ieq $nsTemplate
+            $sameCount      = ($newTemplates.Count -eq $currentTemplates.Count) -and
+                              (($newTemplates | Sort-Object) -join '|') -eq (($currentTemplates | Sort-Object) -join '|')
+
+            if ($alreadyPrimary -and $sameCount) {
+                Write-MyVerbose ("Email Address Policy '{0}' already configured correctly — no change needed" -f $policy.Name)
+            }
+            else {
+                Set-EmailAddressPolicy -Identity $policy.Identity -EnabledEmailAddressTemplates $newTemplates -ErrorAction Stop
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Set-EmailAddressPolicy -Identity '{0}' -EnabledEmailAddressTemplates @('{1}')" -f $policy.Name, ($newTemplates -join "','"))
+                Write-MyOutput ("Email Address Policy '{0}' updated — primary SMTP: @{1}" -f $policy.Name, $ns)
+
+                # ── 3. Apply policy to all mailboxes ────────────────────────────
+                Write-MyOutput ('Applying Email Address Policy to all mailboxes (this may take a moment)...')
+                Update-EmailAddressPolicy -Identity $policy.Identity -ErrorAction Stop
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policy.Name)
+                Write-MyOutput ('Email Address Policy applied.')
+            }
+        }
+        catch {
+            Write-MyWarning ('Email Address Policy update failed: {0}' -f $_.Exception.Message)
+        }
+    }
+
     function Invoke-EOMT {
         if (-not $State['RunEOMT']) {
             Write-MyVerbose 'RunEOMT not specified, skipping EOMT'
             return
         }
         Write-MyOutput 'Running CSS-Exchange Emergency Mitigation Tool (EOMT)'
-        $eomtPath = Join-Path $State['InstallPath'] 'EOMT.ps1'
+        $eomtPath = Join-Path $State['SourcesPath'] 'EOMT.ps1'
         $eomtUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/EOMT.ps1'
 
         if (-not (Test-Path $eomtPath)) {
@@ -4444,7 +4574,7 @@ Write-Log 'Exchange log cleanup finished'
         }
 
         Write-MyOutput 'Running CSS-Exchange HealthChecker'
-        $hcPath = Join-Path $State['InstallPath'] 'HealthChecker.ps1'
+        $hcPath = Join-Path $State['SourcesPath'] 'HealthChecker.ps1'
         $hcUrl = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/HealthChecker.ps1'
 
         # Download if not present
@@ -4534,7 +4664,7 @@ Write-Log 'Exchange log cleanup finished'
         }
 
         Write-MyOutput 'Running CSS-Exchange SetupAssist to diagnose setup failure'
-        $saPath = Join-Path $State['InstallPath'] 'SetupAssist.ps1'
+        $saPath = Join-Path $State['SourcesPath'] 'SetupAssist.ps1'
         $saUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/SetupAssist.ps1'
 
         if (-not (Test-Path $saPath)) {
@@ -4579,7 +4709,7 @@ Write-Log 'Exchange log cleanup finished'
         }
 
         # SetupLogReviewer — additional log analysis tool
-        $slrPath = Join-Path $State['InstallPath'] 'SetupLogReviewer.ps1'
+        $slrPath = Join-Path $State['SourcesPath'] 'SetupLogReviewer.ps1'
         $slrUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/SetupLogReviewer.ps1'
 
         if (-not (Test-Path $slrPath)) {
@@ -5773,7 +5903,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         if ($secFail -gt 0)  { $actionItems.Add('<li><strong>Security:</strong> {0} critical finding(s) require immediate attention — see Security Settings section.</li>' -f $secFail) }
         if ($secWarn -gt 0)  { $actionItems.Add('<li><strong>Security:</strong> {0} warning(s) — review Security Settings section.</li>' -f $secWarn) }
         if ($perfWarn -gt 0) { $actionItems.Add('<li><strong>Performance:</strong> {0} setting(s) below recommendation — review Performance &amp; Tuning section.</li>' -f $perfWarn) }
-        if (-not $State['Namespace']) { $actionItems.Add('<li><strong>Virtual Directories:</strong> No external namespace configured. OWA/ECP/EWS URLs may still point to server hostname.</li>') }
+        if (-not $State['Namespace']) { $actionItems.Add('<li><strong>Virtual Directories:</strong> No access namespace configured. OWA/ECP/EWS URLs may still point to server hostname.</li>') }
         if (-not $State['IncludeFixes']) { $actionItems.Add('<li><strong>Security Updates:</strong> Exchange Security Update installation was skipped. Apply the latest SU manually.</li>') }
 
         $actionHtml = if ($actionItems.Count -gt 0) {
@@ -6432,7 +6562,14 @@ $body
         $company  = SafeVal $State['CompanyName'] ''
         $author   = SafeVal $State['Author']      ''
         $coverSub = (L 'Installation, Hybridbereitstellung, Mailflow' 'Installation, Hybrid deployment, Mail flow')
-        $logoFile = Join-Path $State['InstallPath'] 'logo.png'
+        # Logo probe: sources\logo.png (user-placed) → beside the script → assets\logo.png (repo default)
+        $_logoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { $State['InstallPath'] }
+        $logoFile = @(
+            (Join-Path $State['SourcesPath'] 'logo.png'),
+            (Join-Path $_logoRoot 'logo.png'),
+            (Join-Path $_logoRoot 'assets\logo.png')
+        ) | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+        if (-not $logoFile) { $logoFile = Join-Path $State['SourcesPath'] 'logo.png' }   # fallback path (will fail Test-Path gracefully)
 
         if (-not $useTpl) {
         # ── Deckblatt (Cover Page) ───────────────────────────────────────────────
@@ -8357,7 +8494,7 @@ $body
         # Exchange SE RTM (15.02.2562.017) -> Feb 2026 SU (KB5074992)
         # No URL: the WU-catalog CAB is not installable via DISM/expand.exe.
         # Place ExchangeSubscriptionEdition-KB5074992-x64-en.exe (from Microsoft Download Center)
-        # in InstallPath before running, or apply via Windows Update / WSUS.
+        # in <InstallPath>\sources\ before running, or apply via Windows Update / WSUS.
         '15.02.2562.017' = @{
             KB            = 'KB5074992'
             FileName      = 'ExchangeSubscriptionEdition-KB5074992-x64-en.exe'
@@ -8417,7 +8554,7 @@ $body
     function Get-LatestSUBuildFromHC {
         # Parses HealthChecker.ps1's GetExchangeBuildDictionary to find the latest known SU
         # build for the installed Exchange CU. Returns a version string ('15.02.1748.043') or $null.
-        $hcPath = Join-Path $State['InstallPath'] 'HealthChecker.ps1'
+        $hcPath = Join-Path $State['SourcesPath'] 'HealthChecker.ps1'
         if (-not (Test-Path $hcPath)) { return $null }
 
         # Map setup.exe version to HC CU key
@@ -8490,11 +8627,11 @@ $body
             }
             else {
                 Write-MyOutput ('Exchange Security Update {0} available for build {1} -> {2}' -f $su.KB, $State['SetupVersion'], $su.TargetVersion)
-                $suPath = Join-Path $State['InstallPath'] $su.FileName
+                $suPath = Join-Path $State['SourcesPath'] $su.FileName
                 if (-not (Test-Path $suPath)) {
                     if ($su.URL) {
                         Write-MyOutput ('Downloading {0}' -f $su.KB)
-                        $null = Get-MyPackage -Package $su.KB -URL $su.URL -FileName $su.FileName -InstallPath $State['InstallPath']
+                        $null = Get-MyPackage -Package $su.KB -URL $su.URL -FileName $su.FileName -InstallPath $State['SourcesPath']
                     }
                     if (-not (Test-Path $suPath)) {
                         Write-MyWarning ('Exchange SU {0}: installer not available for automatic download.' -f $su.KB)
@@ -8512,7 +8649,7 @@ $body
                                 while ([DateTime]::Now -lt $suDeadline) {
                                     $secsLeft = [int]($suDeadline - [DateTime]::Now).TotalSeconds
                                     Write-Progress -Id 2 -Activity ('Exchange SU {0}' -f $su.KB) `
-                                        -Status ('Place {0} in {1} then ENTER  |  auto-skip in {2}s' -f $su.FileName, $State['InstallPath'], $secsLeft) `
+                                        -Status ('Place {0} in {1} then ENTER  |  auto-skip in {2}s' -f $su.FileName, $State['SourcesPath'], $secsLeft) `
                                         -PercentComplete ([int](($suTotalSecs - $secsLeft) * 100 / $suTotalSecs))
                                     if ($host.UI.RawUI.KeyAvailable) {
                                         $key = $host.UI.RawUI.ReadKey('IncludeKeyDown,NoEcho')
@@ -8542,7 +8679,7 @@ $body
                     }
                     # Exchange SU installers only accept /passive or /silent — /norestart is not supported.
                     # Exit code 3010 = success + reboot required; handled below.
-                    $rc = Invoke-Process -FilePath $State['InstallPath'] -FileName $su.FileName -ArgumentList '/passive'
+                    $rc = Invoke-Process -FilePath $State['SourcesPath'] -FileName $su.FileName -ArgumentList '/passive'
                     if ($rc -eq 0 -or $rc -eq 3010) {
                         Write-MyOutput ('Exchange SU {0} installed successfully' -f $su.KB)
                         # Persist a per-KB installed flag immediately so phase-5 re-entry after
@@ -8564,7 +8701,7 @@ $body
 
         # P6 — Dynamic gap-check: download HC.ps1 if not present and compare installed
         # build against HC's GetExchangeBuildDictionary (single attempt, non-blocking).
-        $hcPath = Join-Path $State['InstallPath'] 'HealthChecker.ps1'
+        $hcPath = Join-Path $State['SourcesPath'] 'HealthChecker.ps1'
         if (-not (Test-Path $hcPath)) {
             try {
                 Write-MyVerbose 'Downloading HealthChecker.ps1 for Exchange SU version check'
@@ -8655,18 +8792,10 @@ $body
         }
         Write-MyOutput 'Exchange Management Tools setup completed'
 
-        # Run CSS-Exchange Add-PermissionForEMT.ps1 if available
-        $emtScript = Join-Path $State['InstallPath'] 'Add-PermissionForEMT.ps1'
-        $emtUrl = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/Add-PermissionForEMT.ps1'
-        if (-not (Test-Path $emtScript)) {
-            try {
-                Write-MyVerbose ('Downloading Add-PermissionForEMT from {0}' -f $emtUrl)
-                Start-BitsTransfer -Source $emtUrl -Destination $emtScript -ErrorAction Stop
-            }
-            catch {
-                Write-MyWarning ('Could not download Add-PermissionForEMT.ps1: {0}' -f $_.Exception.Message)
-            }
-        }
+        # Run CSS-Exchange Add-PermissionForEMT.ps1 if available (pre-stage in sources\).
+        # This script was removed from CSS-Exchange releases; only runs if the file is pre-staged.
+        $emtScript = Join-Path $State['SourcesPath'] 'Add-PermissionForEMT.ps1'
+        $emtUrl = $null   # no longer available from CSS-Exchange releases
         if (Test-Path $emtScript) {
             try {
                 Write-MyOutput 'Running Add-PermissionForEMT.ps1'
@@ -9483,7 +9612,7 @@ $body
         # F6: Windows Extended Protection (channel binding) mitigates NTLM relay / pass-the-hash attacks on IIS.
         # Prerequisite: SSL offloading must be disabled (F13), TLS 1.2 must be enforced.
         # Exchange 2019 CU14+ / SE: EP is enabled by setup — this function validates the configuration.
-        # Exchange 2016 / 2019 pre-CU14: downloads and runs ExchangeExtendedProtection.ps1 from CSS-Exchange.
+        # Exchange 2016 / 2019 pre-CU14: downloads and runs ExchangeExtendedProtectionManagement.ps1 from CSS-Exchange.
         if ($State['DoNotEnableEP']) { Write-MyVerbose 'DoNotEnableEP set — skipping Extended Protection'; return }
         if ($State['InstallEdge'])   { Write-MyVerbose 'Edge Transport — Extended Protection not applicable'; return }
 
@@ -9508,18 +9637,19 @@ $body
             return
         }
 
-        # Exchange 2016 / 2019 pre-CU14: configure via CSS-Exchange ExchangeExtendedProtection.ps1
-        Write-MyOutput 'Enabling Extended Protection via CSS-Exchange ExchangeExtendedProtection.ps1'
-        $epPath = Join-Path $State['InstallPath'] 'ExchangeExtendedProtection.ps1'
-        $epUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/ExchangeExtendedProtection.ps1'
+        # Exchange 2016 / 2019 pre-CU14: configure via CSS-Exchange ExchangeExtendedProtectionManagement.ps1
+        Write-MyOutput 'Enabling Extended Protection via CSS-Exchange ExchangeExtendedProtectionManagement.ps1'
+        $epPath = Join-Path $State['SourcesPath'] 'ExchangeExtendedProtectionManagement.ps1'
+        $epUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/ExchangeExtendedProtectionManagement.ps1'
+        # Note: previously named ExchangeExtendedProtection.ps1 — renamed in CSS-Exchange 2024 releases
 
         if (-not (Test-Path $epPath)) {
             try {
                 Invoke-WebDownload -Uri $epUrl -OutFile $epPath
-                Write-MyVerbose ('ExchangeExtendedProtection.ps1 downloaded, SHA256: {0}' -f (Get-FileHash $epPath -Algorithm SHA256).Hash)
+                Write-MyVerbose ('ExchangeExtendedProtectionManagement.ps1 downloaded, SHA256: {0}' -f (Get-FileHash $epPath -Algorithm SHA256).Hash)
             }
             catch {
-                Write-MyWarning ('Could not download ExchangeExtendedProtection.ps1: {0}' -f $_.Exception.Message)
+                Write-MyWarning ('Could not download ExchangeExtendedProtectionManagement.ps1: {0}' -f $_.Exception.Message)
                 return
             }
         }
@@ -9527,12 +9657,12 @@ $body
         try {
             $epArgs = @('-ExchangeServerNames', $env:computername)
             if ($State['DoNotEnableEP_FEEWS']) { $epArgs += '-SkipEWS' }
-            $epCmd = '& ExchangeExtendedProtection.ps1 -ExchangeServerNames {0}{1}' -f $env:computername, (if ($State['DoNotEnableEP_FEEWS']) { ' -SkipEWS' } else { '' })
+            $epCmd = '& ExchangeExtendedProtectionManagement.ps1 -ExchangeServerNames {0}{1}' -f $env:computername, (if ($State['DoNotEnableEP_FEEWS']) { ' -SkipEWS' } else { '' })
             Register-ExecutedCommand -Category 'ExchangeTuning' -Command $epCmd
             & $epPath @epArgs *>&1 | ForEach-Object { Write-ToTranscript ([string]$_) }
         }
         catch {
-            Write-MyWarning ('ExchangeExtendedProtection.ps1 failed: {0}' -f $_.Exception.Message)
+            Write-MyWarning ('ExchangeExtendedProtectionManagement.ps1 failed: {0}' -f $_.Exception.Message)
         }
     }
 
@@ -10143,6 +10273,7 @@ $body
             MRSProxy            = @{ Category='PostConfig'; Label='Enable MRS Proxy';        Default=$true;  Description='Enable MRS Proxy on EWS for cross-forest/cross-org mailbox moves.' }
             IANATimezone        = @{ Category='PostConfig'; Label='IANA timezone mapping';   Default=$true;  Description='Configure IANA ↔ Windows timezone mapping (iCal interop).' }
             AnonymousRelay      = @{ Category='PostConfig'; Label='Anonymous relay connector'; Default=$true; Description='Create anonymous internal/external relay connector if RelaySubnets is configured.'; Condition={ [bool]$script:State['RelaySubnets'] -or [bool]$script:State['ExternalRelaySubnets'] } }
+            AccessNamespaceMail = @{ Category='PostConfig'; Label='Access Namespace mail config'; Default=$true; Description='Add Access Namespace as Authoritative Accepted Domain and set it as primary SMTP in the default Email Address Policy. Removes .local/nonroutable templates.'; Condition={ [bool]$script:State['Namespace'] } }
             SkipHealthCheck     = @{ Category='PostConfig'; Label='Opt-out: HealthChecker';  Default=$false; Description='Skip CSS-Exchange HealthChecker run at end of Phase 6.' }
             RBACReport          = @{ Category='PostConfig'; Label='RBAC Report';             Default=$true;  Description='Generate RBAC (role assignments / role groups) HTML report.' }
             RunEOMT             = @{ Category='PostConfig'; Label='Run EOMT';                Default=$false; Description='Run CSS-Exchange Emergency Mitigation Tool (legacy CUs; no-op on current CUs).' }
@@ -10707,8 +10838,12 @@ $body
             }
             $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none) [not tested]' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. ex01.contoso.com)'
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
-            $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
+            $cfg['Namespace']        = Read-MenuInput -Prompt 'Access namespace       (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
+                # Default mail domain = parent of access namespace (drop leftmost label)
+                $defaultMailDomain = ($cfg['Namespace'] -split '\.', 2)[1]
+                if ($defaultMailDomain -notmatch '\.') { $defaultMailDomain = $cfg['Namespace'] }
+                $cfg['MailDomain']     = Read-MenuInput -Prompt 'Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)' -Default $defaultMailDomain -Validate $validateFQDN -ValidateMessage 'Not a valid domain (e.g. contoso.com)'
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
@@ -10740,8 +10875,11 @@ $body
             $cfg['CustomerDocument'] = ($custInput -imatch '^[Yy]$')
         }
         elseif ($selectedMode -eq 6) {
-            $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
+            $cfg['Namespace']        = Read-MenuInput -Prompt 'Access namespace       (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
+                $defaultMailDomain2 = ($cfg['Namespace'] -split '\.', 2)[1]
+                if ($defaultMailDomain2 -notmatch '\.') { $defaultMailDomain2 = $cfg['Namespace'] }
+                $cfg['MailDomain']     = Read-MenuInput -Prompt 'Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)' -Default $defaultMailDomain2 -Validate $validateFQDN -ValidateMessage 'Not a valid domain (e.g. contoso.com)'
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
@@ -10777,6 +10915,28 @@ $body
         $cfg['AdvancedFeatures'] = $advancedFeatures
 
         # --- Step 4: Summary + confirmation ---
+        # Build ordered list of editable fields per mode for the E=Edit path.
+        # Each entry: Key (cfg hashtable key), Label (display), Prompt (Read-Host text),
+        #             Validate (scriptblock or $null), ValidateMsg, Required.
+        $editFields = [System.Collections.Generic.List[hashtable]]::new()
+        if ($selectedMode -in @(1, 6)) {
+            if ($selectedMode -eq 1) {
+                $editFields.Add(@{ Key='SourcePath';    Label='Exchange source';      Prompt='Exchange source (folder or .iso)';                               Required=$true;  Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='InstallPath';   Label='Working folder';       Prompt='Working/log folder';                                             Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='Organization';  Label='Organization name';    Prompt='Organization name';                                              Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='MDBName';       Label='Mailbox DB name';      Prompt='Mailbox DB name        (blank = default name)';                  Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='MDBDBPath';     Label='Mailbox DB path';      Prompt='Mailbox DB path        (blank = Exchange default)';              Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='MDBLogPath';    Label='Mailbox log path';     Prompt='Mailbox log path       (blank = Exchange default)';              Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='SCP';           Label='Autodiscover SCP URL'; Prompt='Autodiscover SCP URL   (blank = let Setup set, - = remove)';    Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='TargetPath';    Label='Exchange install path';Prompt='Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'; Required=$false; Validate=$null; ValidateMsg='' })
+                $editFields.Add(@{ Key='DAGName';       Label='DAG name';             Prompt='DAG name               (blank = no DAG join)';                  Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. dag01.contoso.com)' })
+                $editFields.Add(@{ Key='CertificatePath'; Label='PFX certificate';   Prompt='PFX certificate path   (blank = none)';                          Required=$false; Validate=$null;         ValidateMsg='' })
+            }
+            $editFields.Add(@{ Key='Namespace';      Label='Access Namespace';        Prompt='Access namespace       (e.g. mail.contoso.com, blank = skip URL config)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. mail.contoso.com)' })
+            $editFields.Add(@{ Key='MailDomain';     Label='Mail domain';             Prompt='Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid domain (e.g. contoso.com)' })
+            $editFields.Add(@{ Key='DownloadDomain'; Label='OWA download domain';     Prompt='OWA download domain    (e.g. download.contoso.com, blank = skip CVE-2021-1730)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. download.contoso.com)' })
+        }
+
         while ($true) {
             Clear-Host
             Write-MenuLine ('=' * 60) Cyan
@@ -10784,17 +10944,57 @@ $body
             Write-MenuLine ('=' * 60) Cyan
             Write-Host ''
             Write-Host ('  Mode    : {0}' -f $modes[$selectedMode]) -ForegroundColor Green
-            Write-Host ('  Source  : {0}' -f $cfg['SourcePath'])
-            Write-Host ('  Install : {0}' -f $cfg['InstallPath'])
-            if ($cfg['Organization']) { Write-Host ('  Org     : {0}' -f $cfg['Organization']) }
+            if ($cfg['SourcePath'])    { Write-Host ('  Source  : {0}' -f $cfg['SourcePath']) }
+            Write-Host                   ('  Install : {0}' -f $cfg['InstallPath'])
+            if ($cfg['Organization'])  { Write-Host ('  Org     : {0}' -f $cfg['Organization']) }
+            if ($cfg['MDBName'])       { Write-Host ('  MDB     : {0}' -f $cfg['MDBName']) }
+            if ($cfg['MDBDBPath'])     { Write-Host ('  DB Path : {0}' -f $cfg['MDBDBPath']) }
+            if ($cfg['MDBLogPath'])    { Write-Host ('  Log Path: {0}' -f $cfg['MDBLogPath']) }
+            if ($cfg['SCP'])           { Write-Host ('  SCP     : {0}' -f $cfg['SCP']) }
+            if ($cfg['TargetPath'])    { Write-Host ('  Target  : {0}' -f $cfg['TargetPath']) }
+            if ($cfg['DAGName'])       { Write-Host ('  DAG     : {0}' -f $cfg['DAGName']) }
+            if ($cfg['Namespace'])     { Write-Host ('  Namespace: {0}' -f $cfg['Namespace']) -ForegroundColor Cyan }
+            if ($cfg['MailDomain'])    { Write-Host ('  MailDomain: {0}' -f $cfg['MailDomain']) -ForegroundColor Cyan }
+            if ($cfg['DownloadDomain']){ Write-Host ('  DL Domain: {0}' -f $cfg['DownloadDomain']) }
+            if ($cfg['CertificatePath']){ Write-Host ('  Cert    : {0}' -f $cfg['CertificatePath']) }
+            if ($cfg['EdgeDNSSuffix']) { Write-Host ('  Edge DNS: {0}' -f $cfg['EdgeDNSSuffix']) }
             # Active switches
             $finalDisabled  = @($disabledToggles[$selectedMode]) + (Get-DynamicDisabled $toggleState)
             $activeToggles = ($toggleDefs.Keys | Where-Object { $toggleState[$_] -and ($finalDisabled -notcontains $_) }) -join ', '
             if ($activeToggles) { Write-Host ('  Switches: {0}' -f $activeToggles) }
             Write-Host ''
-            $confirm = Read-Host '  Start installation? [Y=yes / N=back to menu / Q=quit]'
+
+            $editHint = if ($editFields.Count -gt 0) { ' / E=edit a field' } else { '' }
+            $confirm = Read-Host ("  Start? [Y=yes{0} / N=back to menu / Q=quit]" -f $editHint)
+
             if ($confirm -imatch '^[Yy]') { return $cfg }
             if ($confirm -imatch '^[Qq]') { return $null }
+
+            if ($confirm -imatch '^[Ee]' -and $editFields.Count -gt 0) {
+                # Show numbered list of editable fields with current values
+                Write-Host ''
+                Write-Host '  Edit a field — current values:' -ForegroundColor Cyan
+                for ($fi = 0; $fi -lt $editFields.Count; $fi++) {
+                    $fld  = $editFields[$fi]
+                    $fval = if ($cfg[$fld.Key]) { $cfg[$fld.Key] } else { '(empty)' }
+                    Write-Host ('  {0,2}.  {1,-24} : {2}' -f ($fi + 1), $fld.Label, $fval)
+                }
+                Write-Host ''
+                $pick = (Read-Host '  Field number (ENTER = cancel)').Trim()
+                if ($pick -match '^\d+$') {
+                    $idx = [int]$pick - 1
+                    if ($idx -ge 0 -and $idx -lt $editFields.Count) {
+                        $fld      = $editFields[$idx]
+                        $curVal   = if ($cfg[$fld.Key]) { $cfg[$fld.Key] } else { '' }
+                        $newVal   = Read-MenuInput -Prompt $fld.Prompt -Default $curVal -Required $fld.Required -Validate $fld.Validate -ValidateMessage (if ($fld.ValidateMsg) { $fld.ValidateMsg } else { 'Invalid input' })
+                        $cfg[$fld.Key] = $newVal
+                        # Clear DownloadDomain if Namespace was cleared
+                        if ($fld.Key -eq 'Namespace' -and -not $newVal) { $cfg['DownloadDomain'] = '' }
+                    }
+                }
+                continue
+            }
+
             Write-MyVerbose 'Menu: Back to mode selection'
             # N or anything else = restart from mode selection
             $selectedMode = 0
@@ -11106,6 +11306,7 @@ $body
             $SkipWindowsUpdates   = [switch](Get-CfgValue 'SkipWindowsUpdates'   ([bool]$SkipWindowsUpdates))
             $SkipSetupAssist      = [switch](Get-CfgValue 'SkipSetupAssist'       ([bool]$SkipSetupAssist))
             $Namespace            = Get-CfgValue 'Namespace'      $Namespace
+            $MailDomain           = Get-CfgValue 'MailDomain'     $MailDomain
             $DownloadDomain       = Get-CfgValue 'DownloadDomain' $DownloadDomain
             $RunEOMT              = [switch](Get-CfgValue 'RunEOMT'              ([bool]$RunEOMT))
             $WaitForADSync        = [switch](Get-CfgValue 'WaitForADSync'        ([bool]$WaitForADSync))
@@ -11285,6 +11486,7 @@ $body
         $State["InstallWindowsUpdates"] = [bool]$InstallWindowsUpdates -and -not [bool]$SkipWindowsUpdates
         $State["SkipSetupAssist"] = $SkipSetupAssist
         $State["Namespace"]     = $Namespace
+        $State["MailDomain"]    = $MailDomain
         $State["DownloadDomain"] = $DownloadDomain
         $State["LogRetentionDays"] = $LogRetentionDays
         $State["RelaySubnets"]         = $RelaySubnets
@@ -11546,6 +11748,11 @@ $body
 
                     if ($State['RelaySubnets'] -or $State['ExternalRelaySubnets']) {
                         New-AnonymousRelayConnector
+                    }
+
+                    # Access Namespace — Accepted Domain + Email Address Policy (F26)
+                    if ($State['AccessNamespaceMail'] -and $State['Namespace']) {
+                        Enable-AccessNamespaceMailConfig
                     }
 
                     Test-DBLogPathSeparation
@@ -12103,6 +12310,12 @@ $body
                 if (($State['RelaySubnets'] -or $State['ExternalRelaySubnets']) -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Anonymous relay connector' -PercentComplete 78
                     New-AnonymousRelayConnector
+                }
+
+                # Access Namespace — Accepted Domain + Email Address Policy (F26)
+                if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and -not $State['InstallEdge']) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Access namespace mail config' -PercentComplete 79
+                    Enable-AccessNamespaceMailConfig
                 }
 
                 # Exchange log cleanup scheduled task

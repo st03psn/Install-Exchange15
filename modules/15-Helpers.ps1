@@ -113,7 +113,12 @@
                     }
                 }
                 $ProgressPreference = $savedPP
-                if (-not $downloaded) { $res = $false }
+                if (-not $downloaded) {
+                    $res = $false
+                    Write-MyWarning ('Could not download {0}. For offline or proxy-restricted deployments:' -f $FileName)
+                    Write-MyOutput  ('  1. Run  .\tools\Get-EXpressDownloads.ps1  on an internet-connected machine.')
+                    Write-MyOutput  ('  2. Copy the sources\ folder to {0}' -f $InstallPath)
+                }
             }
             else {
                 Write-MyWarning "$FileName not present, skipping"

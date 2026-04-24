@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, post-configuration, security hardening, and Word installation documentation.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 1.0 (April 2026, last updated 2026-04-24)
+**Version:** 1.1 (April 2026)
 **License:** As-Is, without warranty
 
 **Versioning scheme:** `MAJOR.MINOR` = feature release · `MAJOR.MINOR.PATCH` = bugfix / maintenance release. Example: `1.1` introduces features, `1.1.1` contains only bugfixes on top of `1.1`.
@@ -12,12 +12,13 @@ PowerShell script for fully unattended installation of Microsoft Exchange Server
 
 ## Supported Versions
 
+Only the **latest CU** of each Exchange line is supported as an install target. Older CUs (Ex2019 CU10–CU14) are out of Microsoft SU support and rejected by the preflight check. Older CUs can still be **source servers** for `Export-SourceServerConfig` during migration.
+
 | Exchange | Windows Server |
 |---|---|
-| Exchange 2016 CU23 | Windows Server 2016 |
-| Exchange 2019 CU10–CU14 | Windows Server 2019, 2022 |
-| Exchange 2019 CU15+ | Windows Server 2025 |
-| Exchange SE RTM | Windows Server 2022, 2025 |
+| Exchange 2016 CU23 (final) | Windows Server 2016 |
+| Exchange 2019 CU15+ | Windows Server 2019, 2022, 2025 |
+| Exchange Server SE (RTM+) | Windows Server 2019, 2022, 2025 |
 
 ---
 
@@ -162,7 +163,7 @@ Use `Build.ps1` to compile the script into a self-contained Windows executable v
 
 See `deploy-example.psd1` for a fully documented configuration file template.
 
-**Logo for Word documents** — place a `logo.png` (400×80 px recommended) alongside `EXpress.ps1` in your install folder. The sample `logo.png` in the repo root is used automatically if present.
+**Logo for Word documents** — place a `logo.png` (400×80 px recommended) in one of the following locations (first match wins): `<InstallPath>\sources\logo.png` (user-placed custom logo), alongside `EXpress.ps1`, or `assets\logo.png` (default sample shipped with the repo).
 
 ### Logging
 
@@ -266,9 +267,26 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v1.1 — April 2026
+- **`modules/` rename** — source directory renamed from `src/` to `modules/` for clarity; `tools/Merge-Source.ps1` and `Build.ps1` updated accordingly.
+- **CI guard** — `.github/workflows/merge-guard.yml` runs `Merge-Source.ps1`, `Parse-Check.ps1`, `git diff --exit-code dist/EXpress.ps1`, and the full Pester suite on every push or PR that touches `modules/`, `EXpress.ps1`, or `dist/`.
+- **Install-target matrix tightened** — Exchange 2019 CU10–CU14 rejected in preflight (CU15+ required); Exchange 2016 CU23 restricted to Windows Server 2016 only. Dead version-gate code removed.
+- **Centralized downloads cache** (`SourcesPath`) — all prerequisite packages (.NET, VC++, UCMA, URL Rewrite, hotfixes, Exchange SUs) and CSS-Exchange scripts (HealthChecker, EOMT, SetupAssist, ExchangeExtendedProtectionManagement, MEAC) now land in `<InstallPath>\sources\`. Any file already present is reused without re-downloading — enables air-gapped / proxy-restricted installs without code changes.
+- **`tools/Get-EXpressDownloads.ps1`** — new helper pre-stages all downloads on an internet-connected machine. Idempotent; `-SkipDotNet` skips the large .NET installers (not needed on WS2025 where .NET 4.8.1 ships in-box).
+- **`sources/` gitignored** — large binaries not committed to git; `assets/logo.png` holds the sample logo (previously `sources/logo.png`). Logo probe order: `sources\logo.png` → beside `EXpress.ps1` → `assets\logo.png`.
+- **Menu back/edit (Copilot mode)** — the confirmation screen (Step 4) now shows all entered fields and offers `E` = edit a specific field. Pick a field number to re-prompt with the current value as default — no need to restart the entire menu to fix a typo.
+- **F26: Access Namespace mail config** (`Enable-AccessNamespaceMailConfig`) — new `-MailDomain` parameter (auto-derived from `-Namespace` when omitted). Registers the root domain (e.g. `contoso.com` from `mail.contoso.com`) as an Authoritative Accepted Domain and sets it as the primary SMTP address in the default Email Address Policy, removing internal `.local` / `.lan` suffixes. Controlled via the Advanced Configuration menu (`AccessNamespaceMail` knob, default on when Namespace is set).
+- **Offline download hint** — when both BITS and the WebClient fallback fail in `Get-MyPackage`, the script now prints actionable guidance: run `tools/Get-EXpressDownloads.ps1` on an internet-connected machine, copy the `sources/` folder to the target.
+- **SU placement path fixed** — interactive countdown and log message for manually-placed Exchange SU installers now correctly show `SourcesPath` (was `InstallPath`).
+- **`tools/Build-InstallationTemplate.ps1`** — fixed stale `src/` → `modules/` path references; installation document templates regenerated.
+- **Concept template** (`tools/Build-ConceptTemplate.ps1`) — Windows Server matrix updated to include WS2019 for Exchange SE; EXpress version example updated to `1.1`.
+- **`tools/Enable-EXpressRemoteQuery.ps1`** and **`tools/Build-InstallationTemplate.ps1`** documented in a new **Tools** section in README.
+- **`docs/index.html`** — corrected supported-versions strip (was showing stale CU10–CU14 row); script names updated to `EXpress.ps1`; GitHub links updated to `st03psn/EXpress`; three new feature cards: Pre-staged Downloads, Remote Server Documentation, Branded Document Templates; one new card for Access Namespace Mail Config.
+
 ### v1.0 — April 2026
 - **EXpress rename** — script renamed from `Install-Exchange15.ps1` to `EXpress.ps1`; GitHub repo renamed to `st03psn/EXpress`. Version jumps to 1.0 (new identity).
-- **Modular source layout** — codebase split into 21 `src/*.ps1` modules; `tools/Merge-Source.ps1` produces `dist/EXpress.ps1` for release; `Build.ps1` runs the merge automatically before PS2Exe compilation (`-SkipMerge` to bypass).
+- **Modular source layout** — codebase split into 21 `modules/*.ps1` files; `tools/Merge-Source.ps1` produces `dist/EXpress.ps1` for release; `Build.ps1` runs the merge automatically before PS2Exe compilation (`-SkipMerge` to bypass).
+- **Centralized downloads folder (`<InstallPath>\sources\`)** — all prerequisite packages (.NET, VC++, UCMA, URL Rewrite, hotfixes, Exchange SUs) and CSS-Exchange scripts (HealthChecker, EOMT, SetupAssist, ExchangeExtendedProtection, MEAC) land in `<InstallPath>\sources\`. Pre-staging is automatic: any file already present is reused and not re-downloaded — enables air-gapped / proxy-restricted installs without code changes.
 - **Generated file naming** — all output files gain `EXpress` as second segment: `{PC}_EXpress_Install_...log`, `{PC}_EXpress_Preflight_...html`, `{PC}_EXpress_Report_...html`, `{PC}_EXpress_RBAC_...txt`, `{PC}_EXpress_Config.xml`, `{PC}_EXpress_ExchangeServer-Documentation_EN_....docx`.
 - **State file** renamed `{PC}_EXpress_State.xml` (prevents conflict with legacy v5.x state files).
 
@@ -570,6 +588,20 @@ Code quality and robustness improvements; no new parameters.
 - **CSS-Exchange HealthChecker** — auto-downloaded and run at end of setup (`-SkipHealthCheck` to skip)
 - **System Restore checkpoints** before each phase (`-NoCheckpoint` to skip)
 - **Exchange Server SE RTM** support (build 15.02.2562.017) including OS compatibility check and Feb 2026 SU (KB5074992)
+
+---
+
+## Tools
+
+Helper scripts in `tools/` — run standalone, no Exchange or EXpress state required.
+
+| Script | Purpose |
+|---|---|
+| `tools/Get-EXpressDownloads.ps1` | Pre-stages all prerequisite downloads into a local `sources/` folder before deploying to air-gapped or proxy-restricted networks. Downloads: .NET 4.8 / 4.8.1, VC++ 2012 / 2013 Redistributables, UCMA 4.0, URL Rewrite 2.1, and the CSS-Exchange scripts (HealthChecker, EOMT, SetupAssist, SetupLogReviewer, ExchangeExtendedProtectionManagement, MonitorExchangeAuthCertificate). Idempotent — skips files already present. Use `-SkipDotNet` to skip the large .NET installers (75–116 MB) when running on WS2025 (where .NET 4.8.1 ships in-box). |
+| `tools/Enable-EXpressRemoteQuery.ps1` | Enables WinRM / CIM over WSMan on a target Exchange server so EXpress can query hardware, pagefile, volume, and NIC data for the Word installation document via `Get-RemoteServerData`. Run locally on every server to be documented — or deploy the equivalent settings via GPO (see `docs/remote-query-setup.md`). Options: `-EnableHttps` adds a TCP 5986 HTTPS listener using the server's auth certificate; `-RestrictToGroup <ADGroup>` restricts PSSessionConfiguration to a specific AD group. |
+| `tools/Build-InstallationTemplate.ps1` | Regenerates the default Word document templates (`templates/Exchange-installation-document-DE.docx` + `-EN.docx`). Run by the maintainer when the cover-page layout or token set changes. End users supply their own branded template via `-TemplatePath` (see F24). |
+| `tools/Build-ConceptTemplate.ps1` | Generates Exchange concept / approval document templates (`templates/Exchange-concept-template-DE.docx` + `-EN.docx`) — 16 chapters covering architecture, sizing, security, migration, hybrid, and an acceptance page. Exchange SE–only scope (Exchange 2016 / 2019 are out of Microsoft support since October 2025). |
+| `tools/Merge-Source.ps1` | Merges all `modules/*.ps1` files into `dist/EXpress.ps1`. Called automatically by `Build.ps1` before PS2Exe compilation; run manually after editing a module to verify the merged output. |
 
 ---
 

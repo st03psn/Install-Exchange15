@@ -6,6 +6,42 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v1.1 (2026-04-24) — feature release
+
+### Source layout & CI
+- `src/` renamed to `modules/` — clearer naming; `Merge-Source.ps1`, `Build.ps1`, `EXpress.ps1` source-loader updated.
+- `.github/workflows/merge-guard.yml` — new CI guard: merge + parse + `git diff --exit-code dist/` + Pester on every push/PR touching `modules/`, `EXpress.ps1`, or `dist/`.
+
+### Install-target matrix
+- Exchange 2019 CU10–CU14 rejected by preflight (CU15+ required); all dead version-gate and pre-CU14 EP code removed.
+- Exchange 2016 CU23 restricted to WS2016 only in OS check.
+
+### Centralized downloads (`SourcesPath`)
+- All package downloads (`Get-MyPackage` call sites in 40-Preflight, 50-Connectors, 55-Security, 60-VDir-DAG, 85-WU-SU, 88-RecipientMgmt, 90-Hardening) switched from `InstallPath` to `SourcesPath` (`<InstallPath>\sources\`).
+- `SourcesPath` initialized in Phase 0 (preflight); directory created if absent.
+- `tools/Get-EXpressDownloads.ps1` — new tool; pre-stages all downloads for air-gapped / proxy-restricted networks; idempotent; `-SkipDotNet` switch.
+- `sources/` added to `.gitignore`; `logo.png` moved from `sources/` to `assets/`.
+- Logo probe in `New-InstallationDocument` now checks three paths in order: `sources\logo.png` → beside script → `assets\logo.png`.
+- `Get-MyPackage` emits actionable offline hint when BITS + WebClient both fail.
+- SU interactive countdown and log message now correctly show `SourcesPath` (was `InstallPath`).
+
+### F26: Access Namespace mail config
+- New `-MailDomain` parameter (auto-derived from `-Namespace` when omitted).
+- `Enable-AccessNamespaceMailConfig` registers root domain as Authoritative Accepted Domain; updates default Email Address Policy primary SMTP; removes `.local`/`.lan` templates.
+- Advanced catalog knob `AccessNamespaceMail` (default on when Namespace set) controls the feature.
+- `deploy-example.psd1`, menu (mode 1 + mode 6), and `95-Menu.ps1` edit-fields list updated.
+
+### Menu back/edit
+- Confirmation screen (Step 4) shows all entered fields; new `E` = edit option re-prompts individual fields with current value as default — no restart required to fix a typo.
+
+### Tools & templates
+- `tools/Build-InstallationTemplate.ps1` — fixed stale `src/` → `modules/` path; installation document templates regenerated.
+- `tools/Build-ConceptTemplate.ps1` — SE matrix now includes WS2019; EXpress version example updated to `1.1`.
+- README: new Tools section documents all `tools/*.ps1` helper scripts.
+- `docs/index.html` — versions strip corrected; script names / GitHub links updated; four new feature cards.
+
+---
+
 ## v1.0 (2026-04-24) — major release: EXpress rename + modularization
 
 ### EXpress rename (formerly Install-Exchange15.ps1)
@@ -21,10 +57,19 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ### Modularization
 
-- Source split into 21 `src/*.ps1` modules with numeric load-order prefixes (`00-Constants.ps1` … `99-Main.ps1`).
+- Source split into 21 `modules/*.ps1` files with numeric load-order prefixes (`00-Constants.ps1` … `99-Main.ps1`).
 - Entry script `EXpress.ps1` uses `#region SOURCE-LOADER` for dev-mode dot-sourcing; `tools/Merge-Source.ps1` produces `dist/EXpress.ps1` for release.
 - `tools/Parse-Check.ps1` — AST syntax gate; runs against `dist/EXpress.ps1`.
 - `dist/EXpress.ps1` is byte-identical to the pre-split monolith (SHA256 verified).
+- GitHub Actions workflow `.github/workflows/merge-guard.yml` enforces `modules/*.ps1` ↔ `dist/EXpress.ps1` sync on every push/PR.
+
+### Centralized downloads and tightened install target matrix
+
+- All prerequisite packages (.NET, VC++, UCMA, URL Rewrite, hotfixes, Exchange SUs) and CSS-Exchange scripts (HealthChecker, EOMT, SetupAssist, SetupLogReviewer, ExchangeExtendedProtection, MonitorExchangeAuthCertificate, Add-PermissionForEMT) now land in `<InstallPath>\sources\` instead of `<InstallPath>\`. Pre-staging works automatically: any file already present is reused and not re-downloaded — enables air-gapped / proxy-restricted installs without code changes.
+- Install targets tightened to the latest CU per Exchange line. Preflight rejects older Ex2019 CUs (CU10–CU14) as out-of-Microsoft-SU-support. Older CUs remain valid as migration **source servers** via `Export-SourceServerConfig`.
+  - Ex2016 CU23 (final) → Windows Server 2016
+  - Ex2019 CU15+         → Windows Server 2019 / 2022 / 2025
+  - Exchange Server SE   → Windows Server 2019 / 2022 / 2025
 
 ---
 

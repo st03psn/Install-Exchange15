@@ -67,6 +67,7 @@
             MRSProxy            = @{ Category='PostConfig'; Label='Enable MRS Proxy';        Default=$true;  Description='Enable MRS Proxy on EWS for cross-forest/cross-org mailbox moves.' }
             IANATimezone        = @{ Category='PostConfig'; Label='IANA timezone mapping';   Default=$true;  Description='Configure IANA ↔ Windows timezone mapping (iCal interop).' }
             AnonymousRelay      = @{ Category='PostConfig'; Label='Anonymous relay connector'; Default=$true; Description='Create anonymous internal/external relay connector if RelaySubnets is configured.'; Condition={ [bool]$script:State['RelaySubnets'] -or [bool]$script:State['ExternalRelaySubnets'] } }
+            AccessNamespaceMail = @{ Category='PostConfig'; Label='Access Namespace mail config'; Default=$true; Description='Add Access Namespace as Authoritative Accepted Domain and set it as primary SMTP in the default Email Address Policy. Removes .local/nonroutable templates.'; Condition={ [bool]$script:State['Namespace'] } }
             SkipHealthCheck     = @{ Category='PostConfig'; Label='Opt-out: HealthChecker';  Default=$false; Description='Skip CSS-Exchange HealthChecker run at end of Phase 6.' }
             RBACReport          = @{ Category='PostConfig'; Label='RBAC Report';             Default=$true;  Description='Generate RBAC (role assignments / role groups) HTML report.' }
             RunEOMT             = @{ Category='PostConfig'; Label='Run EOMT';                Default=$false; Description='Run CSS-Exchange Emergency Mitigation Tool (legacy CUs; no-op on current CUs).' }
@@ -631,8 +632,12 @@
             }
             $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none) [not tested]' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. ex01.contoso.com)'
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
-            $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
+            $cfg['Namespace']        = Read-MenuInput -Prompt 'Access namespace       (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
+                # Default mail domain = parent of access namespace (drop leftmost label)
+                $defaultMailDomain = ($cfg['Namespace'] -split '\.', 2)[1]
+                if ($defaultMailDomain -notmatch '\.') { $defaultMailDomain = $cfg['Namespace'] }
+                $cfg['MailDomain']     = Read-MenuInput -Prompt 'Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)' -Default $defaultMailDomain -Validate $validateFQDN -ValidateMessage 'Not a valid domain (e.g. contoso.com)'
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
@@ -664,8 +669,11 @@
             $cfg['CustomerDocument'] = ($custInput -imatch '^[Yy]$')
         }
         elseif ($selectedMode -eq 6) {
-            $cfg['Namespace']        = Read-MenuInput -Prompt 'External namespace      (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
+            $cfg['Namespace']        = Read-MenuInput -Prompt 'Access namespace       (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
+                $defaultMailDomain2 = ($cfg['Namespace'] -split '\.', 2)[1]
+                if ($defaultMailDomain2 -notmatch '\.') { $defaultMailDomain2 = $cfg['Namespace'] }
+                $cfg['MailDomain']     = Read-MenuInput -Prompt 'Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)' -Default $defaultMailDomain2 -Validate $validateFQDN -ValidateMessage 'Not a valid domain (e.g. contoso.com)'
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
@@ -701,6 +709,28 @@
         $cfg['AdvancedFeatures'] = $advancedFeatures
 
         # --- Step 4: Summary + confirmation ---
+        # Build ordered list of editable fields per mode for the E=Edit path.
+        # Each entry: Key (cfg hashtable key), Label (display), Prompt (Read-Host text),
+        #             Validate (scriptblock or $null), ValidateMsg, Required.
+        $editFields = [System.Collections.Generic.List[hashtable]]::new()
+        if ($selectedMode -in @(1, 6)) {
+            if ($selectedMode -eq 1) {
+                $editFields.Add(@{ Key='SourcePath';    Label='Exchange source';      Prompt='Exchange source (folder or .iso)';                               Required=$true;  Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='InstallPath';   Label='Working folder';       Prompt='Working/log folder';                                             Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='Organization';  Label='Organization name';    Prompt='Organization name';                                              Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='MDBName';       Label='Mailbox DB name';      Prompt='Mailbox DB name        (blank = default name)';                  Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='MDBDBPath';     Label='Mailbox DB path';      Prompt='Mailbox DB path        (blank = Exchange default)';              Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='MDBLogPath';    Label='Mailbox log path';     Prompt='Mailbox log path       (blank = Exchange default)';              Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='SCP';           Label='Autodiscover SCP URL'; Prompt='Autodiscover SCP URL   (blank = let Setup set, - = remove)';    Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='TargetPath';    Label='Exchange install path';Prompt='Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'; Required=$false; Validate=$null; ValidateMsg='' })
+                $editFields.Add(@{ Key='DAGName';       Label='DAG name';             Prompt='DAG name               (blank = no DAG join)';                  Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. dag01.contoso.com)' })
+                $editFields.Add(@{ Key='CertificatePath'; Label='PFX certificate';   Prompt='PFX certificate path   (blank = none)';                          Required=$false; Validate=$null;         ValidateMsg='' })
+            }
+            $editFields.Add(@{ Key='Namespace';      Label='Access Namespace';        Prompt='Access namespace       (e.g. mail.contoso.com, blank = skip URL config)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. mail.contoso.com)' })
+            $editFields.Add(@{ Key='MailDomain';     Label='Mail domain';             Prompt='Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid domain (e.g. contoso.com)' })
+            $editFields.Add(@{ Key='DownloadDomain'; Label='OWA download domain';     Prompt='OWA download domain    (e.g. download.contoso.com, blank = skip CVE-2021-1730)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. download.contoso.com)' })
+        }
+
         while ($true) {
             Clear-Host
             Write-MenuLine ('=' * 60) Cyan
@@ -708,17 +738,57 @@
             Write-MenuLine ('=' * 60) Cyan
             Write-Host ''
             Write-Host ('  Mode    : {0}' -f $modes[$selectedMode]) -ForegroundColor Green
-            Write-Host ('  Source  : {0}' -f $cfg['SourcePath'])
-            Write-Host ('  Install : {0}' -f $cfg['InstallPath'])
-            if ($cfg['Organization']) { Write-Host ('  Org     : {0}' -f $cfg['Organization']) }
+            if ($cfg['SourcePath'])    { Write-Host ('  Source  : {0}' -f $cfg['SourcePath']) }
+            Write-Host                   ('  Install : {0}' -f $cfg['InstallPath'])
+            if ($cfg['Organization'])  { Write-Host ('  Org     : {0}' -f $cfg['Organization']) }
+            if ($cfg['MDBName'])       { Write-Host ('  MDB     : {0}' -f $cfg['MDBName']) }
+            if ($cfg['MDBDBPath'])     { Write-Host ('  DB Path : {0}' -f $cfg['MDBDBPath']) }
+            if ($cfg['MDBLogPath'])    { Write-Host ('  Log Path: {0}' -f $cfg['MDBLogPath']) }
+            if ($cfg['SCP'])           { Write-Host ('  SCP     : {0}' -f $cfg['SCP']) }
+            if ($cfg['TargetPath'])    { Write-Host ('  Target  : {0}' -f $cfg['TargetPath']) }
+            if ($cfg['DAGName'])       { Write-Host ('  DAG     : {0}' -f $cfg['DAGName']) }
+            if ($cfg['Namespace'])     { Write-Host ('  Namespace: {0}' -f $cfg['Namespace']) -ForegroundColor Cyan }
+            if ($cfg['MailDomain'])    { Write-Host ('  MailDomain: {0}' -f $cfg['MailDomain']) -ForegroundColor Cyan }
+            if ($cfg['DownloadDomain']){ Write-Host ('  DL Domain: {0}' -f $cfg['DownloadDomain']) }
+            if ($cfg['CertificatePath']){ Write-Host ('  Cert    : {0}' -f $cfg['CertificatePath']) }
+            if ($cfg['EdgeDNSSuffix']) { Write-Host ('  Edge DNS: {0}' -f $cfg['EdgeDNSSuffix']) }
             # Active switches
             $finalDisabled  = @($disabledToggles[$selectedMode]) + (Get-DynamicDisabled $toggleState)
             $activeToggles = ($toggleDefs.Keys | Where-Object { $toggleState[$_] -and ($finalDisabled -notcontains $_) }) -join ', '
             if ($activeToggles) { Write-Host ('  Switches: {0}' -f $activeToggles) }
             Write-Host ''
-            $confirm = Read-Host '  Start installation? [Y=yes / N=back to menu / Q=quit]'
+
+            $editHint = if ($editFields.Count -gt 0) { ' / E=edit a field' } else { '' }
+            $confirm = Read-Host ("  Start? [Y=yes{0} / N=back to menu / Q=quit]" -f $editHint)
+
             if ($confirm -imatch '^[Yy]') { return $cfg }
             if ($confirm -imatch '^[Qq]') { return $null }
+
+            if ($confirm -imatch '^[Ee]' -and $editFields.Count -gt 0) {
+                # Show numbered list of editable fields with current values
+                Write-Host ''
+                Write-Host '  Edit a field — current values:' -ForegroundColor Cyan
+                for ($fi = 0; $fi -lt $editFields.Count; $fi++) {
+                    $fld  = $editFields[$fi]
+                    $fval = if ($cfg[$fld.Key]) { $cfg[$fld.Key] } else { '(empty)' }
+                    Write-Host ('  {0,2}.  {1,-24} : {2}' -f ($fi + 1), $fld.Label, $fval)
+                }
+                Write-Host ''
+                $pick = (Read-Host '  Field number (ENTER = cancel)').Trim()
+                if ($pick -match '^\d+$') {
+                    $idx = [int]$pick - 1
+                    if ($idx -ge 0 -and $idx -lt $editFields.Count) {
+                        $fld      = $editFields[$idx]
+                        $curVal   = if ($cfg[$fld.Key]) { $cfg[$fld.Key] } else { '' }
+                        $newVal   = Read-MenuInput -Prompt $fld.Prompt -Default $curVal -Required $fld.Required -Validate $fld.Validate -ValidateMessage (if ($fld.ValidateMsg) { $fld.ValidateMsg } else { 'Invalid input' })
+                        $cfg[$fld.Key] = $newVal
+                        # Clear DownloadDomain if Namespace was cleared
+                        if ($fld.Key -eq 'Namespace' -and -not $newVal) { $cfg['DownloadDomain'] = '' }
+                    }
+                }
+                continue
+            }
+
             Write-MyVerbose 'Menu: Back to mode selection'
             # N or anything else = restart from mode selection
             $selectedMode = 0

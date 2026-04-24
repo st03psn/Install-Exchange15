@@ -12,8 +12,8 @@
     a {{document_body}} anchor paragraph.  At runtime, New-InstallationDocument calls
     Write-WdFromTemplate to inject the generated chapter XML and fill the tokens.
 
-    Relies on the OpenXML helpers in src/74-OpenXml.ps1 and the version constant in
-    src/00-Constants.ps1.  Uses pure PowerShell OOXML-ZIP — no Office/COM dependency.
+    Relies on the OpenXML helpers in modules/74-OpenXml.ps1 and the version constant in
+    modules/00-Constants.ps1.  Uses pure PowerShell OOXML-ZIP — no Office/COM dependency.
 
     .EXAMPLE
     .\tools\Build-InstallationTemplate.ps1
@@ -22,9 +22,9 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
 
 $root = Split-Path $PSScriptRoot
-# Load version constant and OpenXML helpers from src/
-. (Join-Path $root 'src\00-Constants.ps1')
-. (Join-Path $root 'src\74-OpenXml.ps1')
+# Load version constant and OpenXML helpers from modules/
+. (Join-Path $root 'modules\00-Constants.ps1')
+. (Join-Path $root 'modules\74-OpenXml.ps1')
 
 $outDir = Join-Path $root 'templates'
 if (-not (Test-Path $outDir)) { $null = New-Item $outDir -ItemType Directory }

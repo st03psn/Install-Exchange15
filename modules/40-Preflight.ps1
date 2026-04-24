@@ -112,7 +112,10 @@
             Write-MyOutput "Processing $Package"
             $PresenceKey = $false
         }
-        $RunFrom = $State['InstallPath']
+        # All downloads land in <InstallPath>\sources\; falls back to InstallPath if
+        # SourcesPath wasn't initialized yet (safety guard — Install-MyPackage may be
+        # called before the dedicated sources folder is set up).
+        $RunFrom = if ($State['SourcesPath']) { $State['SourcesPath'] } else { $State['InstallPath'] }
         if ( !( $PresenceKey )) {
 
             if ( $FileName.contains('|')) {
@@ -244,11 +247,23 @@
                 exit $ERR_CANTCREATETEMPFOLDER
             }
 
+            # Downloads cache: all prerequisite packages (.NET, VC++, UCMA, URL Rewrite, hotfixes,
+            # Exchange SUs) and CSS-Exchange scripts (HealthChecker, EOMT, SetupAssist,
+            # ExchangeExtendedProtection, MEAC, etc.) land here. Pre-staging is automatic —
+            # when a file is already present the download is skipped (air-gapped / proxy scenarios).
+            $State['SourcesPath'] = Join-Path $State['InstallPath'] 'sources'
+            New-Item -Path $State['SourcesPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+            if ( !( Test-Path $State['SourcesPath'])) {
+                Write-MyError "Can't create downloads folder $($State['SourcesPath'])"
+                exit $ERR_CANTCREATETEMPFOLDER
+            }
+            Write-MyVerbose ('Downloads cache: {0}' -f $State['SourcesPath'])
+
             if ( [System.Version]$MajorOSVersion -ge [System.Version]$WS2016_MAJOR ) {
                 Write-MyOutput "Operating System is $($MajorOSVersion).$($MinorOSVersion)"
             }
             else {
-                Write-MyError 'The following Operating Systems are supported: Windows Server 2019, Windows Server 2022 (Exchange 2019) or Windows Server 2025 (Exchange 2019 CU15+)'
+                Write-MyError 'Supported operating systems: Windows Server 2016 (Exchange 2016 CU23), Windows Server 2019/2022/2025 (Exchange 2019 CU15+ or Exchange Server SE)'
                 exit $ERR_UNEXPECTEDOS
             }
             Write-MyOutput ('Server core mode: {0}' -f (Test-ServerCore))
@@ -421,9 +436,14 @@
         $State['MajorSetupVersion'] = $MajorSetupVersion
         $State['MinorSetupVersion'] = $MinorSetupVersion
 
-        if ( ($MajorSetupVersion -eq $EX2019_MAJOR -and [System.Version]$SetupVersion -lt [System.Version]$EX2019SETUPEXE_CU10) -or
+        # Target install supports only the latest CU of each Exchange line:
+        # Ex2016 CU23 (final), Ex2019 CU15+, Exchange SE RTM+.
+        # Older Ex2019 CUs (CU10–CU14) are out of Microsoft SU support and rejected here.
+        # Note: Export-SourceServerConfig queries remote source servers independently and still
+        # accepts older CUs as migration sources — this gate only governs the local install target.
+        if ( ($MajorSetupVersion -eq $EX2019_MAJOR -and [System.Version]$SetupVersion -lt [System.Version]$EX2019SETUPEXE_CU15) -or
             ($MajorSetupVersion -eq $EX2016_MAJOR -and [System.Version]$SetupVersion -lt [System.Version]$EX2016SETUPEXE_CU23) ) {
-            Write-MyError 'Unsupported version of Exchange detected; only Exchange SE, Exchange 2019 CU10 or later, or Exchange 2016 CU23 are supported'
+            Write-MyError 'Unsupported Exchange target version. Supported install targets: Exchange 2016 CU23 (final), Exchange 2019 CU15+, or Exchange Server SE. Older Exchange 2019 CUs (CU10–CU14) are out of Microsoft SU support — please install CU15 or Exchange Server SE.'
             exit $ERR_UNSUPPORTEDEX
         }
 
@@ -443,23 +463,28 @@
             }
         }
 
-        if ( [System.Version]$FullOSVersion -ge $WS2025_PREFULL -and [System.Version]$SetupVersion -lt $EX2019SETUPEXE_CU15) {
-            Write-MyError 'Windows Server 2025 is only supported for Exchange 2019 CU15 or later, or Exchange Server SE'
-            exit $ERR_UNEXPECTEDOS
-        }
-
+        # OS gate for Exchange Server SE — supported on WS2019, WS2022, WS2025
         if ( [System.Version]$SetupVersion -ge [System.Version]$EXSESETUPEXE_RTM -and [System.Version]$FullOSVersion -lt $WS2019_PREFULL) {
             Write-MyError 'Exchange Server SE requires Windows Server 2019, Windows Server 2022 or Windows Server 2025'
             exit $ERR_UNEXPECTEDOS
         }
 
-        if ( [System.Version]$FullOSVersion -lt [System.Version]$WS2016_MAJOR -and $MajorSetupVersion -eq $EX2016_MAJOR) {
-            Write-MyError 'Exchange 2016 requires Windows Server 2016 or later'
-            exit $ERR_UNEXPECTEDOS
+        # OS gate for Exchange 2016 CU23 — target only on WS2016 per Microsoft supportability matrix
+        # (WS2012/R2 are past extended support; WS2019+ are not supported by Exchange 2016 setup).
+        if ( $MajorSetupVersion -eq $EX2016_MAJOR ) {
+            if ( [System.Version]$FullOSVersion -lt [System.Version]$WS2016_MAJOR ) {
+                Write-MyError 'Exchange 2016 CU23 requires Windows Server 2016'
+                exit $ERR_UNEXPECTEDOS
+            }
+            if ( [System.Version]$FullOSVersion -ge $WS2019_PREFULL ) {
+                Write-MyError 'Exchange 2016 CU23 is only supported on Windows Server 2016. For newer Windows Server releases install Exchange 2019 CU15+ or Exchange Server SE.'
+                exit $ERR_UNEXPECTEDOS
+            }
         }
 
-        if ( [System.Version]$FullOSVersion -ge $WS2022_PREFULL -and [System.Version]$FullOSVersion -lt $WS2025_PREFULL -and [System.Version]$SetupVersion -lt $EX2019SETUPEXE_CU12) {
-            Write-MyError 'Windows Server 2022 is only supported for Exchange Server 2019 CU12 or later, or Exchange Server SE'
+        # OS gate for Exchange 2019 CU15+ — supported on WS2019, WS2022, WS2025
+        if ( $MajorSetupVersion -eq $EX2019_MAJOR -and [System.Version]$FullOSVersion -lt $WS2019_PREFULL ) {
+            Write-MyError 'Exchange 2019 CU15+ requires Windows Server 2019, Windows Server 2022 or Windows Server 2025'
             exit $ERR_UNEXPECTEDOS
         }
 
@@ -474,18 +499,9 @@
             }
         }
 
-        if ( $State["MajorSetupVersion"] -eq $EX2019_MAJOR -and [System.Version]$State["SetupVersion"] -lt [System.Version]$EX2019SETUPEXE_CU14 ) {
-            if ( $State['DoNotEnableEP']) {
-                Write-MyWarning 'DoNotEnableEP is not supported with this Exchange version, ignoring this switch'
-                $State['DoNotEnableEP'] = $false
-            }
-            if ( $State['DoNotEnableEP_FEEWS']) {
-                Write-MyWarning 'DoNotEnableEP_FEEWS is not supported with this Exchange version, ignoring this switch'
-                $State['DoNotEnableEP_FEEWS'] = $false
-            }
-        }
-
-        if ( ($State["MajorSetupVersion"] -eq $EX2019_MAJOR) -and [System.Version]$State["SetupVersion"] -ge [System.Version]$EX2019SETUPEXE_CU11 ) {
+        # Ex2019 CU15+ and Exchange SE always support DiagnosticData switch.
+        # Ex2016 CU23 uses the legacy non-DiagnosticData license-accept switch.
+        if ( $State["MajorSetupVersion"] -eq $EX2019_MAJOR ) {
             if ( $State['DiagnosticData']) {
                 $State['IAcceptSwitch'] = '/IAcceptExchangeServerLicenseTerms_DiagnosticDataON'
                 Write-MyOutput 'Will deploy Exchange with Data Collection enabled'

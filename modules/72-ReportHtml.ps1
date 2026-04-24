@@ -625,7 +625,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         if ($secFail -gt 0)  { $actionItems.Add('<li><strong>Security:</strong> {0} critical finding(s) require immediate attention — see Security Settings section.</li>' -f $secFail) }
         if ($secWarn -gt 0)  { $actionItems.Add('<li><strong>Security:</strong> {0} warning(s) — review Security Settings section.</li>' -f $secWarn) }
         if ($perfWarn -gt 0) { $actionItems.Add('<li><strong>Performance:</strong> {0} setting(s) below recommendation — review Performance &amp; Tuning section.</li>' -f $perfWarn) }
-        if (-not $State['Namespace']) { $actionItems.Add('<li><strong>Virtual Directories:</strong> No external namespace configured. OWA/ECP/EWS URLs may still point to server hostname.</li>') }
+        if (-not $State['Namespace']) { $actionItems.Add('<li><strong>Virtual Directories:</strong> No access namespace configured. OWA/ECP/EWS URLs may still point to server hostname.</li>') }
         if (-not $State['IncludeFixes']) { $actionItems.Add('<li><strong>Security Updates:</strong> Exchange Security Update installation was skipped. Apply the latest SU manually.</li>') }
 
         $actionHtml = if ($actionItems.Count -gt 0) {

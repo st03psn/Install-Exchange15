@@ -438,7 +438,7 @@ function Get-F23Parts {
         @(($DE ? 'Datum'           : 'Date'),                (Add-WordContentControl 'doc_date'    ($DE ? 'TT.MM.JJJJ' : 'DD/MM/YYYY') ($DE ? 'Datum' : 'Date')))
         @(($DE ? 'Status'          : 'Status'),             (Add-WordContentControl 'doc_status'  ($DE ? 'Entwurf / Freigegeben' : 'Draft / Approved') ($DE ? 'Status' : 'Status')))
         @(($DE ? 'Klassifizierung' : 'Classification'),     'INTERN')
-        @('EXpress Version',                                 (Add-WordContentControl 'doc_express_version' 'z.B. 5.78' 'EXpress Version'))
+        @('EXpress Version',                                 (Add-WordContentControl 'doc_express_version' 'z.B. 1.1' 'EXpress Version'))
     )))
 
     $null = $parts.Add((Add-WordParagraph ''))
@@ -475,8 +475,8 @@ function Get-F23Parts {
         $null = $parts.Add((Add-WordParagraph 'This document describes the deployment of Exchange Server Subscription Edition (SE). Exchange Server 2016 and 2019 reached End-of-Support on October 14, 2025. Deploying these versions in new projects is explicitly not recommended.'))
     }
     $null = $parts.Add((Add-WordTable -Headers @(($DE ? 'Exchange-Version' : 'Exchange Version'), ($DE ? 'Windows Server' : 'Windows Server'), ($DE ? 'Support-Status' : 'Support Status')) -Rows @(
-        @('Exchange SE RTM',  'WS 2022, WS 2025', ($DE ? 'Aktuell empfohlen' : 'Currently recommended'))
-        @('Exchange SE CU1+', 'WS 2022, WS 2025', ($DE ? 'Aktuell empfohlen' : 'Currently recommended'))
+        @('Exchange SE RTM',  'WS 2019, WS 2022, WS 2025', ($DE ? 'Aktuell empfohlen' : 'Currently recommended'))
+        @('Exchange SE CU1+', 'WS 2019, WS 2022, WS 2025', ($DE ? 'Aktuell empfohlen' : 'Currently recommended'))
         @('Exchange 2019 CU14/CU15', 'WS 2019, WS 2022', ($DE ? 'End-of-Support 14.10.2025 — kein Neueinsatz' : 'End-of-Support 14/10/2025 — no new deployments'))
         @('Exchange 2016 CU23', 'WS 2016', ($DE ? 'End-of-Support 14.10.2025 — kein Neueinsatz' : 'End-of-Support 14/10/2025 — no new deployments'))
     )))
@@ -792,7 +792,7 @@ function Get-F23Parts {
         @('2',  ($DE ? 'Wie lautet der externe Exchange-Namespace?' : 'What is the external Exchange namespace?'), 'q_ns_external', ($DE ? 'Namespace eingeben...' : 'Enter namespace...'))
         @('3',  ($DE ? 'Wie viele Mailbox-Server werden eingesetzt?' : 'How many mailbox servers will be deployed?'), 'q_srv_count', ($DE ? 'Anzahl...' : 'Count...'))
         @('4',  ($DE ? 'Wird ein DAG konfiguriert? Wenn ja: wie viele Kopien pro Datenbank?' : 'Will a DAG be configured? If yes: how many copies per database?'), 'q_dag', ($DE ? 'Ja/Nein, Anzahl Kopien...' : 'Yes/No, copy count...'))
-        @('5',  ($DE ? 'Auf welchem Windows Server läuft Exchange SE? (WS 2022 / WS 2025)' : 'Which Windows Server version for Exchange SE? (WS 2022 / WS 2025)'), 'q_os_version', ($DE ? 'Betriebssystem eingeben...' : 'Enter OS version...'))
+        @('5',  ($DE ? 'Auf welchem Windows Server läuft Exchange SE? (WS 2019 / WS 2022 / WS 2025)' : 'Which Windows Server version for Exchange SE? (WS 2019 / WS 2022 / WS 2025)'), 'q_os_version', ($DE ? 'Betriebssystem eingeben...' : 'Enter OS version...'))
         @('6',  ($DE ? 'Wird ein Load Balancer eingesetzt? Produkt und Persistence-Methode?' : 'Will a load balancer be used? Product and persistence method?'), 'q_lb', ($DE ? 'LB-Typ und Methode eingeben...' : 'Enter LB type and method...'))
         @('7',  ($DE ? 'Wird ein Edge Transport Server in der DMZ eingesetzt?' : 'Will an Edge Transport server be deployed in the DMZ?'), 'q_edge', ($DE ? 'Ja/Nein...' : 'Yes/No...'))
         @('8',  ($DE ? 'Von welcher CA wird das SSL-Zertifikat bezogen? (öffentlich/intern)' : 'Which CA will issue the SSL certificate? (public/internal)'), 'q_cert_ca', ($DE ? 'CA-Name eingeben...' : 'Enter CA name...'))

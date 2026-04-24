@@ -300,6 +300,7 @@
             $SkipWindowsUpdates   = [switch](Get-CfgValue 'SkipWindowsUpdates'   ([bool]$SkipWindowsUpdates))
             $SkipSetupAssist      = [switch](Get-CfgValue 'SkipSetupAssist'       ([bool]$SkipSetupAssist))
             $Namespace            = Get-CfgValue 'Namespace'      $Namespace
+            $MailDomain           = Get-CfgValue 'MailDomain'     $MailDomain
             $DownloadDomain       = Get-CfgValue 'DownloadDomain' $DownloadDomain
             $RunEOMT              = [switch](Get-CfgValue 'RunEOMT'              ([bool]$RunEOMT))
             $WaitForADSync        = [switch](Get-CfgValue 'WaitForADSync'        ([bool]$WaitForADSync))
@@ -479,6 +480,7 @@
         $State["InstallWindowsUpdates"] = [bool]$InstallWindowsUpdates -and -not [bool]$SkipWindowsUpdates
         $State["SkipSetupAssist"] = $SkipSetupAssist
         $State["Namespace"]     = $Namespace
+        $State["MailDomain"]    = $MailDomain
         $State["DownloadDomain"] = $DownloadDomain
         $State["LogRetentionDays"] = $LogRetentionDays
         $State["RelaySubnets"]         = $RelaySubnets
@@ -740,6 +742,11 @@
 
                     if ($State['RelaySubnets'] -or $State['ExternalRelaySubnets']) {
                         New-AnonymousRelayConnector
+                    }
+
+                    # Access Namespace — Accepted Domain + Email Address Policy (F26)
+                    if ($State['AccessNamespaceMail'] -and $State['Namespace']) {
+                        Enable-AccessNamespaceMailConfig
                     }
 
                     Test-DBLogPathSeparation
@@ -1297,6 +1304,12 @@
                 if (($State['RelaySubnets'] -or $State['ExternalRelaySubnets']) -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Anonymous relay connector' -PercentComplete 78
                     New-AnonymousRelayConnector
+                }
+
+                # Access Namespace — Accepted Domain + Email Address Policy (F26)
+                if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and -not $State['InstallEdge']) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Access namespace mail config' -PercentComplete 79
+                    Enable-AccessNamespaceMailConfig
                 }
 
                 # Exchange log cleanup scheduled task

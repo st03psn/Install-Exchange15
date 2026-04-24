@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.0
+    Version:     1.1
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -944,6 +944,11 @@ param(
     [string]$Namespace,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    # Root mail domain for Accepted Domain + Email Address Policy (e.g. contoso.com).
+    # Defaults to the parent of -Namespace when omitted (e.g. mail.contoso.com → contoso.com).
+    [string]$MailDomain,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
     [string]$DownloadDomain,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'E')]
@@ -1042,7 +1047,7 @@ param(
 
 process {
 #region SOURCE-LOADER
-    foreach ($m in (Get-ChildItem (Join-Path $PSScriptRoot 'src') -Filter '*.ps1' | Sort-Object Name)) { . $m.FullName }
+    foreach ($m in (Get-ChildItem (Join-Path $PSScriptRoot 'modules') -Filter '*.ps1' | Sort-Object Name)) { . $m.FullName }
 #endregion SOURCE-LOADER
 } #Process
 

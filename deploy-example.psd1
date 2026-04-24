@@ -217,8 +217,12 @@
     # Cleans: IIS logs, Exchange transport logs, message tracking logs
     # LogRetentionDays = 30
 
-    # External namespace for Virtual Directory URL configuration (Phase 6)
+    # Access namespace for Virtual Directory URL configuration (Phase 6)
     # Namespace = 'mail.contoso.com'
+
+    # Mail domain — root domain for Accepted Domain + Email Address Policy (e.g. @contoso.com).
+    # Defaults to the parent of Namespace (mail.contoso.com → contoso.com) when omitted.
+    # MailDomain = 'contoso.com'
 
     # OWA Download Domain — separate FQDN for attachment downloads (CVE-2021-1730 mitigation)
     # Must differ from Namespace; requires matching DNS record and certificate coverage

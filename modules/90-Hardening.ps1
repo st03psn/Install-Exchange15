@@ -732,7 +732,7 @@
         # F6: Windows Extended Protection (channel binding) mitigates NTLM relay / pass-the-hash attacks on IIS.
         # Prerequisite: SSL offloading must be disabled (F13), TLS 1.2 must be enforced.
         # Exchange 2019 CU14+ / SE: EP is enabled by setup — this function validates the configuration.
-        # Exchange 2016 / 2019 pre-CU14: downloads and runs ExchangeExtendedProtection.ps1 from CSS-Exchange.
+        # Exchange 2016 / 2019 pre-CU14: downloads and runs ExchangeExtendedProtectionManagement.ps1 from CSS-Exchange.
         if ($State['DoNotEnableEP']) { Write-MyVerbose 'DoNotEnableEP set — skipping Extended Protection'; return }
         if ($State['InstallEdge'])   { Write-MyVerbose 'Edge Transport — Extended Protection not applicable'; return }
 
@@ -757,18 +757,19 @@
             return
         }
 
-        # Exchange 2016 / 2019 pre-CU14: configure via CSS-Exchange ExchangeExtendedProtection.ps1
-        Write-MyOutput 'Enabling Extended Protection via CSS-Exchange ExchangeExtendedProtection.ps1'
-        $epPath = Join-Path $State['InstallPath'] 'ExchangeExtendedProtection.ps1'
-        $epUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/ExchangeExtendedProtection.ps1'
+        # Exchange 2016 / 2019 pre-CU14: configure via CSS-Exchange ExchangeExtendedProtectionManagement.ps1
+        Write-MyOutput 'Enabling Extended Protection via CSS-Exchange ExchangeExtendedProtectionManagement.ps1'
+        $epPath = Join-Path $State['SourcesPath'] 'ExchangeExtendedProtectionManagement.ps1'
+        $epUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/ExchangeExtendedProtectionManagement.ps1'
+        # Note: previously named ExchangeExtendedProtection.ps1 — renamed in CSS-Exchange 2024 releases
 
         if (-not (Test-Path $epPath)) {
             try {
                 Invoke-WebDownload -Uri $epUrl -OutFile $epPath
-                Write-MyVerbose ('ExchangeExtendedProtection.ps1 downloaded, SHA256: {0}' -f (Get-FileHash $epPath -Algorithm SHA256).Hash)
+                Write-MyVerbose ('ExchangeExtendedProtectionManagement.ps1 downloaded, SHA256: {0}' -f (Get-FileHash $epPath -Algorithm SHA256).Hash)
             }
             catch {
-                Write-MyWarning ('Could not download ExchangeExtendedProtection.ps1: {0}' -f $_.Exception.Message)
+                Write-MyWarning ('Could not download ExchangeExtendedProtectionManagement.ps1: {0}' -f $_.Exception.Message)
                 return
             }
         }
@@ -776,12 +777,12 @@
         try {
             $epArgs = @('-ExchangeServerNames', $env:computername)
             if ($State['DoNotEnableEP_FEEWS']) { $epArgs += '-SkipEWS' }
-            $epCmd = '& ExchangeExtendedProtection.ps1 -ExchangeServerNames {0}{1}' -f $env:computername, (if ($State['DoNotEnableEP_FEEWS']) { ' -SkipEWS' } else { '' })
+            $epCmd = '& ExchangeExtendedProtectionManagement.ps1 -ExchangeServerNames {0}{1}' -f $env:computername, (if ($State['DoNotEnableEP_FEEWS']) { ' -SkipEWS' } else { '' })
             Register-ExecutedCommand -Category 'ExchangeTuning' -Command $epCmd
             & $epPath @epArgs *>&1 | ForEach-Object { Write-ToTranscript ([string]$_) }
         }
         catch {
-            Write-MyWarning ('ExchangeExtendedProtection.ps1 failed: {0}' -f $_.Exception.Message)
+            Write-MyWarning ('ExchangeExtendedProtectionManagement.ps1 failed: {0}' -f $_.Exception.Message)
         }
     }
 

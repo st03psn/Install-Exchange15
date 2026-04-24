@@ -63,18 +63,10 @@
         }
         Write-MyOutput 'Exchange Management Tools setup completed'
 
-        # Run CSS-Exchange Add-PermissionForEMT.ps1 if available
-        $emtScript = Join-Path $State['InstallPath'] 'Add-PermissionForEMT.ps1'
-        $emtUrl = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/Add-PermissionForEMT.ps1'
-        if (-not (Test-Path $emtScript)) {
-            try {
-                Write-MyVerbose ('Downloading Add-PermissionForEMT from {0}' -f $emtUrl)
-                Start-BitsTransfer -Source $emtUrl -Destination $emtScript -ErrorAction Stop
-            }
-            catch {
-                Write-MyWarning ('Could not download Add-PermissionForEMT.ps1: {0}' -f $_.Exception.Message)
-            }
-        }
+        # Run CSS-Exchange Add-PermissionForEMT.ps1 if available (pre-stage in sources\).
+        # This script was removed from CSS-Exchange releases; only runs if the file is pre-staged.
+        $emtScript = Join-Path $State['SourcesPath'] 'Add-PermissionForEMT.ps1'
+        $emtUrl = $null   # no longer available from CSS-Exchange releases
         if (Test-Path $emtScript) {
             try {
                 Write-MyOutput 'Running Add-PermissionForEMT.ps1'

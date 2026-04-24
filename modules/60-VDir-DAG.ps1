@@ -244,7 +244,7 @@
         }
 
         Write-MyOutput 'Running CSS-Exchange HealthChecker'
-        $hcPath = Join-Path $State['InstallPath'] 'HealthChecker.ps1'
+        $hcPath = Join-Path $State['SourcesPath'] 'HealthChecker.ps1'
         $hcUrl = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/HealthChecker.ps1'
 
         # Download if not present
@@ -334,7 +334,7 @@
         }
 
         Write-MyOutput 'Running CSS-Exchange SetupAssist to diagnose setup failure'
-        $saPath = Join-Path $State['InstallPath'] 'SetupAssist.ps1'
+        $saPath = Join-Path $State['SourcesPath'] 'SetupAssist.ps1'
         $saUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/SetupAssist.ps1'
 
         if (-not (Test-Path $saPath)) {
@@ -379,7 +379,7 @@
         }
 
         # SetupLogReviewer — additional log analysis tool
-        $slrPath = Join-Path $State['InstallPath'] 'SetupLogReviewer.ps1'
+        $slrPath = Join-Path $State['SourcesPath'] 'SetupLogReviewer.ps1'
         $slrUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/SetupLogReviewer.ps1'
 
         if (-not (Test-Path $slrPath)) {
