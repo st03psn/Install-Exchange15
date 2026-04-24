@@ -567,8 +567,9 @@
 
         $cfg = @{}
         $cfg['Mode']       = $selectedMode
-        $defaultIso = Join-Path (Split-Path $ScriptFullName -Parent) 'sources\ExchangeServerSE-x64.iso'
+        $cfg['InstallPath'] = Read-MenuInput -Prompt 'Working/log folder' -Default 'C:\Install'
         if ($selectedMode -notin @(6, 7)) {
+            $defaultIso = Join-Path $cfg['InstallPath'] 'sources\ExchangeServerSE-x64.iso'
             $srcTry = 0
             while ($true) {
                 $srcPath = Read-MenuInput -Prompt 'Exchange source (folder or .iso)' -Default $defaultIso -Required $true
@@ -582,7 +583,6 @@
                 Write-Host ("  Attempt {0}/3 — verify the path and try again." -f $srcTry) -ForegroundColor Yellow
             }
         }
-        $cfg['InstallPath'] = Read-MenuInput -Prompt 'Working/log folder' -Default 'C:\Install'
 
         if ($selectedMode -eq 1) {
             # Detect existing Exchange organisation from AD (requires domain connectivity)
