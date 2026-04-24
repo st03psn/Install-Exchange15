@@ -317,21 +317,29 @@
     function Test-Feature {
         # Returns $true when an Advanced feature is enabled.
         # Precedence: $State['AdvancedFeatures'][Name] > catalog default.
+        # Condition scriptblock (if any) is evaluated first — returns $false when not met,
+        # regardless of the stored or default value. Prevents config-file bypass of
+        # runtime-gated features (e.g. ShadowRedundancy without DAG, EnableTLS13 on WS2019).
         # Unknown names return $false (fail closed) and log a verbose warning.
         param([Parameter(Mandatory)][string]$Name)
+
+        $catalog = Get-AdvancedFeatureCatalog
+        if (-not $catalog.Contains($Name)) {
+            Write-MyVerbose ("Test-Feature: unknown feature name '{0}' — returning `$false" -f $Name)
+            return $false
+        }
+
+        $entry = $catalog[$Name]
+        if ($entry.ContainsKey('Condition')) {
+            try   { if (-not (& $entry.Condition)) { return $false } }
+            catch { return $false }
+        }
 
         $features = $State['AdvancedFeatures']
         if ($features -is [hashtable] -and $features.ContainsKey($Name)) {
             return [bool]$features[$Name]
         }
-
-        $catalog = Get-AdvancedFeatureCatalog
-        if ($catalog.Contains($Name)) {
-            return [bool]$catalog[$Name].Default
-        }
-
-        Write-MyVerbose ("Test-Feature: unknown feature name '{0}' — returning `$false" -f $Name)
-        return $false
+        return [bool]$entry.Default
     }
 
     function Show-InstallationMenu {

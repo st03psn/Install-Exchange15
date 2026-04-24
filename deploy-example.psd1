@@ -23,6 +23,7 @@
     # Installation mode  (default: Mailbox if none specified)
     # -------------------------------------------------------------------------
     # InstallEdge                = $false   # Edge Transport role
+    # EdgeDNSSuffix              = ''       # DNS suffix for Edge Transport (blank = auto-detect)
     # Recover                    = $false   # Recovery installation
     # NoSetup                    = $false   # Skip Exchange setup (post-config only)
     # InstallRecipientManagement = $false   # Recipient Management Tools only
@@ -88,6 +89,8 @@
         LmCompat5           = $true
         SerializedDataSig   = $true
         ShutdownTrackerOff  = $true
+        HSTS                = $true    # HSTS header on OWA/ECP (requires CertificatePath)
+        MAPIEncryption      = $true    # Force encrypted MAPI connections
         HTTP2Disable        = $true
         CredentialGuardOff  = $true
         UnnecessaryServices = $true
@@ -125,12 +128,14 @@
         SSLOffloading       = $true
         MRSProxy            = $true
         IANATimezone        = $true
-        # AnonymousRelay    = $true   # auto-enabled when RelaySubnets set
-        # SkipHealthCheck   = $false
+        # AnonymousRelay      = $true   # auto-enabled when RelaySubnets set
+        # AccessNamespaceMail = $true   # auto-enabled when Namespace set; adds Accepted Domain + Email Address Policy
+        # SkipHealthCheck     = $false
         RBACReport          = $true
-        # RunEOMT           = $false  # legacy CUs only
+        # RunEOMT             = $false  # legacy CUs only
 
         # --- Install-Flow / Debug (defaults $false) ---
+        # AutoApproveWindowsUpdates = $false  # Autopilot: approve all Windows Updates without prompting
         # DiagnosticData    = $false
         # Lock              = $false
         # SkipRolesCheck    = $false
@@ -158,9 +163,11 @@
     # Behaviour flags
     # -------------------------------------------------------------------------
 
-    PreflightOnly     = $false   # $true to generate pre-flight report and exit
-    SkipInstallReport = $false   # $true to suppress HTML/PDF installation report at Phase 6
-    SkipSetupAssist   = $false   # $true to skip CSS-Exchange SetupAssist on Phase 4 failure
+    PreflightOnly      = $false   # $true to generate pre-flight report and exit
+    SkipInstallReport  = $false   # $true to suppress HTML/PDF installation report at Phase 6
+    SkipSetupAssist    = $false   # $true to skip CSS-Exchange SetupAssist on Phase 4 failure
+    # SkipWindowsUpdates = $false # $true to skip Windows Update step even if InstallWindowsUpdates=$true
+    # RecipientMgmtCleanup = $false  # $true to remove RSAT tools after Recipient Management install
     # SkipHealthCheck / NoCheckpoint / DiagnosticData moved to AdvancedFeatures above.
 
     # -------------------------------------------------------------------------
@@ -174,8 +181,9 @@
     # (useful when sharing the document with external parties)
     # CustomerDocument = $false
 
-    # Document language: 'DE' (default) or 'EN'
-    # Language = 'DE'
+    # Document language: use German=$true for German output (default: English).
+    # Legacy key Language='DE' is still accepted for backwards compatibility.
+    # German = $false
 
     # Scope of the generated document (v5.84):
     #   All   — org-wide settings + all Exchange servers + local details (default)
@@ -196,6 +204,30 @@
 
     # DoNotEnableEP / NoNet481 / SkipRolesCheck / Lock / RunEOMT / WaitForADSync
     # moved to AdvancedFeatures above.
+
+    # -------------------------------------------------------------------------
+    # MEAC — MonitorExchangeAuthCertificate (v5.93)
+    # -------------------------------------------------------------------------
+
+    # Suppress hybrid check when registering the MEAC renewal task
+    # MEACIgnoreHybridConfig       = $false
+
+    # Skip unreachable servers during MEAC setup (useful in DAG with offline members)
+    # MEACIgnoreUnreachableServers = $false
+
+    # Send expiry alert notifications 60 days before Auth Cert expiry
+    # MEACNotificationEmail = 'exchange-admin@contoso.com'
+
+    # -------------------------------------------------------------------------
+    # Fully unattended credentials (security: delete config file after use!)
+    # -------------------------------------------------------------------------
+    # Plain-text credentials are ONLY for zero-touch pipelines where interactive
+    # prompting is not possible. Every run logs a SECURITY WARNING. The config
+    # file is not machine-bound (unlike the DPAPI-encrypted state file) — delete
+    # or scrub it immediately after the install completes.
+    #
+    # AdminUser     = 'CONTOSO\svc-exchange-install'
+    # AdminPassword = 'P@ssw0rd!'
 
     # -------------------------------------------------------------------------
     # Relay connectors (v5.2)

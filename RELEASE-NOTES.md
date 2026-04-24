@@ -1,6 +1,6 @@
 ﻿# EXpress — Release Notes
 
-Full optimization and feature history. See `README.md` for user-facing changelog.
+Full version history for EXpress. See [README.md](README.md) for overview and quick start.
 
 **Versioning scheme:** `MAJOR.MINOR` = feature release; `MAJOR.MINOR.PATCH` = bugfix / maintenance release on top of the matching feature version.
 

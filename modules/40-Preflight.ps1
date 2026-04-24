@@ -271,6 +271,13 @@
             $NetVersion = Get-NETVersion
             $NetVersionText = Get-NetVersionText $NetVersion
             Write-MyOutput ".NET Framework is $NetVersion ($NetVersionText)"
+
+            # Warn about parameters that are ignored for the selected install mode
+            if ($State['InstallEdge']) {
+                if ($State['DAGName'])          { Write-MyWarning 'DAGName is ignored for Edge Transport installations' }
+                if ($State['Namespace'])        { Write-MyWarning 'Namespace is ignored for Edge Transport installations' }
+                if ($State['CopyServerConfig']) { Write-MyWarning 'CopyServerConfig is ignored for Edge Transport installations' }
+            }
         }
 
         if (! ( Test-Admin)) {
