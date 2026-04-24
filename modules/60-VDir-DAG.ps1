@@ -74,6 +74,19 @@
                 }
             }
             catch { Write-MyWarning ('OWA Download Domains: {0}' -f $_.Exception.Message); $errors++ }
+            # EnableDownloadDomains must be set at org level for CVE-2021-1730 mitigation to take effect
+            try {
+                $tc = Get-OrganizationConfig -ErrorAction Stop
+                if (-not $tc.EnableDownloadDomains) {
+                    Register-ExecutedCommand -Category 'VirtualDirectories' -Command 'Set-OrganizationConfig -EnableDownloadDomains $true'
+                    Set-OrganizationConfig -EnableDownloadDomains $true -ErrorAction Stop
+                    Write-MyVerbose 'EnableDownloadDomains enabled at org level (CVE-2021-1730)'
+                    $changed++
+                } else {
+                    Write-MyVerbose 'EnableDownloadDomains already enabled at org level'
+                }
+            }
+            catch { Write-MyWarning ('EnableDownloadDomains: {0}' -f $_.Exception.Message); $errors++ }
         }
 
         # ECP
@@ -165,6 +178,22 @@
             Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-MapiVirtualDirectory -Identity '$server\mapi (Default Web Site)' -InternalAuthenticationMethods NTLM,Negotiate,OAuth -ExternalAuthenticationMethods NTLM,Negotiate,OAuth")
         }
         catch { Write-MyVerbose ('MAPI auth methods not supported on this build: {0}' -f $_.Exception.Message) }
+
+        # PowerShell — ExternalUrl only; InternalUrl stays http (Exchange internal services use http by default)
+        try {
+            $vd = Get-PowerShellVirtualDirectory -Identity "$server\PowerShell (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if (Test-VdirUrl $vd.ExternalUrl "https://$ns/powershell") {
+                Write-MyVerbose 'PowerShell: ExternalUrl already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-PowerShellVirtualDirectory -Identity '$server\PowerShell (Default Web Site)' -ExternalUrl 'https://$ns/powershell'")
+                Set-PowerShellVirtualDirectory -Identity "$server\PowerShell (Default Web Site)" `
+                    -ExternalUrl "https://$ns/powershell" `
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'PowerShell virtual directory ExternalUrl configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('PowerShell URL: {0}' -f $_.Exception.Message); $errors++ }
 
         # Autodiscover SCP — always use autodiscover.<parent-domain>, not the namespace hostname
         try {

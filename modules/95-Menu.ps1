@@ -67,7 +67,7 @@
             MRSProxy            = @{ Category='PostConfig'; Label='Enable MRS Proxy';        Default=$true;  Description='Enable MRS Proxy on EWS for cross-forest/cross-org mailbox moves.' }
             IANATimezone        = @{ Category='PostConfig'; Label='IANA timezone mapping';   Default=$true;  Description='Configure IANA ↔ Windows timezone mapping (iCal interop).' }
             AnonymousRelay      = @{ Category='PostConfig'; Label='Anonymous relay connector'; Default=$true; Description='Create anonymous internal/external relay connector if RelaySubnets is configured.'; Condition={ [bool]$script:State['RelaySubnets'] -or [bool]$script:State['ExternalRelaySubnets'] } }
-            AccessNamespaceMail = @{ Category='PostConfig'; Label='Access Namespace mail config'; Default=$true; Description='Add Access Namespace as Authoritative Accepted Domain and set it as primary SMTP in the default Email Address Policy. Removes .local/nonroutable templates.'; Condition={ [bool]$script:State['Namespace'] } }
+            AccessNamespaceMail = @{ Category='PostConfig'; Label='Access Namespace mail config'; Default=$true; Description='Add Access Namespace as Authoritative Accepted Domain and set it as primary SMTP in the default Email Address Policy. Removes .local/nonroutable templates. Only available when EXpress created the Exchange org.'; Condition={ [bool]$script:State['Namespace'] -and [bool]$script:State['NewExchangeOrg'] } }
             SkipHealthCheck     = @{ Category='PostConfig'; Label='Opt-out: HealthChecker';  Default=$false; Description='Skip CSS-Exchange HealthChecker run at end of Phase 6.' }
             RBACReport          = @{ Category='PostConfig'; Label='RBAC Report';             Default=$true;  Description='Generate RBAC (role assignments / role groups) HTML report.' }
             RunEOMT             = @{ Category='PostConfig'; Label='Run EOMT';                Default=$false; Description='Run CSS-Exchange Emergency Mitigation Tool (legacy CUs; no-op on current CUs).' }
@@ -667,8 +667,10 @@
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
+                $cfg['LogCleanupFolder'] = Read-MenuInput -Prompt 'Log cleanup script folder' -Default 'C:\#service'
             } else {
                 $cfg['LogRetentionDays'] = 0
+                $cfg['LogCleanupFolder'] = ''
             }
             if ((Read-MenuInput -Prompt 'Create relay connectors? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
                 $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)' -Validate $validateCIDRList -ValidateMessage 'Invalid format — use e.g. 192.168.1.0/24,10.0.0.5'
@@ -711,8 +713,10 @@
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
+                $cfg['LogCleanupFolder'] = Read-MenuInput -Prompt 'Log cleanup script folder' -Default 'C:\#service'
             } else {
                 $cfg['LogRetentionDays'] = 0
+                $cfg['LogCleanupFolder'] = ''
             }
             if ((Read-MenuInput -Prompt 'Create relay connectors? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
                 $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)' -Validate $validateCIDRList -ValidateMessage 'Invalid format — use e.g. 192.168.1.0/24,10.0.0.5'

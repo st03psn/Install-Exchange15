@@ -248,6 +248,7 @@
     # Register daily scheduled task (02:00, SYSTEM) to delete logs older than N days
     # Cleans: IIS logs, Exchange transport logs, message tracking logs
     # LogRetentionDays = 30
+    # LogCleanupFolder  = 'C:\#service'   # folder for the cleanup script and its own logs
 
     # Access namespace for Virtual Directory URL configuration (Phase 6)
     # Namespace = 'mail.contoso.com'

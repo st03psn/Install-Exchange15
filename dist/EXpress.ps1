@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.1.5
+    Version:     1.1.6
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -68,8 +68,9 @@
     http://eightwone.com
 
     .NOTES
-    Requires PowerShell 5.1. Must run as Administrator on a domain-joined
-    host (except Edge Transport).
+    Requires Windows PowerShell 5.1. PowerShell 6/7 is not supported —
+    Exchange PSSnapin requires Windows PowerShell 5.1 exclusively.
+    Must run as Administrator on a domain-joined host (except Edge Transport).
 
     Supported environments:
       Exchange 2016 CU23         — Windows Server 2016
@@ -83,7 +84,56 @@
 
     .REVISIONS
     Full per-version history: see RELEASE-NOTES.md in the repository root.
-    Short changelog (user-facing): see README.md "What's New".
+
+    EXpress development history (pre-1.0):
+
+    0.1     Foundation (Rounds 1-7, v5.0, v5.1): WMI-to-CIM migration, Write-ToTranscript,
+            security baseline, $WS2025_PREFULL fix. Pre-flight HTML report, source-server
+            config export/import, HealthChecker, DAG, PFX cert. Interactive menu, Autopilot,
+            Windows Updates, Exchange SU, ConfigFile, Build.ps1.
+    0.2     Hardening + connector framework (v5.2, v5.3): HSTS, EOMT, VDir URLs,
+            Wait-ADReplication, relay connectors, RBAC report. Add-BackgroundJob,
+            New-LDAPSearch, registry idempotency, BSTR zeroing.
+    0.3     Installation reports + post-config (v5.4-v5.6): HTML Installation Report, PDF
+            export. Anti-spam, log cleanup, reconnect session, relay improvements, reports
+            subfolder. Bugfix series (v0.3.1-v0.3.4): disable services, link fixes, edge
+            guards, SU reboot timing, FormatException in HTML report.
+    0.4     Word Installation Document (v5.82, v5.83): pure-PowerShell OpenXML engine, 15
+            chapters. Three-tier logging (INFO/VERBOSE/DEBUG), unified file naming, dev tools.
+    0.5     Org-wide documentation + conditional reboots (v5.84, v5.85): all Exchange servers
+            documented via CIM/WSMan remote query. Phase 2-3 and 5-6 reboots skipped when
+            nothing pending. Test-RebootPending helper. VC++ 2013 URL updated.
+    0.6     Security hardening + MEAC (v5.86-v5.88.3): Defender realtime/Tamper Protection,
+            LLMNR/mDNS disable, Disable-UnnecessaryServices. MEAC Auth-Cert auto-renewal task.
+            Word doc enrichment: TLS semantics, IMAP/POP3, connector detail, DNS template,
+            Admin Audit Log, Anti-Spam, Crimson channels. Bugfixes: Phase 5-6 spurious reboot,
+            nested-array reshape, Auth Cert validity, $state/$State shadow, (if...) crashes.
+    0.7     Language reform + MEAC hybrid (v5.90-v5.94.1): default output English, -German
+            switch. Plain-text credentials in config file. Hybrid-aware MEAC + AD Split
+            Permissions. Word doc audit-readiness: 9 new sections (change mgmt, RBAC, ports,
+            compliance mapping, GDPR, backup, monitoring, acceptance tests).
+    0.8     Advanced Configuration menu + templates (v5.95, v5.96): ~55 toggles across 6
+            pages, Test-Feature condition gate, config-file parity. Installation-Document
+            Template support with {{token}} replacement.
+
+    1.0     EXpress rename + modularization: Install-Exchange15.ps1 renamed to EXpress.ps1;
+            split into 21 modules/*.ps1; dist/EXpress.ps1 merged build. Centralized downloads
+            to sources/. Install-target matrix tightened to latest CU per Exchange line.
+    1.1     src/ renamed to modules/. Install-target matrix: Ex2019 CU10-CU14 rejected; Ex2016
+            CU23 restricted to WS2016. F26: Access Namespace mail config. Menu back/edit step.
+            tools/Get-EXpressDownloads.ps1. CI merge-guard workflow.
+    1.1.2   NuGet auto-install, RunOnce path fix (dot-source module resolution), Exchange
+            source default path, module parse errors, PS 5.1 (if...) menu crashes.
+    1.1.3   Windows Updates: [A]=all removed; each Security/Critical update confirmed individually.
+    1.1.4   AutoApproveWindowsUpdates toggle (default off): Security/Critical no longer
+            auto-approved in Autopilot without explicit opt-in.
+    1.1.5   Docs: menu screenshots + Word doc mockup nav fix.
+    1.1.6   Bugfix: EnableDownloadDomains org flag now set (CVE-2021-1730 was incomplete);
+            PowerShell VDir sets ExternalUrl only (InternalUrl stays http); NetBIOS report
+            now checks registry for pending-reboot state; OWA EP integer normalization;
+            certificate expiry used .Days (days-component) instead of TotalDays.
+
+    Original Install-Exchange15.ps1 by Michel de Rooij (forked after v4.23):
 
     1.0     Initial community release
     1.01    Added logic to prepare AD when organization present
@@ -2311,6 +2361,8 @@ process {
         if ($null -ne (Test-ExchangeOrganization $State['OrganizationName'])) {
             Write-MyOutput "Exchange organization '$($State['OrganizationName'])' does not exist — PrepareAD required"
             $params += '/PrepareAD', "/OrganizationName:`"$($State['OrganizationName'])`""
+            $State['NewExchangeOrg'] = $true   # org created by this run — Enable-AccessNamespaceMailConfig may run
+            Save-State $State
         }
         else {
             $forestlvl = Get-ExchangeForestLevel
@@ -3412,10 +3464,12 @@ $($htmlRows -join "`n")
         $days = if ($State['LogRetentionDays'] -and [int]$State['LogRetentionDays'] -gt 0) { [int]$State['LogRetentionDays'] } else { 30 }
         Write-MyOutput 'Registering Exchange log cleanup scheduled task'
 
-        # Ask for script destination folder with 2-minute timeout via RawUI (same pattern as Show-InstallationMenu)
+        # Use folder from menu/config if already provided; otherwise prompt interactively
         $defaultScriptFolder = 'C:\#service'
-        $scriptFolder = $defaultScriptFolder
-        if ([Environment]::UserInteractive) {
+        $scriptFolder = if ($State['LogCleanupFolder']) { $State['LogCleanupFolder'] } else { $defaultScriptFolder }
+        if ($State['LogCleanupFolder']) {
+            Write-MyVerbose ('Log cleanup folder from configuration: {0}' -f $scriptFolder)
+        } elseif ([Environment]::UserInteractive) {
             Write-MyOutput ('Enter folder for log cleanup script [{0}] (ENTER = default, S = skip, auto-accept in 2 min):' -f $defaultScriptFolder)
             $inputBuffer = ''
             try {
@@ -4160,59 +4214,42 @@ Write-Log 'Exchange log cleanup finished'
             return
         }
 
-        # ── 2. Email Address Policy — primary SMTP template ─────────────────────
+        # ── 2. Create a new Email Address Policy named after the mail domain ──────
+        # A new policy is created rather than modifying the built-in Default Policy.
+        # Name = mail domain (e.g. "contoso.com"); primary SMTP template = %m@domain.
         try {
-            $policy = Get-EmailAddressPolicy -ErrorAction Stop | Sort-Object Priority | Select-Object -First 1
-            if (-not $policy) {
-                Write-MyWarning 'No Email Address Policy found — skipping policy update'
-                return
-            }
+            $policyName = $ns
+            $nsTemplate = "SMTP:%m@$ns"   # uppercase SMTP = primary; %m = mailbox alias
 
-            $currentTemplates = @($policy.EnabledEmailAddressTemplates)
-            $nsTemplate        = "SMTP:@$ns"   # uppercase SMTP = primary
-
-            # Build non-internal templates (remove .local / nonroutable suffixes as primary/secondary)
-            # but keep any routable domain that is NOT the access namespace as secondary smtp:
-            $keepTemplates = $currentTemplates | Where-Object {
-                $t = $_ -replace '^smtp:|^SMTP:',''
-                # Drop .local, .internal, .lan addresses — these are not routable
-                ($t -notmatch '\.(local|internal|lan|corp)$') -and ($t -ne "@$ns")
-            } | ForEach-Object {
-                # Downcase existing primary markers so we don't have two primaries
-                $_ -replace '^SMTP:', 'smtp:'
-            }
-
-            # Check whether we dropped any internal templates (for logging)
-            $droppedCount = $currentTemplates.Count - $keepTemplates.Count - 1  # -1 for namespace slot
-            if ($droppedCount -gt 0) {
-                Write-MyOutput ("Removing {0} internal-only address template(s) from policy '{1}'" -f $droppedCount, $policy.Name)
-            }
-
-            # Build new list: access namespace first (primary), remaining routable domains second
-            $newTemplates = @($nsTemplate) + @($keepTemplates | Where-Object { $_ })
-
-            # Only update if something actually changed
-            $alreadyPrimary = ($currentTemplates | Select-Object -First 1) -ieq $nsTemplate
-            $sameCount      = ($newTemplates.Count -eq $currentTemplates.Count) -and
-                              (($newTemplates | Sort-Object) -join '|') -eq (($currentTemplates | Sort-Object) -join '|')
-
-            if ($alreadyPrimary -and $sameCount) {
-                Write-MyVerbose ("Email Address Policy '{0}' already configured correctly — no change needed" -f $policy.Name)
-            }
-            else {
-                Set-EmailAddressPolicy -Identity $policy.Identity -EnabledEmailAddressTemplates $newTemplates -ErrorAction Stop
-                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Set-EmailAddressPolicy -Identity '{0}' -EnabledEmailAddressTemplates @('{1}')" -f $policy.Name, ($newTemplates -join "','"))
-                Write-MyOutput ("Email Address Policy '{0}' updated — primary SMTP: @{1}" -f $policy.Name, $ns)
-
-                # ── 3. Apply policy to all mailboxes ────────────────────────────
-                Write-MyOutput ('Applying Email Address Policy to all mailboxes (this may take a moment)...')
-                Update-EmailAddressPolicy -Identity $policy.Identity -ErrorAction Stop
-                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policy.Name)
-                Write-MyOutput ('Email Address Policy applied.')
+            $existing = Get-EmailAddressPolicy -ErrorAction Stop | Where-Object { $_.Name -ieq $policyName }
+            if ($existing) {
+                $alreadyPrimary = (($existing.EnabledEmailAddressTemplates | Select-Object -First 1) -ieq $nsTemplate)
+                if ($alreadyPrimary) {
+                    Write-MyVerbose ("Email Address Policy '{0}' already configured correctly — no change needed" -f $policyName)
+                } else {
+                    Set-EmailAddressPolicy -Identity $existing.Identity `
+                        -EnabledEmailAddressTemplates @($nsTemplate) -ErrorAction Stop
+                    Register-ExecutedCommand -Category 'ExchangePolicy' `
+                        -Command ("Set-EmailAddressPolicy -Identity '{0}' -EnabledEmailAddressTemplates @('{1}')" -f $policyName, $nsTemplate)
+                    Write-MyOutput ("Email Address Policy '{0}' updated — primary SMTP: %m@{1}" -f $policyName, $ns)
+                    Update-EmailAddressPolicy -Identity $existing.Identity -ErrorAction Stop
+                    Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policyName)
+                    Write-MyOutput 'Email Address Policy applied.'
+                }
+            } else {
+                New-EmailAddressPolicy -Name $policyName -IncludedRecipients AllRecipients `
+                    -EnabledEmailAddressTemplates @($nsTemplate) -Priority 1 `
+                    -ErrorAction Stop | Out-Null
+                Register-ExecutedCommand -Category 'ExchangePolicy' `
+                    -Command ("New-EmailAddressPolicy -Name '{0}' -IncludedRecipients AllRecipients -EnabledEmailAddressTemplates @('{1}') -Priority 1" -f $policyName, $nsTemplate)
+                Write-MyOutput ("Email Address Policy '{0}' created — primary SMTP: %m@{1}" -f $policyName, $ns)
+                Update-EmailAddressPolicy -Identity $policyName -ErrorAction Stop
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policyName)
+                Write-MyOutput 'Email Address Policy applied.'
             }
         }
         catch {
-            Write-MyWarning ('Email Address Policy update failed: {0}' -f $_.Exception.Message)
+            Write-MyWarning ('Email Address Policy configuration failed: {0}' -f $_.Exception.Message)
         }
     }
 
@@ -4415,6 +4452,19 @@ Write-Log 'Exchange log cleanup finished'
                 }
             }
             catch { Write-MyWarning ('OWA Download Domains: {0}' -f $_.Exception.Message); $errors++ }
+            # EnableDownloadDomains must be set at org level for CVE-2021-1730 mitigation to take effect
+            try {
+                $tc = Get-OrganizationConfig -ErrorAction Stop
+                if (-not $tc.EnableDownloadDomains) {
+                    Register-ExecutedCommand -Category 'VirtualDirectories' -Command 'Set-OrganizationConfig -EnableDownloadDomains $true'
+                    Set-OrganizationConfig -EnableDownloadDomains $true -ErrorAction Stop
+                    Write-MyVerbose 'EnableDownloadDomains enabled at org level (CVE-2021-1730)'
+                    $changed++
+                } else {
+                    Write-MyVerbose 'EnableDownloadDomains already enabled at org level'
+                }
+            }
+            catch { Write-MyWarning ('EnableDownloadDomains: {0}' -f $_.Exception.Message); $errors++ }
         }
 
         # ECP
@@ -4506,6 +4556,22 @@ Write-Log 'Exchange log cleanup finished'
             Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-MapiVirtualDirectory -Identity '$server\mapi (Default Web Site)' -InternalAuthenticationMethods NTLM,Negotiate,OAuth -ExternalAuthenticationMethods NTLM,Negotiate,OAuth")
         }
         catch { Write-MyVerbose ('MAPI auth methods not supported on this build: {0}' -f $_.Exception.Message) }
+
+        # PowerShell — ExternalUrl only; InternalUrl stays http (Exchange internal services use http by default)
+        try {
+            $vd = Get-PowerShellVirtualDirectory -Identity "$server\PowerShell (Default Web Site)" -ADPropertiesOnly -ErrorAction Stop
+            if (Test-VdirUrl $vd.ExternalUrl "https://$ns/powershell") {
+                Write-MyVerbose 'PowerShell: ExternalUrl already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-PowerShellVirtualDirectory -Identity '$server\PowerShell (Default Web Site)' -ExternalUrl 'https://$ns/powershell'")
+                Set-PowerShellVirtualDirectory -Identity "$server\PowerShell (Default Web Site)" `
+                    -ExternalUrl "https://$ns/powershell" `
+                    -Confirm:$false -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'PowerShell virtual directory ExternalUrl configured'
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('PowerShell URL: {0}' -f $_.Exception.Message); $errors++ }
 
         # Autodiscover SCP — always use autodiscover.<parent-domain>, not the namespace hostname
         try {
@@ -5600,9 +5666,16 @@ Write-Log 'Exchange log cleanup finished'
         $secRows.Add(('<tr><td>IPv4 over IPv6 preference</td><td>{0}</td><td>0x20 = prefer IPv4 (keep IPv6 loopback)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $ipv4ValText, $ipv4Badge, (Format-RefLink 'https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/configure-ipv6-in-windows' 'Exchange Blog')))
 
         # NetBIOS over TCP/IP
+        # SetTcpipNetbios(2) may return 1 (pending reboot), leaving the live CIM value stale.
+        # Cross-check the registry (NetbiosOptions=2) so the report reflects the pending state.
         try {
             $nbNics = @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction Stop)
-            $nbDisabled = ($nbNics | Where-Object { $_.TcpipNetbiosOptions -eq 2 }).Count
+            $nbDisabled = 0
+            foreach ($nbNic in $nbNics) {
+                if ($nbNic.TcpipNetbiosOptions -eq 2) { $nbDisabled++; continue }
+                $nbReg = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$($nbNic.SettingID)" -Name 'NetbiosOptions' -ErrorAction SilentlyContinue).NetbiosOptions
+                if ($nbReg -eq 2) { $nbDisabled++ }
+            }
             $nbBadge = if ($nbNics.Count -gt 0 -and $nbDisabled -eq $nbNics.Count) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge ('{0}/{1} disabled' -f $nbDisabled, $nbNics.Count) 'warn' }
             $secRows.Add(('<tr><td>NetBIOS over TCP/IP</td><td>{0} of {1} NICs disabled</td><td>Disabled on all NICs (reduces LLMNR/NBT-NS attack surface)</td><td>{2}</td><td>{3}</td><td>CIS §18 / BSI</td></tr>' -f $nbDisabled, $nbNics.Count, $nbBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/disable-netbios-tcp-ip-using-dhcp' 'MS Learn')))
         } catch { }
@@ -5622,6 +5695,8 @@ Write-Log 'Exchange log cleanup finished'
                     $siteLabel = if ($owaFe.WebSiteName) { $owaFe.WebSiteName } else { $owaFe.Name }
                     $epVal = [string]$owaFe.ExtendedProtectionTokenChecking
                     if ([string]::IsNullOrEmpty($epVal)) { $epVal = 'None' }
+                    # Normalize integer forms returned when deserializing AD properties
+                    if ($epVal -eq '2') { $epVal = 'Require' } elseif ($epVal -eq '1') { $epVal = 'Allow' } elseif ($epVal -eq '0') { $epVal = 'None' }
                     $epBadge = if ($epVal -in 'Require','Allow') { Format-Badge "$epVal ✓" 'ok' } else { Format-Badge "$epVal (risk)" 'warn' }
                     $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0} — {1}</td><td>Require or Allow</td><td>{2}</td><td>{3}</td><td>MS Exchange</td></tr>' -f $siteLabel, $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
                 }
@@ -7162,7 +7237,7 @@ $body
                 $certRows2 = [System.Collections.Generic.List[object[]]]::new()
                 foreach ($cert2 in $srvD.Certificates) {
                     $expiry2   = if ($cert2.NotAfter) { $cert2.NotAfter.ToString('yyyy-MM-dd') } else { '?' }
-                    $daysLeft2 = if ($cert2.NotAfter) { ($cert2.NotAfter - (Get-Date)).Days } else { 0 }
+                    $daysLeft2 = if ($cert2.NotAfter) { [int][Math]::Floor(($cert2.NotAfter - (Get-Date)).TotalDays) } else { 0 }
                     $tp2 = if ($cust) { ('{0}...' -f $cert2.Thumbprint.Substring(0, [Math]::Min(8, $cert2.Thumbprint.Length))) } else { $cert2.Thumbprint }
                     $certRows2.Add(@($cert2.Subject, $expiry2, ('{0}d' -f $daysLeft2), $cert2.Services, $tp2))
                 }
@@ -10305,7 +10380,7 @@ $body
             MRSProxy            = @{ Category='PostConfig'; Label='Enable MRS Proxy';        Default=$true;  Description='Enable MRS Proxy on EWS for cross-forest/cross-org mailbox moves.' }
             IANATimezone        = @{ Category='PostConfig'; Label='IANA timezone mapping';   Default=$true;  Description='Configure IANA ↔ Windows timezone mapping (iCal interop).' }
             AnonymousRelay      = @{ Category='PostConfig'; Label='Anonymous relay connector'; Default=$true; Description='Create anonymous internal/external relay connector if RelaySubnets is configured.'; Condition={ [bool]$script:State['RelaySubnets'] -or [bool]$script:State['ExternalRelaySubnets'] } }
-            AccessNamespaceMail = @{ Category='PostConfig'; Label='Access Namespace mail config'; Default=$true; Description='Add Access Namespace as Authoritative Accepted Domain and set it as primary SMTP in the default Email Address Policy. Removes .local/nonroutable templates.'; Condition={ [bool]$script:State['Namespace'] } }
+            AccessNamespaceMail = @{ Category='PostConfig'; Label='Access Namespace mail config'; Default=$true; Description='Add Access Namespace as Authoritative Accepted Domain and set it as primary SMTP in the default Email Address Policy. Removes .local/nonroutable templates. Only available when EXpress created the Exchange org.'; Condition={ [bool]$script:State['Namespace'] -and [bool]$script:State['NewExchangeOrg'] } }
             SkipHealthCheck     = @{ Category='PostConfig'; Label='Opt-out: HealthChecker';  Default=$false; Description='Skip CSS-Exchange HealthChecker run at end of Phase 6.' }
             RBACReport          = @{ Category='PostConfig'; Label='RBAC Report';             Default=$true;  Description='Generate RBAC (role assignments / role groups) HTML report.' }
             RunEOMT             = @{ Category='PostConfig'; Label='Run EOMT';                Default=$false; Description='Run CSS-Exchange Emergency Mitigation Tool (legacy CUs; no-op on current CUs).' }
@@ -10905,8 +10980,10 @@ $body
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
+                $cfg['LogCleanupFolder'] = Read-MenuInput -Prompt 'Log cleanup script folder' -Default 'C:\#service'
             } else {
                 $cfg['LogRetentionDays'] = 0
+                $cfg['LogCleanupFolder'] = ''
             }
             if ((Read-MenuInput -Prompt 'Create relay connectors? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
                 $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)' -Validate $validateCIDRList -ValidateMessage 'Invalid format — use e.g. 192.168.1.0/24,10.0.0.5'
@@ -10949,8 +11026,10 @@ $body
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
+                $cfg['LogCleanupFolder'] = Read-MenuInput -Prompt 'Log cleanup script folder' -Default 'C:\#service'
             } else {
                 $cfg['LogRetentionDays'] = 0
+                $cfg['LogCleanupFolder'] = ''
             }
             if ((Read-MenuInput -Prompt 'Create relay connectors? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
                 $relay = Read-MenuInput -Prompt 'Internal relay subnets  (comma-separated CIDRs, blank = placeholder)' -Validate $validateCIDRList -ValidateMessage 'Invalid format — use e.g. 192.168.1.0/24,10.0.0.5'
@@ -11814,7 +11893,7 @@ $body
                     }
 
                     # Access Namespace — Accepted Domain + Email Address Policy (F26)
-                    if ($State['AccessNamespaceMail'] -and $State['Namespace']) {
+                    if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and $State['NewExchangeOrg']) {
                         Enable-AccessNamespaceMailConfig
                     }
 
@@ -12376,7 +12455,7 @@ $body
                 }
 
                 # Access Namespace — Accepted Domain + Email Address Policy (F26)
-                if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and -not $State['InstallEdge']) {
+                if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and $State['NewExchangeOrg'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Access namespace mail config' -PercentComplete 79
                     Enable-AccessNamespaceMailConfig
                 }
