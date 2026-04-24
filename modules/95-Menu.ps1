@@ -780,7 +780,8 @@
                     if ($idx -ge 0 -and $idx -lt $editFields.Count) {
                         $fld      = $editFields[$idx]
                         $curVal   = if ($cfg[$fld.Key]) { $cfg[$fld.Key] } else { '' }
-                        $newVal   = Read-MenuInput -Prompt $fld.Prompt -Default $curVal -Required $fld.Required -Validate $fld.Validate -ValidateMessage (if ($fld.ValidateMsg) { $fld.ValidateMsg } else { 'Invalid input' })
+                        $valMsg   = if ($fld.ValidateMsg) { $fld.ValidateMsg } else { 'Invalid input' }
+                        $newVal   = Read-MenuInput -Prompt $fld.Prompt -Default $curVal -Required $fld.Required -Validate $fld.Validate -ValidateMessage $valMsg
                         $cfg[$fld.Key] = $newVal
                         # Clear DownloadDomain if Namespace was cleared
                         if ($fld.Key -eq 'Namespace' -and -not $newVal) { $cfg['DownloadDomain'] = '' }

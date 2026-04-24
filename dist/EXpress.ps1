@@ -9654,9 +9654,10 @@ $body
         }
 
         try {
-            $epArgs = @('-ExchangeServerNames', $env:computername)
-            if ($State['DoNotEnableEP_FEEWS']) { $epArgs += '-SkipEWS' }
-            $epCmd = '& ExchangeExtendedProtectionManagement.ps1 -ExchangeServerNames {0}{1}' -f $env:computername, (if ($State['DoNotEnableEP_FEEWS']) { ' -SkipEWS' } else { '' })
+            $epArgs    = @('-ExchangeServerNames', $env:computername)
+            $epSkipEWS = if ($State['DoNotEnableEP_FEEWS']) { ' -SkipEWS' } else { '' }
+            if ($epSkipEWS) { $epArgs += '-SkipEWS' }
+            $epCmd = '& ExchangeExtendedProtectionManagement.ps1 -ExchangeServerNames {0}{1}' -f $env:computername, $epSkipEWS
             Register-ExecutedCommand -Category 'ExchangeTuning' -Command $epCmd
             & $epPath @epArgs *>&1 | ForEach-Object { Write-ToTranscript ([string]$_) }
         }
@@ -10985,7 +10986,8 @@ $body
                     if ($idx -ge 0 -and $idx -lt $editFields.Count) {
                         $fld      = $editFields[$idx]
                         $curVal   = if ($cfg[$fld.Key]) { $cfg[$fld.Key] } else { '' }
-                        $newVal   = Read-MenuInput -Prompt $fld.Prompt -Default $curVal -Required $fld.Required -Validate $fld.Validate -ValidateMessage (if ($fld.ValidateMsg) { $fld.ValidateMsg } else { 'Invalid input' })
+                        $valMsg   = if ($fld.ValidateMsg) { $fld.ValidateMsg } else { 'Invalid input' }
+                        $newVal   = Read-MenuInput -Prompt $fld.Prompt -Default $curVal -Required $fld.Required -Validate $fld.Validate -ValidateMessage $valMsg
                         $cfg[$fld.Key] = $newVal
                         # Clear DownloadDomain if Namespace was cleared
                         if ($fld.Key -eq 'Namespace' -and -not $newVal) { $cfg['DownloadDomain'] = '' }

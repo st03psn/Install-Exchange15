@@ -775,9 +775,10 @@
         }
 
         try {
-            $epArgs = @('-ExchangeServerNames', $env:computername)
-            if ($State['DoNotEnableEP_FEEWS']) { $epArgs += '-SkipEWS' }
-            $epCmd = '& ExchangeExtendedProtectionManagement.ps1 -ExchangeServerNames {0}{1}' -f $env:computername, (if ($State['DoNotEnableEP_FEEWS']) { ' -SkipEWS' } else { '' })
+            $epArgs    = @('-ExchangeServerNames', $env:computername)
+            $epSkipEWS = if ($State['DoNotEnableEP_FEEWS']) { ' -SkipEWS' } else { '' }
+            if ($epSkipEWS) { $epArgs += '-SkipEWS' }
+            $epCmd = '& ExchangeExtendedProtectionManagement.ps1 -ExchangeServerNames {0}{1}' -f $env:computername, $epSkipEWS
             Register-ExecutedCommand -Category 'ExchangeTuning' -Command $epCmd
             & $epPath @epArgs *>&1 | ForEach-Object { Write-ToTranscript ([string]$_) }
         }
