@@ -33,6 +33,38 @@ Only the **latest CU** of each Exchange line is supported as an install target. 
 
 ---
 
+## Download
+
+> **End users** only need a single file — `dist/EXpress.ps1`. No other repo files are required to run the script.
+
+### Option A — Download the single script file (recommended)
+
+1. Open the [latest release](https://github.com/st03psn/EXpress/releases/latest) on GitHub.
+2. Download **`EXpress.ps1`** from the release assets.
+3. Place it in your working directory (e.g. `C:\Install\`).
+4. Run it — see [Quick Start](#quick-start) below.
+
+### Option B — Download from the repository
+
+If you want the optional extras (Word templates, example config, pre-staging tool):
+
+1. Click **Code → Download ZIP** on the repository main page, or `git clone https://github.com/st03psn/EXpress`.
+2. Copy `dist\EXpress.ps1` to your working directory.
+3. Optionally copy the folders listed in the table below.
+
+| What to copy | Why |
+|---|---|
+| `dist\EXpress.ps1` | **Required** — the script itself (single merged file) |
+| `deploy-example.psd1` | Starting point for a config file (`-ConfigFile`) |
+| `templates\` | Word document templates; needed only when using `-TemplatePath` |
+| `assets\logo.png` | Custom logo printed in reports; EXpress searches for it automatically |
+| `tools\Get-EXpressDownloads.ps1` | Pre-stages all prerequisites on an internet-connected machine for air-gapped deployments |
+| `Start-EXpress.cmd` | Convenience launcher — opens an elevated PowerShell window and starts the script |
+
+> **Do not copy `modules\` or `tools\Merge-Source.ps1`** — those are for contributors building from source. `dist\EXpress.ps1` already contains everything merged into one file.
+
+---
+
 ## Quick Start
 
 ### Interactive mode (recommended)
@@ -262,6 +294,70 @@ The following best-practice configurations are automatically applied after Excha
 - **HTML Non-Delivery Reports** — improves end-user NDR readability
 - **Shadow Redundancy** — prefer remote DAG member for in-flight message redundancy (DAG only)
 - **Safety Net hold time: 2 days** — explicit redelivery hold time for post-failover message recovery
+
+---
+
+## Repository Layout
+
+> End users only need `dist\EXpress.ps1`. The layout below is for contributors or users who cloned the full repo.
+
+```
+EXpress/
+├── dist/
+│   └── EXpress.ps1               ← single merged release file  ← END USERS: use this
+│
+├── modules/                      ← source modules (contributors only — merged by Merge-Source.ps1)
+│   ├── 00-Constants.ps1
+│   ├── 05-State.ps1
+│   ├── 10-Logging.ps1
+│   ├── 15-Helpers.ps1
+│   ├── 25-AD.ps1
+│   ├── 35-Exchange.ps1
+│   ├── 40-Preflight.ps1
+│   ├── 45-ServerConfig.ps1
+│   ├── 50-Connectors.ps1
+│   ├── 55-Security.ps1
+│   ├── 60-VDir-DAG.ps1
+│   ├── 70-ReportData.ps1         ← report data collectors
+│   ├── 72-ReportHtml.ps1         ← HTML installation report
+│   ├── 74-OpenXml.ps1            ← pure-PS OpenXML engine
+│   ├── 76-InstallDoc.ps1         ← Word installation document
+│   ├── 78-RBAC.ps1               ← RBAC report
+│   ├── 85-WU-SU.ps1              ← Windows Update + Exchange SU
+│   ├── 88-RecipientMgmt.ps1
+│   ├── 90-Hardening.ps1          ← security hardening functions
+│   ├── 95-Menu.ps1               ← interactive Copilot menu
+│   └── 99-Main.ps1               ← phase loop + entry point
+│
+├── templates/                    ← Word document templates (optional for end users)
+│   ├── Exchange-installation-document-DE.docx
+│   └── Exchange-installation-document-EN.docx
+│
+├── tools/                        ← standalone helper scripts (optional for end users)
+│   ├── Get-EXpressDownloads.ps1  ← pre-stage all downloads for air-gapped installs
+│   ├── Enable-EXpressRemoteQuery.ps1
+│   ├── Build-InstallationTemplate.ps1
+│   ├── Build-ConceptTemplate.ps1
+│   └── Merge-Source.ps1          ← merges modules/ → dist/EXpress.ps1 (contributors)
+│
+├── assets/
+│   └── logo.png                  ← custom logo embedded in reports (optional)
+│
+├── sources/                      ← auto-populated at runtime (gitignored — not in repo)
+│   │                               prerequisites downloaded here: .NET, VC++, UCMA,
+│   │                               URL Rewrite, CSS-Exchange scripts, Exchange SUs
+│   └── ...
+│
+├── EXpress.ps1                   ← entry point when running from source (dot-sources modules/)
+├── deploy-example.psd1           ← fully annotated config file template
+├── Start-EXpress.cmd             ← elevated PowerShell launcher (Windows)
+├── Build.ps1                     ← compiles dist/EXpress.ps1 → EXpress.exe via PS2Exe
+└── EXpress.Tests.ps1             ← Pester test suite
+```
+
+### How `sources/` works
+
+EXpress downloads all prerequisites automatically into `<InstallPath>\sources\` (default `C:\Install\sources\`). Any file already present is reused without re-downloading — enabling **air-gapped** and **proxy-restricted** installs. Run `tools\Get-EXpressDownloads.ps1` on an internet-connected machine to pre-stage everything before deploying to an isolated server.
 
 ---
 
