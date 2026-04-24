@@ -1046,6 +1046,11 @@ param(
 )
 
 process {
+    # Capture the true entry-point path before dot-sourcing modules.
+    # $MyInvocation.MyCommand.Path inside a dot-sourced file resolves to
+    # that module file's path, not to EXpress.ps1 — modules read this
+    # variable to build the Autopilot RunOnce command correctly.
+    $EXpressEntryScript = $MyInvocation.MyCommand.Path
 #region SOURCE-LOADER
     foreach ($m in (Get-ChildItem (Join-Path $PSScriptRoot 'modules') -Filter '*.ps1' | Sort-Object Name)) { . $m.FullName }
 #endregion SOURCE-LOADER

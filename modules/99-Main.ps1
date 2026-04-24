@@ -12,8 +12,13 @@
     $VerbosePreference = 'SilentlyContinue'
     $DebugPreference   = 'SilentlyContinue'
 
-    # When compiled with PS2Exe, MyInvocation.MyCommand.Path is empty — fall back to the process image path
-    $ScriptFullName = if ($MyInvocation.MyCommand.Path) {
+    # $EXpressEntryScript is set in EXpress.ps1 before the dot-source loop so it always
+    # points to EXpress.ps1 itself. $MyInvocation.MyCommand.Path inside a dot-sourced file
+    # resolves to that module file's path — using it here would break the Autopilot RunOnce key.
+    # PS2Exe: both are empty; fall back to the process image path.
+    $ScriptFullName = if ($EXpressEntryScript) {
+        $EXpressEntryScript
+    } elseif ($MyInvocation.MyCommand.Path) {
         $MyInvocation.MyCommand.Path
     } else {
         [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
