@@ -1046,6 +1046,11 @@ param(
 )
 
 process {
+    # Capture the true entry-point path before dot-sourcing modules.
+    # $MyInvocation.MyCommand.Path inside a dot-sourced file resolves to
+    # that module file's path, not to EXpress.ps1 — modules read this
+    # variable to build the Autopilot RunOnce command correctly.
+    $EXpressEntryScript = $MyInvocation.MyCommand.Path
 
     $ScriptVersion = '1.1.1'
 
@@ -11031,8 +11036,13 @@ $body
     $VerbosePreference = 'SilentlyContinue'
     $DebugPreference   = 'SilentlyContinue'
 
-    # When compiled with PS2Exe, MyInvocation.MyCommand.Path is empty — fall back to the process image path
-    $ScriptFullName = if ($MyInvocation.MyCommand.Path) {
+    # $EXpressEntryScript is set in EXpress.ps1 before the dot-source loop so it always
+    # points to EXpress.ps1 itself. $MyInvocation.MyCommand.Path inside a dot-sourced file
+    # resolves to that module file's path — using it here would break the Autopilot RunOnce key.
+    # PS2Exe: both are empty; fall back to the process image path.
+    $ScriptFullName = if ($EXpressEntryScript) {
+        $EXpressEntryScript
+    } elseif ($MyInvocation.MyCommand.Path) {
         $MyInvocation.MyCommand.Path
     } else {
         [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
