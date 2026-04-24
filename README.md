@@ -264,6 +264,12 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v1.0 — April 2026
+- **EXpress rename** — script renamed from `Install-Exchange15.ps1` to `EXpress.ps1`; GitHub repo renamed to `st03psn/EXpress`. Version jumps to 1.0 (new identity).
+- **Modular source layout** — codebase split into 21 `src/*.ps1` modules; `tools/Merge-Source.ps1` produces `dist/EXpress.ps1` for release; `Build.ps1` runs the merge automatically before PS2Exe compilation (`-SkipMerge` to bypass).
+- **Generated file naming** — all output files gain `EXpress` as second segment: `{PC}_EXpress_Install_...log`, `{PC}_EXpress_Preflight_...html`, `{PC}_EXpress_Report_...html`, `{PC}_EXpress_RBAC_...txt`, `{PC}_EXpress_Config.xml`, `{PC}_EXpress_ExchangeServer-Documentation_EN_....docx`.
+- **State file** renamed `{PC}_EXpress_State.xml` (prevents conflict with legacy v5.x state files).
+
 ### v5.96 — April 2026
 - **F24: Installation-Document Template** — new `-TemplatePath <path>` parameter lets customers supply a branded DOCX template. The cover page and header/footer come from the template; all 18 chapter sections are generated and injected into a `{{document_body}}` placeholder. `{{token}}` placeholders for org name, server, date, scenario, author, classification, etc. are filled at runtime. Starter templates in `templates\Exchange-installation-document-{EN,DE}.docx`. Automatic fallback to the built-in cover page if the template is missing or invalid — zero regression.
 
