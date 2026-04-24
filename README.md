@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.94.1 (April 2026, last updated 2026-04-24)
+**Version:** 5.95.1 (April 2026, last updated 2026-04-24)
 **License:** As-Is, without warranty
 
 **Versioning scheme:** `MAJOR.MINOR` = feature release · `MAJOR.MINOR.PATCH` = bugfix / maintenance release. Example: `5.86` introduces features, `5.86.2` contains only bugfixes on top of `5.86`.
@@ -263,6 +263,15 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.95.1 — April 2026
+- **Windows Update progress bar** — label changed from `Xs remaining` to `auto-abort in Xs` to clarify it shows the timeout countdown, not estimated completion time
+- **Language toggle hint** — main menu toggle V now reads `Language:  DE (default EN)` to make the English default explicit
+
+### v5.95 — April 2026
+- **Advanced Configuration menu (F25)** — ~55 hardening / tuning / policy knobs moved out of the flat main menu into a new paginated Advanced Configuration menu (`[C]` in the main menu). Main menu now shows only the five installation-flow toggles (A Autopilot · B Install SU · N Preflight-only · R Windows Updates · U Generate Document · V Language). Advanced menu is paginated by category (6 pages), letter-keys toggle entries, `N`/`P` navigate pages, `A` applies on the last page, `S` skips all (keeps defaults), `ESC` cancels. `Read-Host` fallback when `RawUI` is unavailable (PS2Exe / redirected host).
+- **`AdvancedFeatures` config-file block** — `deploy-example.psd1` gains `AdvancedFeatures = @{ … }` nested block. Existing top-level keys and `-<Name>` cmdline switches remain fully supported (nested block wins on conflict).
+- **Upstream fix: Edge installation** — cherry-picked Michel de Rooij's fix removing the spurious Exchange 2013 AD check when installing Edge Transport (`-not $State['InstallEdge']` guard).
 
 ### v5.94.1 — April 2026
 - **Word document §8.6 (Logging) — SIEM/forensics note** — explicit guidance that local log cleanup is volume-protection only and that long-term retention for forensics and compliance (BSI APP.5.2, GDPR accountability, GoBD) belongs in a SIEM (Splunk/Sentinel/Elastic/Wazuh/QRadar) fed via NXLog/WEF-WEC/Filebeat/AMA
