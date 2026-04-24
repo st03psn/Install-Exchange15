@@ -1004,6 +1004,11 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'W')]
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
     [string[]]$IncludeServers = @(),
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    [parameter( Mandatory = $false, ParameterSetName = 'W')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [string]$TemplatePath = '',
 
     # --- MEAC passthroughs (v5.93) — applied when Register-AuthCertificateRenewal runs
     [parameter( Mandatory = $false, ParameterSetName = 'M')]

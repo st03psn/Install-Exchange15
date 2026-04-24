@@ -359,5 +359,76 @@ $body
         $zip.Dispose()
         $fs.Dispose()
     }
+    function Test-WdTemplate {
+        # Validates that a DOCX template contains all required {{token}} placeholders.
+        # Searches across all XML parts (document, header, footer, etc.).
+        # Returns @{ Valid=[bool]; Missing=[string[]] }.
+        param([string]$Path, [string[]]$RequiredTags = @('document_body'))
+        Add-Type -AssemblyName System.IO.Compression
+        $missing = [System.Collections.Generic.List[string]]::new()
+        try {
+            $fs  = [System.IO.File]::OpenRead($Path)
+            $zip = [System.IO.Compression.ZipArchive]::new($fs, [System.IO.Compression.ZipArchiveMode]::Read)
+            $allXml = ''
+            foreach ($entry in $zip.Entries) {
+                if ($entry.FullName -match '\.xml$') {
+                    $sr      = [System.IO.StreamReader]::new($entry.Open())
+                    $allXml += $sr.ReadToEnd()
+                    $sr.Dispose()
+                }
+            }
+            $zip.Dispose()
+            $fs.Dispose()
+        } catch {
+            return @{ Valid = $false; Missing = @(('Cannot open template: ' + $_)) }
+        }
+        foreach ($tag in $RequiredTags) {
+            if ($allXml -notlike ('*{{' + $tag + '}}*')) { $null = $missing.Add($tag) }
+        }
+        return @{ Valid = ($missing.Count -eq 0); Missing = $missing.ToArray() }
+    }
+    function Write-WdFromTemplate {
+        # Copies a DOCX template to $OutputPath and replaces all {{token}} placeholders
+        # in every XML part with the corresponding values from the $Tokens hashtable.
+        # Special token 'document_body': replaces the entire anchor paragraph
+        #   <w:p><w:r><w:t>{{document_body}}</w:t></w:r></w:p>
+        # with the supplied chapter XML string (multiple <w:p> elements).
+        # All other tokens are XML-escaped before substitution.
+        param([string]$TemplatePath, [string]$OutputPath, [hashtable]$Tokens)
+        Add-Type -AssemblyName System.IO.Compression
+        $enc = [System.Text.UTF8Encoding]::new($false)
+        [System.IO.File]::Copy($TemplatePath, $OutputPath, $true)
+        $fs  = [System.IO.File]::Open($OutputPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite)
+        $zip = [System.IO.Compression.ZipArchive]::new($fs, [System.IO.Compression.ZipArchiveMode]::Update)
+        $xmlEntries = @($zip.Entries | Where-Object { $_.FullName -match '\.xml$' })
+        foreach ($entry in $xmlEntries) {
+            $sr      = [System.IO.StreamReader]::new($entry.Open())
+            $content = $sr.ReadToEnd()
+            $sr.Dispose()
+            $modified = $false
+            foreach ($kv in $Tokens.GetEnumerator()) {
+                $marker = '{{' + $kv.Key + '}}'
+                if ($content.Contains($marker)) {
+                    if ($kv.Key -eq 'document_body') {
+                        $anchor = '<w:p><w:r><w:t>' + $marker + '</w:t></w:r></w:p>'
+                        $content = $content.Replace($anchor, $kv.Value)
+                    } else {
+                        $content = $content.Replace($marker, (Invoke-XmlEscape $kv.Value))
+                    }
+                    $modified = $true
+                }
+            }
+            if ($modified) {
+                $entryName = $entry.FullName
+                $entry.Delete()
+                $newEntry = $zip.CreateEntry($entryName)
+                $sw = [System.IO.StreamWriter]::new($newEntry.Open(), $enc)
+                $sw.Write($content)
+                $sw.Dispose()
+            }
+        }
+        $zip.Dispose()
+        $fs.Dispose()
+    }
 
     # ── New-InstallationDocument (F22) ────────────────────────────────────────────

@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, and post-configuration.
 
 **Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 5.95.1 (April 2026, last updated 2026-04-24)
+**Version:** 5.96 (April 2026, last updated 2026-04-24)
 **License:** As-Is, without warranty
 
 **Versioning scheme:** `MAJOR.MINOR` = feature release · `MAJOR.MINOR.PATCH` = bugfix / maintenance release. Example: `5.86` introduces features, `5.86.2` contains only bugfixes on top of `5.86`.
@@ -263,6 +263,9 @@ The following best-practice configurations are automatically applied after Excha
 ---
 
 ## What's New
+
+### v5.96 — April 2026
+- **F24: Installation-Document Template** — new `-TemplatePath <path>` parameter lets customers supply a branded DOCX template. The cover page and header/footer come from the template; all 18 chapter sections are generated and injected into a `{{document_body}}` placeholder. `{{token}}` placeholders for org name, server, date, scenario, author, classification, etc. are filled at runtime. Starter templates in `templates\Exchange-installation-document-{EN,DE}.docx`. Automatic fallback to the built-in cover page if the template is missing or invalid — zero regression.
 
 ### v5.95.1 — April 2026
 - **Windows Update progress bar** — label changed from `Xs remaining` to `auto-abort in Xs` to clarify it shows the timeout countdown, not estimated completion time

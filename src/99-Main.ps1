@@ -315,6 +315,7 @@
             elseif ($cfgLang)         { $German = [switch]($cfgLang -imatch '^DE$') }
             $DocumentScope        = Get-CfgValue 'DocumentScope'  $DocumentScope
             $IncludeServers       = @((Get-CfgValue 'IncludeServers' ($IncludeServers -join ',')) -split ',' | Where-Object { $_ })
+            $TemplatePath         = Get-CfgValue 'TemplatePath'   $TemplatePath
 
             # MEAC passthroughs (v5.93)
             $MEACIgnoreHybridConfig       = [switch](Get-CfgValue 'MEACIgnoreHybridConfig'       ([bool]$MEACIgnoreHybridConfig))
@@ -493,6 +494,7 @@
         $State["Language"]            = if ($German) { 'DE' } else { 'EN' }
         $State["DocumentScope"]       = if ($DocumentScope) { $DocumentScope } else { 'All' }
         $State["IncludeServers"]      = if ($IncludeServers) { $IncludeServers -join ',' } else { '' }
+        $State["TemplatePath"]        = $TemplatePath
 
         # Prompt for PFX password at startup if certificate path specified
         if ($CertificatePath) {

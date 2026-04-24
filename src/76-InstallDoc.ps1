@@ -81,17 +81,35 @@
 
         $parts = [System.Collections.Generic.List[string]]::new()
 
+        # ── Template check (F24) ─────────────────────────────────────────────────
+        # When -TemplatePath is supplied and valid, the cover page is driven by the
+        # template DOCX; $parts contains only the chapter body XML.
+        $tplPath = $State['TemplatePath']
+        $useTpl  = $tplPath -and (Test-Path $tplPath -PathType Leaf)
+        if ($useTpl) {
+            $tplCheck = Test-WdTemplate -Path $tplPath -RequiredTags @('document_body')
+            if (-not $tplCheck.Valid) {
+                Write-MyWarning ('Template missing required tokens: ' + ($tplCheck.Missing -join ', ') + ' — falling back to built-in cover page.')
+                $useTpl = $false
+            } else {
+                Write-MyVerbose ('Using custom template: ' + $tplPath)
+            }
+        }
+
         $instMode = if ($isAdHoc) { (L 'Ad-hoc-Inventar' 'Ad-hoc Inventory') } elseif ($State['InstallEdge']) { 'Edge Transport' } elseif ($State['InstallRecipientManagement']) { 'Recipient Management Tools' } elseif ($State['InstallManagementTools']) { 'Management Tools' } elseif ($State['StandaloneOptimize']) { 'Standalone Optimize' } elseif ($State['NoSetup']) { 'Optimization Only' } else { 'Mailbox Server' }
         $scenario = if ($isAdHoc) { (L 'Ad-hoc-Inventar (vorhandene Umgebung)' 'Ad-hoc inventory (existing environment)') } elseif ($rd.Servers.Count -le 1) { (L 'Neue Exchange-Umgebung' 'New Exchange environment') } else { (L 'Server-Ergänzung zu bestehender Umgebung' 'Server added to existing environment') }
         $classification = (Lc $cust 'CUSTOMER' 'INTERN')
 
-        # ── Deckblatt (Cover Page) ───────────────────────────────────────────────
-        # Layout nach Referenzvorlage: Produkt (groß) / Titel (XXL) / Untertitel / Version+Datum+Autor.
-        # Company/Author sind State-gesteuert ($State['CompanyName'], $State['Author']) ohne Default-Branding.
+        # Cover page variables — needed both for built-in cover page and template tokens.
         $company  = SafeVal $State['CompanyName'] ''
         $author   = SafeVal $State['Author']      ''
         $coverSub = (L 'Installation, Hybridbereitstellung, Mailflow' 'Installation, Hybrid deployment, Mail flow')
         $logoFile = Join-Path $State['InstallPath'] 'logo.png'
+
+        if (-not $useTpl) {
+        # ── Deckblatt (Cover Page) ───────────────────────────────────────────────
+        # Layout nach Referenzvorlage: Produkt (groß) / Titel (XXL) / Untertitel / Version+Datum+Autor.
+        # Company/Author sind State-gesteuert ($State['CompanyName'], $State['Author']) ohne Default-Branding.
         $null = $parts.Add((New-WdSpacer 1440))
         if (Test-Path $logoFile -PathType Leaf) {
             # Logo centered, 6 cm wide (2160000 EMU), proportional height for 400×80 source: 432000 EMU
@@ -114,6 +132,7 @@
         $null = $parts.Add((New-WdSpacer 600))
         $null = $parts.Add((New-WdCentered -Text $classification -SizeHalfPt 22 -Bold $true -Color 'C00000'))
         $null = $parts.Add((New-WdPageBreak))
+        } # end if (-not $useTpl)
 
         # ── Hinweise zu diesem Dokument ─────────────────────────────────────────
         # Struktur nach Referenzvorlage: Anpassungsvorbehalt, Genderhinweis, Warenzeichen,
@@ -1375,7 +1394,27 @@
 
         # Write document
         $headerLabel = if ($DE) { 'EXCHANGE SERVER INSTALLATIONSDOKUMENTATION' } else { 'EXCHANGE SERVER INSTALLATION DOCUMENTATION' }
-        New-WdFile -OutputPath $docPath -BodyParts $parts.ToArray() -DocTitle $docTitle -HeaderLabel $headerLabel -LogoPath $logoFile
+        if ($useTpl) {
+            # F24: inject chapter body into customer template and fill cover page tokens.
+            $tplTokens = @{
+                document_body  = ($parts -join '')
+                Organization   = (SafeVal $State['OrganizationName'] '')
+                ServerName     = $env:COMPUTERNAME
+                Scenario       = $scenario
+                InstallMode    = $instMode
+                Version        = ((Get-Date -Format 'yyyy-MM-dd') + ' / EXpress v' + $ScriptVersion)
+                DateLong       = (Get-Date -Format 'dd.MM.yyyy')
+                Author         = $author
+                Company        = $company
+                Classification = $classification
+                HeaderLabel    = $headerLabel
+                DocTitle       = $docTitle
+                CoverSub       = $coverSub
+            }
+            Write-WdFromTemplate -TemplatePath $tplPath -OutputPath $docPath -Tokens $tplTokens
+        } else {
+            New-WdFile -OutputPath $docPath -BodyParts $parts.ToArray() -DocTitle $docTitle -HeaderLabel $headerLabel -LogoPath $logoFile
+        }
         $State['WordDocPath'] = $docPath
         Write-MyOutput ('Word Installation Document: {0}' -f $docPath)
     }

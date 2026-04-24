@@ -6,6 +6,22 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.96 (2026-04-24) — feature
+
+### F24 — Installation-Document Template (hybrid)
+
+Optional custom DOCX template for the Word installation document.
+
+- New parameter **`-TemplatePath <path>`** — path to a customer DOCX template. When supplied, the cover page and header/footer come from the template; the script injects all 18 chapter sections as generated XML.
+- **`{{token}}` placeholder replacement** — template must contain `{{document_body}}` (required) plus any combination of `{{Organization}}`, `{{ServerName}}`, `{{Scenario}}`, `{{InstallMode}}`, `{{Version}}`, `{{DateLong}}`, `{{Author}}`, `{{Company}}`, `{{Classification}}`, `{{HeaderLabel}}`, `{{DocTitle}}`, `{{CoverSub}}`. Tokens are replaced in every XML part (document, header, footer).
+- **`Test-WdTemplate -Path -RequiredTags`** — validates that a template DOCX contains all required `{{token}}` placeholders before use; missing required tokens trigger an automatic fallback to the built-in cover page with a warning.
+- **`Write-WdFromTemplate -TemplatePath -OutputPath -Tokens`** — copies the template ZIP, replaces tokens in all XML parts. `{{document_body}}` replaces its entire anchor paragraph `<w:p><w:r><w:t>{{document_body}}</w:t></w:r></w:p>` with the generated chapter XML.
+- **`tools\Build-InstallationTemplate.ps1`** — maintainer tool to generate starter templates `templates\Exchange-installation-document-EN.docx` and `-DE.docx`. Both ship in the repository as customization starting points.
+- Config-file support: `TemplatePath` key in `.psd1` deployment files.
+- Fallback: if `-TemplatePath` is omitted or the template fails validation, the existing built-in cover page is used unchanged (zero regression).
+
+---
+
 ## v5.95.1 (2026-04-24) — bugfix
 
 - Windows Update progress bar: label changed from `Xs remaining` to `auto-abort in Xs` to clarify it is the timeout countdown, not the estimated completion time.

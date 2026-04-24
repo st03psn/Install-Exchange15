@@ -1004,6 +1004,11 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'W')]
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
     [string[]]$IncludeServers = @(),
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    [parameter( Mandatory = $false, ParameterSetName = 'W')]
+    [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
+    [string]$TemplatePath = '',
 
     # --- MEAC passthroughs (v5.93) — applied when Register-AuthCertificateRenewal runs
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
@@ -1037,7 +1042,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.95.1'
+    $ScriptVersion = '5.96'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -6248,6 +6253,77 @@ $body
         $zip.Dispose()
         $fs.Dispose()
     }
+    function Test-WdTemplate {
+        # Validates that a DOCX template contains all required {{token}} placeholders.
+        # Searches across all XML parts (document, header, footer, etc.).
+        # Returns @{ Valid=[bool]; Missing=[string[]] }.
+        param([string]$Path, [string[]]$RequiredTags = @('document_body'))
+        Add-Type -AssemblyName System.IO.Compression
+        $missing = [System.Collections.Generic.List[string]]::new()
+        try {
+            $fs  = [System.IO.File]::OpenRead($Path)
+            $zip = [System.IO.Compression.ZipArchive]::new($fs, [System.IO.Compression.ZipArchiveMode]::Read)
+            $allXml = ''
+            foreach ($entry in $zip.Entries) {
+                if ($entry.FullName -match '\.xml$') {
+                    $sr      = [System.IO.StreamReader]::new($entry.Open())
+                    $allXml += $sr.ReadToEnd()
+                    $sr.Dispose()
+                }
+            }
+            $zip.Dispose()
+            $fs.Dispose()
+        } catch {
+            return @{ Valid = $false; Missing = @(('Cannot open template: ' + $_)) }
+        }
+        foreach ($tag in $RequiredTags) {
+            if ($allXml -notlike ('*{{' + $tag + '}}*')) { $null = $missing.Add($tag) }
+        }
+        return @{ Valid = ($missing.Count -eq 0); Missing = $missing.ToArray() }
+    }
+    function Write-WdFromTemplate {
+        # Copies a DOCX template to $OutputPath and replaces all {{token}} placeholders
+        # in every XML part with the corresponding values from the $Tokens hashtable.
+        # Special token 'document_body': replaces the entire anchor paragraph
+        #   <w:p><w:r><w:t>{{document_body}}</w:t></w:r></w:p>
+        # with the supplied chapter XML string (multiple <w:p> elements).
+        # All other tokens are XML-escaped before substitution.
+        param([string]$TemplatePath, [string]$OutputPath, [hashtable]$Tokens)
+        Add-Type -AssemblyName System.IO.Compression
+        $enc = [System.Text.UTF8Encoding]::new($false)
+        [System.IO.File]::Copy($TemplatePath, $OutputPath, $true)
+        $fs  = [System.IO.File]::Open($OutputPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite)
+        $zip = [System.IO.Compression.ZipArchive]::new($fs, [System.IO.Compression.ZipArchiveMode]::Update)
+        $xmlEntries = @($zip.Entries | Where-Object { $_.FullName -match '\.xml$' })
+        foreach ($entry in $xmlEntries) {
+            $sr      = [System.IO.StreamReader]::new($entry.Open())
+            $content = $sr.ReadToEnd()
+            $sr.Dispose()
+            $modified = $false
+            foreach ($kv in $Tokens.GetEnumerator()) {
+                $marker = '{{' + $kv.Key + '}}'
+                if ($content.Contains($marker)) {
+                    if ($kv.Key -eq 'document_body') {
+                        $anchor = '<w:p><w:r><w:t>' + $marker + '</w:t></w:r></w:p>'
+                        $content = $content.Replace($anchor, $kv.Value)
+                    } else {
+                        $content = $content.Replace($marker, (Invoke-XmlEscape $kv.Value))
+                    }
+                    $modified = $true
+                }
+            }
+            if ($modified) {
+                $entryName = $entry.FullName
+                $entry.Delete()
+                $newEntry = $zip.CreateEntry($entryName)
+                $sw = [System.IO.StreamWriter]::new($newEntry.Open(), $enc)
+                $sw.Write($content)
+                $sw.Dispose()
+            }
+        }
+        $zip.Dispose()
+        $fs.Dispose()
+    }
 
     # ── New-InstallationDocument (F22) ────────────────────────────────────────────
     function New-InstallationDocument {
@@ -6333,17 +6409,35 @@ $body
 
         $parts = [System.Collections.Generic.List[string]]::new()
 
+        # ── Template check (F24) ─────────────────────────────────────────────────
+        # When -TemplatePath is supplied and valid, the cover page is driven by the
+        # template DOCX; $parts contains only the chapter body XML.
+        $tplPath = $State['TemplatePath']
+        $useTpl  = $tplPath -and (Test-Path $tplPath -PathType Leaf)
+        if ($useTpl) {
+            $tplCheck = Test-WdTemplate -Path $tplPath -RequiredTags @('document_body')
+            if (-not $tplCheck.Valid) {
+                Write-MyWarning ('Template missing required tokens: ' + ($tplCheck.Missing -join ', ') + ' — falling back to built-in cover page.')
+                $useTpl = $false
+            } else {
+                Write-MyVerbose ('Using custom template: ' + $tplPath)
+            }
+        }
+
         $instMode = if ($isAdHoc) { (L 'Ad-hoc-Inventar' 'Ad-hoc Inventory') } elseif ($State['InstallEdge']) { 'Edge Transport' } elseif ($State['InstallRecipientManagement']) { 'Recipient Management Tools' } elseif ($State['InstallManagementTools']) { 'Management Tools' } elseif ($State['StandaloneOptimize']) { 'Standalone Optimize' } elseif ($State['NoSetup']) { 'Optimization Only' } else { 'Mailbox Server' }
         $scenario = if ($isAdHoc) { (L 'Ad-hoc-Inventar (vorhandene Umgebung)' 'Ad-hoc inventory (existing environment)') } elseif ($rd.Servers.Count -le 1) { (L 'Neue Exchange-Umgebung' 'New Exchange environment') } else { (L 'Server-Ergänzung zu bestehender Umgebung' 'Server added to existing environment') }
         $classification = (Lc $cust 'CUSTOMER' 'INTERN')
 
-        # ── Deckblatt (Cover Page) ───────────────────────────────────────────────
-        # Layout nach Referenzvorlage: Produkt (groß) / Titel (XXL) / Untertitel / Version+Datum+Autor.
-        # Company/Author sind State-gesteuert ($State['CompanyName'], $State['Author']) ohne Default-Branding.
+        # Cover page variables — needed both for built-in cover page and template tokens.
         $company  = SafeVal $State['CompanyName'] ''
         $author   = SafeVal $State['Author']      ''
         $coverSub = (L 'Installation, Hybridbereitstellung, Mailflow' 'Installation, Hybrid deployment, Mail flow')
         $logoFile = Join-Path $State['InstallPath'] 'logo.png'
+
+        if (-not $useTpl) {
+        # ── Deckblatt (Cover Page) ───────────────────────────────────────────────
+        # Layout nach Referenzvorlage: Produkt (groß) / Titel (XXL) / Untertitel / Version+Datum+Autor.
+        # Company/Author sind State-gesteuert ($State['CompanyName'], $State['Author']) ohne Default-Branding.
         $null = $parts.Add((New-WdSpacer 1440))
         if (Test-Path $logoFile -PathType Leaf) {
             # Logo centered, 6 cm wide (2160000 EMU), proportional height for 400×80 source: 432000 EMU
@@ -6366,6 +6460,7 @@ $body
         $null = $parts.Add((New-WdSpacer 600))
         $null = $parts.Add((New-WdCentered -Text $classification -SizeHalfPt 22 -Bold $true -Color 'C00000'))
         $null = $parts.Add((New-WdPageBreak))
+        } # end if (-not $useTpl)
 
         # ── Hinweise zu diesem Dokument ─────────────────────────────────────────
         # Struktur nach Referenzvorlage: Anpassungsvorbehalt, Genderhinweis, Warenzeichen,
@@ -7627,7 +7722,27 @@ $body
 
         # Write document
         $headerLabel = if ($DE) { 'EXCHANGE SERVER INSTALLATIONSDOKUMENTATION' } else { 'EXCHANGE SERVER INSTALLATION DOCUMENTATION' }
-        New-WdFile -OutputPath $docPath -BodyParts $parts.ToArray() -DocTitle $docTitle -HeaderLabel $headerLabel -LogoPath $logoFile
+        if ($useTpl) {
+            # F24: inject chapter body into customer template and fill cover page tokens.
+            $tplTokens = @{
+                document_body  = ($parts -join '')
+                Organization   = (SafeVal $State['OrganizationName'] '')
+                ServerName     = $env:COMPUTERNAME
+                Scenario       = $scenario
+                InstallMode    = $instMode
+                Version        = ((Get-Date -Format 'yyyy-MM-dd') + ' / EXpress v' + $ScriptVersion)
+                DateLong       = (Get-Date -Format 'dd.MM.yyyy')
+                Author         = $author
+                Company        = $company
+                Classification = $classification
+                HeaderLabel    = $headerLabel
+                DocTitle       = $docTitle
+                CoverSub       = $coverSub
+            }
+            Write-WdFromTemplate -TemplatePath $tplPath -OutputPath $docPath -Tokens $tplTokens
+        } else {
+            New-WdFile -OutputPath $docPath -BodyParts $parts.ToArray() -DocTitle $docTitle -HeaderLabel $headerLabel -LogoPath $logoFile
+        }
         $State['WordDocPath'] = $docPath
         Write-MyOutput ('Word Installation Document: {0}' -f $docPath)
     }
@@ -11006,6 +11121,7 @@ $body
             elseif ($cfgLang)         { $German = [switch]($cfgLang -imatch '^DE$') }
             $DocumentScope        = Get-CfgValue 'DocumentScope'  $DocumentScope
             $IncludeServers       = @((Get-CfgValue 'IncludeServers' ($IncludeServers -join ',')) -split ',' | Where-Object { $_ })
+            $TemplatePath         = Get-CfgValue 'TemplatePath'   $TemplatePath
 
             # MEAC passthroughs (v5.93)
             $MEACIgnoreHybridConfig       = [switch](Get-CfgValue 'MEACIgnoreHybridConfig'       ([bool]$MEACIgnoreHybridConfig))
@@ -11184,6 +11300,7 @@ $body
         $State["Language"]            = if ($German) { 'DE' } else { 'EN' }
         $State["DocumentScope"]       = if ($DocumentScope) { $DocumentScope } else { 'All' }
         $State["IncludeServers"]      = if ($IncludeServers) { $IncludeServers -join ',' } else { '' }
+        $State["TemplatePath"]        = $TemplatePath
 
         # Prompt for PFX password at startup if certificate path specified
         if ($CertificatePath) {
