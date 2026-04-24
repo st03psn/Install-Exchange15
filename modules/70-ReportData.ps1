@@ -158,8 +158,8 @@
             try { $srv.PopSettings  = Get-PopSettings  -Server $ServerName -ErrorAction Stop } catch { }
         }
 
-        # Certificates
-        try { $srv.Certificates = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop) } catch { $srv.Certificates = @() }
+        # Certificates — filter phantom entries (DateTime.MinValue from Get-ExchangeCertificate)
+        try { $srv.Certificates = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }) } catch { $srv.Certificates = @() }
 
         # Transport agents (only present on servers with Hub Transport)
         try { $srv.TransportAgents = @(Get-TransportAgent -ErrorAction Stop) } catch { $srv.TransportAgents = @() }
@@ -205,15 +205,19 @@
         # Hardware/OS data — direct CIM for local server, CIM/WSMan + prompt for remote
         if ($ServerName -ieq $env:COMPUTERNAME) {
             $srv.RemoteData = @{
-                ComputerName = $ServerName
-                Reachable    = $true
-                Error        = $null
-                OS           = Get-CimInstance Win32_OperatingSystem          -ErrorAction SilentlyContinue
-                CPU          = Get-CimInstance Win32_Processor                 -ErrorAction SilentlyContinue
-                ComputerSys  = Get-CimInstance Win32_ComputerSystem            -ErrorAction SilentlyContinue
-                PageFile     = Get-CimInstance Win32_PageFileSetting           -ErrorAction SilentlyContinue
-                Volumes      = @(Get-CimInstance Win32_Volume -Filter 'DriveType=3'                          -ErrorAction SilentlyContinue)
-                NICs         = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE'  -ErrorAction SilentlyContinue)
+                ComputerName    = $ServerName
+                Reachable       = $true
+                Error           = $null
+                OS              = Get-CimInstance Win32_OperatingSystem          -ErrorAction SilentlyContinue
+                CPU             = Get-CimInstance Win32_Processor                 -ErrorAction SilentlyContinue
+                ComputerSys     = Get-CimInstance Win32_ComputerSystem            -ErrorAction SilentlyContinue
+                PageFile        = Get-CimInstance Win32_PageFileSetting           -ErrorAction SilentlyContinue
+                Volumes         = @(Get-CimInstance Win32_Volume -Filter 'DriveType=3'                          -ErrorAction SilentlyContinue)
+                NICs            = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE'  -ErrorAction SilentlyContinue)
+                TimeZone        = Get-CimInstance Win32_TimeZone                  -ErrorAction SilentlyContinue
+                NICDrivers      = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Disconnected' } | Select-Object Name, DriverVersion, DriverDate, LinkSpeed, InterfaceDescription)
+                TlsCipherSuites = @(Get-TlsCipherSuite -ErrorAction SilentlyContinue | Select-Object Name, Exchange, Hash, KeyExchange)
+                VCRuntimes      = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Microsoft Visual C++ *' } | Select-Object DisplayName, DisplayVersion, InstallDate | Sort-Object DisplayName)
             }
         } else {
             $srv.RemoteData = Invoke-RemoteQueryWithPrompt -ComputerName $ServerName

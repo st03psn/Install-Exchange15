@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.1.7
+    Version:     1.1.8
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
