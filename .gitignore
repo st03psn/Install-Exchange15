@@ -22,9 +22,8 @@ _refdoc*/
 _ref_*
 _meac*.ps1
 
-# Generated test / installation documents (in repo root — belong on the Exchange server)
-SERVER_Document_*.docx
-SERVER_ExchangeServer-Dokumentation_*.docx
+# Generated installation documents (EXpress v1.0+ naming: {PC}_EXpress_ExchangeServer-Doc*_{lang}_*.docx)
+*_EXpress_ExchangeServer-Doc*.docx
 ~$*.docx
 
 # Ad-hoc test log files

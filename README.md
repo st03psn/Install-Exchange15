@@ -162,6 +162,8 @@ Use `Build.ps1` to compile the script into a self-contained Windows executable v
 
 See `deploy-example.psd1` for a fully documented configuration file template.
 
+**Logo for Word documents** — place `logo.png` (400×80 px recommended) in your `InstallPath` folder (default `C:\Install\`). A sample logo is provided in `assets/logo.png`.
+
 ### Logging
 
 A single log file is written for every run. Entries are tier-prefixed; the active tier is selected by the standard PowerShell switches on the `.ps1` call:
