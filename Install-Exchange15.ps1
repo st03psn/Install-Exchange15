@@ -1037,7 +1037,7 @@ param(
 
 process {
 
-    $ScriptVersion = '5.95'
+    $ScriptVersion = '5.95.1'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -8177,7 +8177,7 @@ $body
 
             $remaining  = $WU_DOWNLOAD_TIMEOUT_SEC - $elapsed
             $pct        = [Math]::Min(99, [int]($elapsed * 100 / $WU_DOWNLOAD_TIMEOUT_SEC))
-            $statusText = 'Installing {0} update(s) — {1}s elapsed, {2}s remaining (X = cancel)' -f $approvedKBs.Count, $elapsed, $remaining
+            $statusText = 'Installing {0} update(s) — {1}s elapsed  |  auto-abort in {2}s  |  X = cancel' -f $approvedKBs.Count, $elapsed, $remaining
             Write-Progress -Activity 'Windows Updates' -Status $statusText -PercentComplete $pct
 
             # Non-blocking key check for cancellation
@@ -10318,7 +10318,7 @@ $body
             'N' = @{ Name='PreflightOnly';         Label='Preflight only (no install)';    Default=$false }
             'R' = @{ Name='InstallWindowsUpdates'; Label='Install Windows Updates';        Default=$true  }
             'U' = @{ Name='GenerateDoc';           Label='Generate Installation Document'; Default=$false }
-            'V' = @{ Name='German';                Label='Document language: German';      Default=$false }
+            'V' = @{ Name='German';                Label='Language:  DE (default EN)';     Default=$false }
         }
 
         # Toggles disabled per mode (letters that cannot be toggled in that mode)

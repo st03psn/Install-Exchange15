@@ -6,6 +6,13 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v5.95.1 (2026-04-24) — bugfix
+
+- Windows Update progress bar: label changed from `Xs remaining` to `auto-abort in Xs` to clarify it is the timeout countdown, not the estimated completion time.
+- Main menu language toggle: label updated to `Language:  DE (default EN)` to make the English default explicit.
+
+---
+
 ## v5.95 (2026-04-24) — feature
 
 ### F25 — Advanced Configuration menu
