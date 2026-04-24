@@ -344,3 +344,75 @@ param([int]`$DaysToKeep = $days)
 
 if (-not (Test-Path `$LogFolder)) { New-Item -Path `$LogFolder -ItemType Directory | Out-Null }
 
+function Write-Log {
+    param([string]`$Message, [string]`$Level = 'Info')
+    `$line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), `$Level, `$Message
+    Add-Content -Path `$LogFile -Value `$line
+}
+
+Write-Log 'Exchange log cleanup started'
+Write-Log ('Removing files older than {0} days' -f `$DaysToKeep)
+
+# IIS logs — try dynamic path from metabase, fall back to default
+`$iisRoot = `$null
+try {
+    Import-Module WebAdministration -ErrorAction Stop
+    `$iisRoot = ((Get-WebConfigurationProperty -Filter 'system.applicationHost/sites/siteDefaults' -Name logFile).directory) -replace '%SystemDrive%', `$env:SystemDrive
+} catch { }
+if (-not `$iisRoot) { `$iisRoot = Join-Path `$env:SystemDrive 'inetpub\logs\LogFiles' }
+if (Test-Path `$iisRoot) {
+    `$files = @(Get-ChildItem -Path `$iisRoot -Recurse -File -Filter '*.log' | Where-Object { `$_.LastWriteTime -lt `$cutoff })
+    `$files | Remove-Item -Force -ErrorAction SilentlyContinue
+    Write-Log ('IIS: removed {0} log file(s) from {1}' -f `$files.Count, `$iisRoot)
+}
+
+# Exchange logs — entire Logging\ and TransportRoles\Logs\ trees (covers EWS, OWA, HttpProxy, RpcClientAccess, transport, tracking, monitoring, etc.)
+`$exSetup = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Setup' -ErrorAction SilentlyContinue).MsiInstallPath
+if (`$exSetup) {
+    foreach (`$path in @((Join-Path `$exSetup 'Logging'), (Join-Path `$exSetup 'TransportRoles\Logs'))) {
+        if (Test-Path `$path) {
+            `$files = @(Get-ChildItem -Path `$path -Recurse -File -Filter '*.log' | Where-Object { `$_.LastWriteTime -lt `$cutoff })
+            `$files | Remove-Item -Force -ErrorAction SilentlyContinue
+            if (`$files.Count -gt 0) { Write-Log ('Exchange: removed {0} file(s) from {1}' -f `$files.Count, `$path) }
+        }
+    }
+}
+
+# HTTPERR logs
+`$httpErrPath = Join-Path `$env:SystemRoot 'System32\LogFiles\HTTPERR'
+if (Test-Path `$httpErrPath) {
+    `$files = @(Get-ChildItem -Path `$httpErrPath -File -Filter '*.log' | Where-Object { `$_.LastWriteTime -lt `$cutoff })
+    `$files | Remove-Item -Force -ErrorAction SilentlyContinue
+    if (`$files.Count -gt 0) { Write-Log ('HTTPERR: removed {0} file(s) from {1}' -f `$files.Count, `$httpErrPath) }
+}
+
+# Self-cleanup: purge own log files older than 30 days
+`$ownCutoff = (Get-Date).AddDays(-30)
+Get-ChildItem -Path `$LogFolder -File -Filter '*.log' |
+    Where-Object { `$_.LastWriteTime -lt `$ownCutoff } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+Write-Log 'Exchange log cleanup finished'
+"@
+        try {
+            $cleanupScript | Out-File -FilePath $scriptPath -Encoding utf8 -Force
+            Write-MyOutput ('Log cleanup script saved to: {0}' -f $scriptPath)
+
+            $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                             -Argument ('-NonInteractive -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath)
+            $trigger   = New-ScheduledTaskTrigger -Daily -At '02:00'
+            $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+            $taskName  = 'Exchange Log Cleanup'
+            $taskPath  = '\Exchange\'
+            Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue |
+                Unregister-ScheduledTask -Confirm:$false
+            Register-ExecutedCommand -Category 'ScheduledTask' -Command ("Register-ScheduledTask -TaskName '$taskName' -TaskPath '$taskPath' -Action (New-ScheduledTaskAction …Clean-ExchangeLogs.ps1 -RetentionDays $days) -Trigger (Daily 02:00) -Principal SYSTEM -RunLevel Highest")
+            Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action `
+                -Trigger $trigger -Settings $settings -Principal $principal -ErrorAction Stop | Out-Null
+            Write-MyOutput ('Scheduled task "{0}" registered — runs daily at 02:00, retention {1} days' -f $taskName, $days)
+        }
+        catch {
+            Write-MyWarning ('Failed to register log cleanup task: {0}' -f $_.Exception.Message)
+        }
+    }

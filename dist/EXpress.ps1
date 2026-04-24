@@ -3545,7 +3545,6 @@ Write-Log 'Exchange log cleanup finished'
             Write-MyWarning ('Failed to register log cleanup task: {0}' -f $_.Exception.Message)
         }
     }
-
     function Get-MEACAutomationCredentialFromState {
         # Rehydrates -MEACAutomationCredential across the Autopilot reboot chain.
         # Only used for AD Split-Permissions deployments where a Domain Admin has
@@ -11005,7 +11004,6 @@ $body
             }
         }
     }
-
     ########################################
     # MAIN
     ########################################

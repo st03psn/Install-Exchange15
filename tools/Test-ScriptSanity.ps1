@@ -22,7 +22,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $ScriptPath) {
     $here = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-    $ScriptPath = Join-Path $here '..\Install-Exchange15.ps1'
+    $ScriptPath = Join-Path $here '..\dist\EXpress.ps1'
 }
 $ScriptPath = (Resolve-Path $ScriptPath).Path
 

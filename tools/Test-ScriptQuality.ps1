@@ -34,7 +34,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Path = (Join-Path (Split-Path -Parent $PSScriptRoot) 'Install-Exchange15.ps1'),
+    [string] $Path = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\EXpress.ps1'),
     [switch] $SkipAnalyzer,
     [switch] $IncludeInformation
 )

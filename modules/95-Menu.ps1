@@ -798,3 +798,4 @@
                 if ($raw -match '^[1-7]$') { $selectedMode = [int]$raw }
             }
         }
+    }
