@@ -912,3 +912,185 @@ Broken / stale link fixes in README.md and `New-InstallationReport` HTML output:
 - Performance: `Enable-RSSOnAllNICs` + `NumberOfReceiveQueues`, `Set-MaxConcurrentAPI`, `Disable-TCPOffload`
 - Auto-elevation via `Start-Process -Verb RunAs`; auto-unblock Zone.Identifier on source files
 - `$AUTODISCOVER_SCP_FILTER`, `$AUTODISCOVER_SCP_MAX_RETRIES`, `$ERR_SUS_NOT_APPLICABLE`, `$POWERPLAN_HIGH_PERFORMANCE` constants introduced
+
+---
+
+## Original Script History — Install-Exchange15.ps1 by Michel de Rooij
+
+> The following changelog covers the original [Install-Exchange15.ps1](http://eightwone.com) by
+> Michel de Rooij, on which EXpress is based. Reproduced here for traceability.
+> EXpress was forked after version 4.23.
+
+### 4.23
+- Fixed Edge installation (no need to check for Exchange 2013 in AD)
+
+### 4.22
+- Corrected VC++ 2013 runtime download URL (shortcut was unavailable)
+
+### 4.21
+- Disabling MSExchangeAutodiscoverAppPool during setup to prevent responding to requests during setup and post-config
+
+### 4.20
+- Clearing/setting SCP is now a background job during install (asynchronous)
+
+### 4.13
+- Fixed race issue when installing from ISO and restarting installation
+- Tested with Exchange SE ISO
+
+### 4.12
+- Fixed feature installation (`Web-W-Auth` → `Web-Windows-Auth`)
+- Using ADSI for Exchange 2013 detection
+
+### 4.11
+- Fixed feature installation for WS2022/WS2025 Core
+
+### 4.10
+- Added support for Exchange Server SE (Subscription Edition)
+
+### 4.01
+- Removed obsolete TLS 1.3 setup detection
+
+### 4.0
+- Added support for Exchange 2019 CU15 and Windows Server 2025 (CU15+)
+- Removed Exchange 2013 support; removed Exchange 2016 CU1–CU22; removed Exchange 2019 RTM–CU9; removed WS2012R2
+- Added removal of obsolete MSMQ feature when installed
+- Added `EnableECC`, `NoCBC`, `EnableAMSI`, `EnableTLS12`, `EnableTLS13` switches
+- Removed `InstallMailbox`, `InstallCAS`, `InstallMultiRole`; removed `NoNet461/471/472/48`; removed `UseWMF3`
+- Added Exchange 2013 detection (cannot coexist with CU15+)
+- Set minimum required PowerShell version to 5.1; functions now use approved verbs; code cleanup
+
+### 3.9
+- Added support for Exchange 2019 CU14
+- Added .NET Framework 4.8.1 support; added `NONET481` switch
+- Added `DoNotEnableEP` and `DoNotEnableEP_FEEWS` switches (Exchange 2019 CU14+ Extended Protection)
+- Added AUG2023 SU deployment for CU13/CU12/CU23 when `-IncludeFixes` specified
+- Fixed detection of source path when ISO already mounted without drive letter
+
+### 3.8
+- Added support for Exchange 2019 CU13
+
+### 3.71
+- Updated recommended Defender AV inclusions/exclusions
+
+### 3.7
+- Added support for Windows Server 2022
+- Fixed IIS URL Rewrite module install logic (CU22+/CU11+)
+- Fixed `/IAcceptExchangeServerLicenseTerms_DiagnosticData*` switch detection
+
+### 3.62
+- Added support for Exchange 2019 CU12 and Exchange 2016 CU23
+
+### 3.61
+- Added mention of Exchange 2019 in output
+
+### 3.6
+- Added support for Exchange 2019 CU9–CU11 and Exchange 2016 CU20–CU22
+- Added IIS URL Rewrite prerequisite for CU11+/CU22+
+- Added `DiagnosticData` switch (initial DataCollectionEnabled mode)
+- Added KB2999226 support for WS2012R2
+
+### 3.5
+- Added support for Exchange 2019 CU8–CU9 and Exchange 2016 CU19–CU20
+- Added KB5003435 (2019CU8/9, 2016CU19/20, 2013CU23) and KB5000871 (older CUs)
+- Added Interim Update installation and detection
+- Updated .NET 4.8, VC++ 2012, and VC++ 2013 download links
+- Fixed High Performance Power Plan setting for recent Windows builds
+
+### 3.4
+- Added support for Exchange 2019 CU8 and Exchange 2016 CU19
+- Script allows non-static IP when Azure Guest Agent, Network Agent, or Telemetry Service is present
+
+### 3.3
+- Added support for Exchange 2019 CU7 and Exchange 2016 CU18
+
+### 3.2.6
+- Added support for Exchange 2019 CU6 and Exchange 2016 CU17
+- Added VC++ 2012 Redistributable requirement for Exchange 2019
+
+### 3.2.5
+- Fixed typo in Exchange build enumeration
+- Fixed specified vs. used `MDBLogPath` (was incorrectly appending `\Log`)
+
+### 3.2.4
+- Added support for Exchange 2019 CU4 + CU5 and Exchange 2016 CU15 + CU16
+
+### 3.2.3
+- Fixed typo in Exchange 2019 CU3 detection
+
+### 3.2.2
+- Added support for Exchange 2019 CU3 and Exchange 2016 CU14
+
+### 3.2.1
+- Updated pagefile configuration for Exchange 2019 (25% of memory size)
+
+### 3.2
+- Added support for Exchange 2019 CU2, Exchange 2016 CU13, Exchange 2013 CU23
+- Added .NET Framework 4.8 support; added `NoNET48` switch
+- Added disabling Server Manager during installation
+- Removed WS2008R2 and WS2012 support; removed `UseWMF3` switch
+
+### 3.1.1
+- Fixed detection of Windows Defender
+
+### 3.1.0
+- Added support for Exchange 2019 CU1, Exchange 2016 CU12, Exchange 2013 CU22
+- Fixed KB3041832 URL; fixed NoSetup mode/EmptyRoles problem
+- Added skip for Health Monitor checks on Edge installations
+
+### 3.0.0 – 3.0.4
+- Added Exchange 2019 support; rewritten VC++ detection
+- Integrated Exchange 2019 RTM cipher correction
+- Replaced filename constructs with `Join-Path`; fixed various bugs
+
+### 2.99 – 2.99.9
+- Added Windows Defender exclusions (Exchange 2016 on WS2016)
+- Added support for Exchange 2016 CU8–CU11 and Exchange 2013 CU19–CU21
+- Added .NET 4.7, 4.7.1, 4.7.2 blocking switches; added upgrade mode detection
+- Added Exchange 2019 Public Preview support (WS2016 and WS2019)
+- Added post-setup HealthCheck / IIS Warmup; added `SkipRolesCheck` switch
+- Fixed Recover mode phase sequencing; fixed `InstallMDBDBPath` location check
+- Script aborts on non-static IP (unless Azure/Network Agent present)
+
+### 2.8 – 2.98
+- Added `DisableRC4` switch (KB2868725); added NIC Power Management disable
+- Added WS2016 support (Exchange 2016 CU3+); added Exchange 2016 CU4–CU9
+- Added Exchange 2013 CU14–CU20 support; added FFL 2008R2 checks
+- Added blocking of .NET 4.7 / 4.7.1 / 4.7.2 Preview; added `NONET471` switch
+- Various cosmetics, code cleanup, and minor bug fixes
+
+### 2.5 – 2.7
+- Added recommended hotfixes: KB3146717, KB2985459, KB3041832, KB3004383
+- Added AD Site logging; added computer name to filenames
+- Changed credential prompting to use current account
+- Fixed KeepAlive timeout; added Schema/Enterprise Admin checks
+- Added `Recover` switch for RecoverServer mode
+- Script aborts on non-zero ExSetup exit code; ignores SUS_E_NOT_APPLICABLE
+- Fixed SCP parameter handling; fixed NoSetup `.NET 4.6.1` logic
+
+### 2.3 – 2.42
+- Added Exchange 2013 CU12–CU13 and Exchange 2016 CU1–CU2 support
+- Added .NET 4.6.1 support with OS-dependent hotfixes; added `NONET461` switch
+- Added `DisableSSL3` switch (KB187498); added Keep-Alive and RPC timeout settings
+- Switched version detection to ExSetup (follows build number)
+
+### 2.0 – 2.2
+- Renamed script to `Install-Exchange15`
+- Added Exchange 2016 Preview and CU9 support; fixed registry/GPO checks
+- Added `ClearSCP` / `SCP` parameter; added `Lock` switch
+- Added `Import-ExchangeModule()` for EMS post-configuration
+- Added multi-forest AD support; added access checks for paths
+
+### 1.5 – 1.9
+- Added WS2008R2 support (.NET 4.5, WMF3, IEESC toggling, hotfixes)
+- Added Exchange 2013 SP1, WS2012R2 support; added .NET 4.51/4.52/4.6.1/4.7.2
+- Added `DisableRetStructPinning`, `InstallFilterPack`, `UseWMF3`, `NONET461` switches
+- Added Exchange 2016 CU1–CU9, Exchange 2013 CU12–CU20 support
+- Fixed AutoPilot RunOnce; fixed OS version comparison for localized OS
+
+### 1.0 – 1.1
+- Initial community release
+- Added AD preparation logic; added domain/forest functional level checks
+- RSAT-ADDS-Tools not uninstalled when used for AD preparation
+- Pending reboot detection — AutoPilot reboots and restarts phase
+- Installs `Server-Media-Foundation` feature (UCMA 4.0 requirement)
+- Validates provided credentials for AutoPilot
