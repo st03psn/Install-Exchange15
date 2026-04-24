@@ -6,6 +6,13 @@ Full optimization and feature history. See `README.md` for user-facing changelog
 
 ---
 
+## v1.1.5 (2026-04-24) — docs / maintenance release
+
+- **Docs: menu screenshots** — Five terminal screenshots of the Copilot menu (main menu, mode selection, Advanced Configuration pages 1/3, 2/3, 3/3) embedded as base64 data URIs in `docs/index.html` in a new tabbed "Interactive Copilot" section.
+- **Docs: Word doc mockup** — "HealthChecker" nav item corrected to "Open Items"; HealthChecker belongs in the HTML report section, not the Word document mockup.
+
+---
+
 ## v1.1.4 (2026-04-24) — bugfix release
 
 - **Windows Updates Autopilot** — Security/Critical updates are no longer auto-approved in Autopilot mode. Without explicit opt-in, pending updates are listed and skipped with a warning. New Advanced Configuration toggle `AutoApproveWindowsUpdates` (default off) enables the previous auto-approve behaviour when deliberately set.

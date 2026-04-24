@@ -267,6 +267,10 @@ The following best-practice configurations are automatically applied after Excha
 
 ## What's New
 
+### v1.1.5 — April 2026
+- **Docs: menu screenshots** — Five terminal screenshots of the Copilot menu (main menu, mode selection, Advanced Config pages 1–3) embedded directly in the docs page.
+- **Docs: Word doc mockup** — "HealthChecker" nav item replaced with "Open Items" (HealthChecker belongs in the HTML report, not the Word document).
+
 ### v1.1.4 — April 2026
 - **Windows Updates Autopilot** — Security updates are no longer auto-approved in Autopilot. New Advanced Configuration toggle `AutoApproveWindowsUpdates` (default off) required as deliberate opt-in. Without it, pending updates are listed and skipped with a warning.
 
