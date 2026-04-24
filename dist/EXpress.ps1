@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.1.6
+    Version:     1.1.7
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -128,6 +128,10 @@
     1.1.4   AutoApproveWindowsUpdates toggle (default off): Security/Critical no longer
             auto-approved in Autopilot without explicit opt-in.
     1.1.5   Docs: menu screenshots + Word doc mockup nav fix.
+    1.1.7   Bugfix: HTML report — phantom certs filtered (DateTime.MinValue), cert expiry
+            uses TotalDays, Root CA display shows '(not set)' when absent, NetBIOS
+            count null-safe; Register-ExecutedCommand for IANA timezone moved inside
+            Enable-IanaTimeZoneMappings so log only shows actual execution.
     1.1.6   Bugfix: EnableDownloadDomains org flag now set (CVE-2021-1730 was incomplete);
             PowerShell VDir sets ExternalUrl only (InternalUrl stays http); NetBIOS report
             now checks registry for pending-reboot state; OWA EP integer normalization;
@@ -5553,7 +5557,9 @@ Write-Log 'Exchange log cleanup finished'
         $certRows.Add('<tr><th>Subject</th><th>Expiry</th><th>Services</th><th>Thumbprint</th></tr>')
         try {
             Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | ForEach-Object {
-                $daysLeft = ($_.NotAfter - (Get-Date)).Days
+                # Skip phantom entries: no subject, no thumbprint, or NotAfter = DateTime.MinValue
+                if ([string]::IsNullOrEmpty($_.Thumbprint) -or $_.NotAfter -le [datetime]'1970-01-01') { return }
+                $daysLeft = [int][Math]::Floor(($_.NotAfter - (Get-Date)).TotalDays)
                 $expiryBadge = if ($daysLeft -lt 30) { Format-Badge ('Expires {0}d!' -f $daysLeft) 'fail' } elseif ($daysLeft -lt 90) { Format-Badge ('Expires {0}d' -f $daysLeft) 'warn' } else { Format-Badge ('{0} ({1}d)' -f $_.NotAfter.ToString('yyyy-MM-dd'), $daysLeft) 'ok' }
                 $certRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td><code>{3}</code></td></tr>' -f $_.Subject, $expiryBadge, $_.Services, $_.Thumbprint))
             }
@@ -5683,7 +5689,8 @@ Write-Log 'Exchange log cleanup finished'
         # Root CA auto-update
         $rootAU = Get-SecRegVal 'HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\AuthRoot' 'DisableRootAutoUpdate'
         $rootAUBadge = if ($rootAU -ne 1) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge 'Disabled by policy!' 'warn' }
-        $secRows.Add(('<tr><td>Root CA Auto-Update</td><td>DisableRootAutoUpdate = {0}</td><td>Must not be disabled (Exchange Online / M365 connectivity)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $rootAU, $rootAUBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/security/trusted-root/release-notes' 'MS Trusted Root')))
+        $rootAUDisplay = if ($null -eq $rootAU) { '(not set — default enabled)' } else { 'DisableRootAutoUpdate = {0}' -f $rootAU }
+        $secRows.Add(('<tr><td>Root CA Auto-Update</td><td>{0}</td><td>Must not be disabled (Exchange Online / M365 connectivity)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $rootAUDisplay, $rootAUBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/security/trusted-root/release-notes' 'MS Trusted Root')))
 
         # Extended Protection (OWA VDir — evaluate Frontend only; Back End is internal and EP=None by design)
         if (-not $State['InstallEdge']) {
@@ -5960,8 +5967,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $perfStatusBadge = if ($perfWarn -gt 0) { Format-Badge "$perfWarn items to review" 'warn' } else { Format-Badge "All $perfOK items OK" 'ok' }
 
         $certStatus = try {
-            $certs = @(Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop)
-            $expiring = @($certs | Where-Object { ($_.NotAfter - (Get-Date)).Days -le 90 })
+            $certs = @(Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | Where-Object { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' })
+            $expiring = @($certs | Where-Object { [int][Math]::Floor(($_.NotAfter - (Get-Date)).TotalDays) -le 90 })
             if ($expiring.Count -gt 0) { Format-Badge ('{0} expiring within 90 days' -f $expiring.Count) 'warn' }
             else { Format-Badge ('{0} certificate(s) — all valid' -f $certs.Count) 'ok' }
         } catch { Format-Badge 'Could not query' 'na' }
@@ -9667,6 +9674,7 @@ $body
             $orgConfig = Get-OrganizationConfig -ErrorAction Stop
             if ($orgConfig.PSObject.Properties['UseIanaTimeZoneId']) {
                 if (-not $orgConfig.UseIanaTimeZoneId) {
+                    Register-ExecutedCommand -Category 'ExchangeTuning' -Command 'Set-OrganizationConfig -UseIanaTimeZoneId $true'
                     Set-OrganizationConfig -UseIanaTimeZoneId $true -ErrorAction Stop
                     Write-MyOutput 'IANA timezone IDs enabled for calendar items (UseIanaTimeZoneId)'
                 }
@@ -12219,10 +12227,9 @@ $body
                     Invoke-ExchangeOptimizations
                 }
 
-                # IANA timezone mapping check (Exchange 2019 CU14+)
+                # IANA timezone mapping check (Exchange 2019 CU14+ / SE)
                 if (-not $State['InstallEdge']) {
                     Step-P5 'IANA timezone mapping'
-                    Register-ExecutedCommand -Category 'ExchangeTuning' -Command 'Set-OrganizationConfig -UseIanaTimeZoneId $true  # Exchange 2019 CU14+'
                     Enable-IanaTimeZoneMappings
                 }
 

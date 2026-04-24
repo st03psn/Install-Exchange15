@@ -1077,10 +1077,9 @@
                     Invoke-ExchangeOptimizations
                 }
 
-                # IANA timezone mapping check (Exchange 2019 CU14+)
+                # IANA timezone mapping check (Exchange 2019 CU14+ / SE)
                 if (-not $State['InstallEdge']) {
                     Step-P5 'IANA timezone mapping'
-                    Register-ExecutedCommand -Category 'ExchangeTuning' -Command 'Set-OrganizationConfig -UseIanaTimeZoneId $true  # Exchange 2019 CU14+'
                     Enable-IanaTimeZoneMappings
                 }
 

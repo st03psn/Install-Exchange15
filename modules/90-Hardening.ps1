@@ -686,6 +686,7 @@
             $orgConfig = Get-OrganizationConfig -ErrorAction Stop
             if ($orgConfig.PSObject.Properties['UseIanaTimeZoneId']) {
                 if (-not $orgConfig.UseIanaTimeZoneId) {
+                    Register-ExecutedCommand -Category 'ExchangeTuning' -Command 'Set-OrganizationConfig -UseIanaTimeZoneId $true'
                     Set-OrganizationConfig -UseIanaTimeZoneId $true -ErrorAction Stop
                     Write-MyOutput 'IANA timezone IDs enabled for calendar items (UseIanaTimeZoneId)'
                 }

@@ -6,6 +6,16 @@ Full version history for EXpress. See [README.md](README.md) for overview and qu
 
 ---
 
+## v1.1.7 (2026-04-24) — bugfix release
+
+- **HTML report: phantom certificates** — `Get-ExchangeCertificate` returns entries with `NotAfter = DateTime.MinValue` (year 0001) and empty Subject/Thumbprint for internal/orphan certificate objects. These were rendered as "Expires -739729d!" rows with blank cells and inflated the "expiring within 90 days" summary count. Phantom entries are now filtered before processing.
+- **HTML report: certificate expiry used `.Days` instead of `.TotalDays`** — `TimeSpan.Days` is the days-component of the timespan, not the total number of days. A certificate with 1799 days remaining showed e.g. 14 days if the month/year components were non-zero. Fixed to `[Math]::Floor(.TotalDays)`, consistent with the Auth cert and InstallDoc calculations.
+- **HTML report: Root CA Auto-Update shows empty value** — When the `DisableRootAutoUpdate` policy registry key is absent (factory default — auto-update allowed), `$rootAU` is `$null` and the cell rendered as "DisableRootAutoUpdate = ". Now shows `(not set — default enabled)` when the key is absent.
+- **HTML report: NetBIOS count null in PS 5.1** — `(pipeline | Where-Object {}).Count` returns `$null` (not 0) in PowerShell 5.1 when zero items match, causing the "X of Y NICs disabled" cell to show " of 1 NICs disabled". Fixed in the registry-fallback rewrite from v1.1.6 which uses `$nbDisabled = 0` + increment and is not affected by this PS 5.1 edge case.
+- **IANA timezone log entry misleading** — `Register-ExecutedCommand` was called unconditionally before `Enable-IanaTimeZoneMappings`, so `Set-OrganizationConfig -UseIanaTimeZoneId $true` appeared in the install log even when the function skipped it (property already true or not available). Command registration moved inside the function, only logged when actually executed.
+
+---
+
 ## v1.1.6 (2026-04-24) — bugfix release
 
 - **CVE-2021-1730 Download Domains incomplete** — `Set-OrganizationConfig -EnableDownloadDomains $true` was never called; only the OWA VDir hostnames were set. Without the org-level flag Exchange ignores the VDir setting entirely, so HealthChecker correctly flagged the mitigation as missing even when a Download Domain was configured.

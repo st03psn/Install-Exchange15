@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.1.6
+    Version:     1.1.7
     Maintainer:  st03ps
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -128,6 +128,10 @@
     1.1.4   AutoApproveWindowsUpdates toggle (default off): Security/Critical no longer
             auto-approved in Autopilot without explicit opt-in.
     1.1.5   Docs: menu screenshots + Word doc mockup nav fix.
+    1.1.7   Bugfix: HTML report — phantom certs filtered (DateTime.MinValue), cert expiry
+            uses TotalDays, Root CA display shows '(not set)' when absent, NetBIOS
+            count null-safe; Register-ExecutedCommand for IANA timezone moved inside
+            Enable-IanaTimeZoneMappings so log only shows actual execution.
     1.1.6   Bugfix: EnableDownloadDomains org flag now set (CVE-2021-1730 was incomplete);
             PowerShell VDir sets ExternalUrl only (InternalUrl stays http); NetBIOS report
             now checks registry for pending-reboot state; OWA EP integer normalization;
