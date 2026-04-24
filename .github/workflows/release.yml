@@ -24,7 +24,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           STAGING="EXpress-v${VERSION}"
-          mkdir -p "$STAGING/tools" "$STAGING/templates" "$STAGING/assets"
+          mkdir -p "$STAGING/tools" "$STAGING/templates" "$STAGING/assets" "$STAGING/sources"
 
           # Main script — dist/ merged file, placed as EXpress.ps1 in ZIP root
           cp dist/EXpress.ps1 "$STAGING/EXpress.ps1"
@@ -34,8 +34,11 @@ jobs:
           cp Start-EXpress.cmd    "$STAGING/"
           cp templates/*.docx     "$STAGING/templates/"
           cp assets/logo.png      "$STAGING/assets/"
-          cp tools/Get-EXpressDownloads.ps1     "$STAGING/tools/"
+          cp tools/Get-EXpressDownloads.ps1      "$STAGING/tools/"
           cp tools/Enable-EXpressRemoteQuery.ps1 "$STAGING/tools/"
+
+          # Empty pre-staging folder with README explaining what to place here
+          cp sources/README.md "$STAGING/sources/"
 
           zip -r "${STAGING}.zip" "$STAGING/"
           echo "ZIP=${STAGING}.zip" >> "$GITHUB_ENV"
