@@ -1,0 +1,159 @@
+﻿    function Test-IsClientOS {
+        # Returns $true when running on a client SKU (Windows 10/11), $false on Server
+        $osInfo = Get-CimInstance -ClassName Win32_OperatingSystem
+        # ProductType: 1 = Workstation/Client, 2 = Domain Controller, 3 = Server
+        return ($osInfo.ProductType -eq 1)
+    }
+
+    function Install-RecipientManagementPrereqs {
+        # Phase 1 of Recipient Management install: OS detection and prerequisite installation
+        if (Test-IsClientOS) {
+            Write-MyOutput 'Client OS detected, installing RSAT Active Directory tools via Add-WindowsCapability'
+            try {
+                $cap = Get-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools*' -ErrorAction Stop
+                if ($cap.State -ne 'Installed') {
+                    Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
+                    Write-MyOutput 'RSAT ADDS tools installed'
+                }
+                else {
+                    Write-MyOutput 'RSAT ADDS tools already installed'
+                }
+            }
+            catch {
+                Write-MyError ('Failed to install RSAT ADDS tools: {0}' -f $_.Exception.Message)
+                exit $ERR_PROBLEMADDINGFEATURE
+            }
+        }
+        else {
+            Write-MyOutput 'Server OS detected, installing RSAT-ADDS via Install-WindowsFeature'
+            try {
+                if (-not (Get-WindowsFeature -Name 'RSAT-ADDS').Installed) {
+                    Install-WindowsFeature -Name 'RSAT-ADDS' -ErrorAction Stop | Out-Null
+                    Write-MyOutput 'RSAT-ADDS installed'
+                }
+                else {
+                    Write-MyOutput 'RSAT-ADDS already installed'
+                }
+            }
+            catch {
+                Write-MyError ('Failed to install RSAT-ADDS feature: {0}' -f $_.Exception.Message)
+                exit $ERR_PROBLEMADDINGFEATURE
+            }
+        }
+    }
+
+    function Install-RecipientManagement {
+        # Phase 2 of Recipient Management install: run setup.exe /roles:ManagementTools + EMT permission script
+        Write-MyVerbose 'Validating Exchange organization is reachable'
+        if (-not (Test-ExchangeOrganization)) {
+            Write-MyWarning 'Exchange organization not detected in Active Directory - installation may fail if AD was not prepared'
+        }
+
+        $setupExe = Join-Path $State['SourcePath'] 'setup.exe'
+        if (-not (Test-Path $setupExe)) {
+            Write-MyError ('Exchange setup.exe not found at {0}' -f $setupExe)
+            exit $ERR_UNEXPTECTEDPHASE
+        }
+
+        Write-MyOutput 'Running Exchange setup.exe /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        $rc = Invoke-Process -FilePath $State['SourcePath'] -FileName 'setup.exe' -ArgumentList '/mode:install /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        if ($rc -ne 0) {
+            Write-MyError ('Exchange setup returned exit code {0}' -f $rc)
+            exit $ERR_UNEXPTECTEDPHASE
+        }
+        Write-MyOutput 'Exchange Management Tools setup completed'
+
+        # Run CSS-Exchange Add-PermissionForEMT.ps1 if available
+        $emtScript = Join-Path $State['InstallPath'] 'Add-PermissionForEMT.ps1'
+        $emtUrl = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/Add-PermissionForEMT.ps1'
+        if (-not (Test-Path $emtScript)) {
+            try {
+                Write-MyVerbose ('Downloading Add-PermissionForEMT from {0}' -f $emtUrl)
+                Start-BitsTransfer -Source $emtUrl -Destination $emtScript -ErrorAction Stop
+            }
+            catch {
+                Write-MyWarning ('Could not download Add-PermissionForEMT.ps1: {0}' -f $_.Exception.Message)
+            }
+        }
+        if (Test-Path $emtScript) {
+            try {
+                Write-MyOutput 'Running Add-PermissionForEMT.ps1'
+                & $emtScript
+            }
+            catch {
+                Write-MyWarning ('Add-PermissionForEMT.ps1 execution failed: {0}' -f $_.Exception.Message)
+            }
+        }
+    }
+
+    function New-RecipientManagementShortcut {
+        # Phase 3 of Recipient Management install: create desktop shortcut loading the RecipientManagement snapin
+        try {
+            $desktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
+            $shortcutPath = Join-Path $desktop 'Exchange Recipient Management.lnk'
+            $shell = New-Object -ComObject WScript.Shell
+            $shortcut = $shell.CreateShortcut($shortcutPath)
+            $shortcut.TargetPath = (Get-Command powershell.exe).Source
+            $shortcut.Arguments = '-NoExit -Command "Add-PSSnapin *RecipientManagement; Write-Host ''Recipient Management snap-in loaded'' -ForegroundColor Green"'
+            $shortcut.IconLocation = '%SystemRoot%\System32\dsa.msc, 0'
+            $shortcut.Description = 'Exchange Recipient Management PowerShell'
+            $shortcut.Save()
+            Write-MyOutput ('Desktop shortcut created: {0}' -f $shortcutPath)
+        }
+        catch {
+            Write-MyWarning ('Could not create desktop shortcut: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Invoke-RecipientManagementADCleanup {
+        # Optional AD cleanup after Recipient Management upgrade install
+        Write-MyOutput 'RecipientMgmtCleanup requested - reviewing legacy Exchange permissions'
+        Write-MyWarning 'AD cleanup is a manual safety gate. Review the following and run required Set-ADPermission commands manually if desired.'
+        Write-MyOutput 'Reference: https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/post-installation-tasks'
+    }
+
+    function Install-ManagementToolsPrereqs {
+        # Phase 1 of Management Tools install: Windows prerequisites
+        Write-MyOutput 'Installing Windows prerequisites for Exchange Management Tools'
+        if (Test-IsClientOS) {
+            Write-MyError 'Exchange Management Tools setup requires a Windows Server OS. Use -InstallRecipientManagement for client OS installs.'
+            exit $ERR_UNEXPECTEDOS
+        }
+        $features = @('RSAT-ADDS', 'NET-Framework-45-Features')
+        foreach ($f in $features) {
+            if (-not (Get-WindowsFeature -Name $f -ErrorAction SilentlyContinue).Installed) {
+                try {
+                    Install-WindowsFeature -Name $f -ErrorAction Stop | Out-Null
+                    Write-MyOutput ('Installed Windows feature: {0}' -f $f)
+                }
+                catch {
+                    Write-MyWarning ('Could not install {0}: {1}' -f $f, $_.Exception.Message)
+                }
+            }
+        }
+    }
+
+    function Install-ManagementToolsRuntimePrereqs {
+        # Phase 2 of Management Tools install: runtime prerequisites (VC++, URL Rewrite)
+        Write-MyOutput 'Installing runtime prerequisites for Exchange Management Tools'
+        # Management Tools only needs the baseline runtimes, not the full Exchange server stack.
+        # Reuse existing VC++ helper functions where applicable (Install-MyPackage with the same IDs).
+        Write-MyVerbose 'VC++ and URL Rewrite prerequisites are pulled in by setup.exe /roles:ManagementTools on demand'
+    }
+
+    function Install-ManagementToolsOnly {
+        # Phase 3 of Management Tools install: run setup /roles:ManagementTools
+        $setupExe = Join-Path $State['SourcePath'] 'setup.exe'
+        if (-not (Test-Path $setupExe)) {
+            Write-MyError ('Exchange setup.exe not found at {0}' -f $setupExe)
+            exit $ERR_UNEXPTECTEDPHASE
+        }
+        Write-MyOutput 'Running Exchange setup.exe /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        $rc = Invoke-Process -FilePath $State['SourcePath'] -FileName 'setup.exe' -ArgumentList '/mode:install /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        if ($rc -ne 0) {
+            Write-MyError ('Exchange setup returned exit code {0}' -f $rc)
+            exit $ERR_UNEXPTECTEDPHASE
+        }
+        Write-MyOutput 'Exchange Management Tools installed successfully'
+    }
+

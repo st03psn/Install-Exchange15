@@ -520,10 +520,12 @@ Describe 'Add-BackgroundJob pruning' {
 Describe 'F25 Advanced Configuration' {
 
     BeforeAll {
-        $scriptPath = Join-Path $PSScriptRoot 'Install-Exchange15.ps1'
+        # Use merged dist/ artifact when available (modular layout); fall back to monolith
+        $distPath   = Join-Path $PSScriptRoot 'dist\Install-Exchange15.ps1'
+        $scriptPath = if (Test-Path $distPath) { $distPath } else { Join-Path $PSScriptRoot 'Install-Exchange15.ps1' }
         $tokens = $null; $errors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
-        if ($errors) { throw "Parser errors in Install-Exchange15.ps1: $($errors[0].Message)" }
+        if ($errors) { throw "Parser errors in ${scriptPath}: $($errors[0].Message)" }
 
         $wanted = @('Get-AdvancedFeatureCatalog','Show-AdvancedMenu','Invoke-AdvancedConfigurationPrompt','Test-Feature')
         $funcs = $ast.FindAll({
