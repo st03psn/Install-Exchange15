@@ -26,6 +26,9 @@
     # Detect PS2Exe compiled run: MyCommand.Path is empty; Write-Progress is not rendered visually
     $IsPS2Exe = -not $MyInvocation.MyCommand.Path
     $ScriptName = $ScriptFullName.Split("\")[-1]
+    if (-not $PSBoundParameters.ContainsKey('InstallPath')) {
+        $InstallPath = Split-Path $ScriptFullName -Parent
+    }
     $ParameterString = $PSBoundParameters.getEnumerator() -join " "
     $OSVersionParts = (Get-CimInstance -ClassName Win32_OperatingSystem).Version.Split('.')
     $MajorOSVersion = '{0}.{1}' -f $OSVersionParts[0], $OSVersionParts[1]
@@ -173,7 +176,7 @@
             # Map menu result back to parameter-equivalent variables so the standard state init below can run
             $mode            = $menuResult['Mode']
             $SourcePath      = $menuResult['SourcePath']
-            $InstallPath     = if ($menuResult['InstallPath']) { $menuResult['InstallPath'] } else { 'C:\Install' }
+            $InstallPath     = if ($menuResult['InstallPath']) { $menuResult['InstallPath'] } else { Split-Path $ScriptFullName -Parent }
             $Organization    = $menuResult['Organization']
             $MDBName         = $menuResult['MDBName']
             $MDBDBPath       = $menuResult['MDBDBPath']
@@ -257,7 +260,7 @@
 
             # Paths
             $SourcePath   = Get-CfgValue 'SourcePath'   $SourcePath
-            $InstallPath  = if (Get-CfgValue 'InstallPath' $InstallPath) { Get-CfgValue 'InstallPath' $InstallPath } else { 'C:\Install' }
+            $InstallPath  = if (Get-CfgValue 'InstallPath' $InstallPath) { Get-CfgValue 'InstallPath' $InstallPath } else { Split-Path $ScriptFullName -Parent }
 
             # Exchange config
             $Organization     = Get-CfgValue 'Organization'     $Organization

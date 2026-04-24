@@ -32,7 +32,7 @@
                 # Install-PackageProvider may fail to reach the provider index URI but
                 # Install-Module -ForceBootstrap handles NuGet bootstrap itself without prompting.
                 Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
-                Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ForceBootstrap -ErrorAction Stop
+                Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
                 $useModule = $true
                 Write-MyOutput 'PSWindowsUpdate module installed'
             }
@@ -162,18 +162,24 @@
         else {
             $wuJob = Start-Job -ScriptBlock {
                 param([string[]]$kbs)
-                $session  = New-Object -ComObject Microsoft.Update.Session
-                $searcher = $session.CreateUpdateSearcher()
-                $filter   = ($kbs | ForEach-Object { "KBArticleID='$_'" }) -join ' or '
-                $found    = $searcher.Search("IsInstalled=0 and ($filter)")
-                if ($found.Updates.Count -eq 0) { return @{ Installed=0; RebootRequired=$false } }
+                $session    = New-Object -ComObject Microsoft.Update.Session
+                $searcher   = $session.CreateUpdateSearcher()
+                # KBArticleID is not a valid WUA search criterion — search all pending and filter in-memory
+                $allPending = $searcher.Search('IsInstalled=0 and IsHidden=0 and BrowseOnly=0')
+                $toInstall  = New-Object -ComObject Microsoft.Update.UpdateColl
+                foreach ($u in $allPending.Updates) {
+                    foreach ($kb in @($u.KBArticleIDs)) {
+                        if ($kbs -contains $kb) { $null = $toInstall.Add($u); break }
+                    }
+                }
+                if ($toInstall.Count -eq 0) { return @{ Installed=0; RebootRequired=$false; ResultCode='' } }
                 $dl = $session.CreateUpdateDownloader()
-                $dl.Updates = $found.Updates
+                $dl.Updates = $toInstall
                 $dl.Download() | Out-Null
-                $inst       = $session.CreateUpdateInstaller()
-                $inst.Updates = $found.Updates
+                $inst = $session.CreateUpdateInstaller()
+                $inst.Updates = $toInstall
                 $instResult = $inst.Install()
-                @{ Installed = $found.Updates.Count; RebootRequired = $instResult.RebootRequired; ResultCode = $instResult.ResultCode }
+                @{ Installed = $toInstall.Count; RebootRequired = $instResult.RebootRequired; ResultCode = $instResult.ResultCode }
             } -ArgumentList (,$approvedKBs)
         }
 

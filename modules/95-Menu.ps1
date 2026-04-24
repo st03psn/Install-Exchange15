@@ -543,10 +543,14 @@
                 [scriptblock]$Validate = $null,
                 [string]$ValidateMessage = 'Invalid input — please try again'
             )
-            $displayDefault = if ($Default) { "[$Default]" } else { '' }
-            $full = if ($displayDefault) { "  $Prompt $displayDefault" } else { "  $Prompt" }
             while ($true) {
-                $val = Read-Host $full
+                if ($Default) {
+                    Write-Host -NoNewline ("  {0} " -f $Prompt)
+                    Write-Host -NoNewline ("[{0}]: " -f $Default) -ForegroundColor Green
+                    $val = Read-Host
+                } else {
+                    $val = Read-Host ("  {0}" -f $Prompt)
+                }
                 if ($val -eq '') { $val = $Default }
                 if ($Required -and -not $val) {
                     Write-Host '  (required — cannot be empty)' -ForegroundColor Yellow
@@ -568,7 +572,7 @@
 
         $cfg = @{}
         $cfg['Mode']       = $selectedMode
-        $cfg['InstallPath'] = Read-MenuInput -Prompt 'Working/log folder' -Default 'C:\Install'
+        $cfg['InstallPath'] = if ($ScriptFullName) { Split-Path $ScriptFullName -Parent } else { $PWD.Path }
         if ($selectedMode -notin @(6, 7)) {
             $defaultIso = Join-Path $cfg['InstallPath'] 'sources\ExchangeServerSE-x64.iso'
             $srcTry = 0
@@ -652,7 +656,7 @@
                 $cfg['MailDomain']     = Read-MenuInput -Prompt 'Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)' -Default $defaultMailDomain -Validate $validateFQDN -ValidateMessage 'Not a valid domain (e.g. contoso.com)'
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
-            if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
+            if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
             } else {
@@ -696,7 +700,7 @@
             } else {
                 $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
             }
-            if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'N') -imatch '^[Yy]$') {
+            if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
                 $cfg['LogRetentionDays'] = [int]$retDays
             } else {
@@ -728,7 +732,6 @@
         if ($selectedMode -in @(1, 6)) {
             if ($selectedMode -eq 1) {
                 $editFields.Add(@{ Key='SourcePath';    Label='Exchange source';      Prompt='Exchange source (folder or .iso)';                               Required=$true;  Validate={ param($v) Test-Path $v }; ValidateMsg='Path not found — enter a valid folder or .iso file path' })
-                $editFields.Add(@{ Key='InstallPath';   Label='Working folder';       Prompt='Working/log folder';                                             Required=$false; Validate=$null;         ValidateMsg='' })
                 $editFields.Add(@{ Key='Organization';  Label='Organization name';    Prompt='Organization name';                                              Required=$false; Validate=$null;         ValidateMsg='' })
                 $editFields.Add(@{ Key='MDBName';       Label='Mailbox DB name';      Prompt='Mailbox DB name        (blank = default name)';                  Required=$false; Validate=$null;         ValidateMsg='' })
                 $editFields.Add(@{ Key='MDBDBPath';     Label='Mailbox DB path';      Prompt='Mailbox DB path        (blank = Exchange default)';              Required=$false; Validate=$null;         ValidateMsg='' })
