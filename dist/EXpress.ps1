@@ -10773,9 +10773,20 @@ $body
 
         $cfg = @{}
         $cfg['Mode']       = $selectedMode
-        $defaultIso = Join-Path (Split-Path $ScriptFullName -Parent) 'ExchangeServerSE-x64.iso'
+        $defaultIso = Join-Path (Split-Path $ScriptFullName -Parent) 'sources\ExchangeServerSE-x64.iso'
         if ($selectedMode -notin @(6, 7)) {
-            $cfg['SourcePath'] = Read-MenuInput -Prompt 'Exchange source (folder or .iso)' -Default $defaultIso -Required $true
+            $srcTry = 0
+            while ($true) {
+                $srcPath = Read-MenuInput -Prompt 'Exchange source (folder or .iso)' -Default $defaultIso -Required $true
+                if (Test-Path $srcPath) { $cfg['SourcePath'] = $srcPath; break }
+                $srcTry++
+                Write-Host ("  Path not found: {0}" -f $srcPath) -ForegroundColor Yellow
+                if ($srcTry -ge 3) {
+                    Write-Host '  3 failed attempts — returning to main menu.' -ForegroundColor Red
+                    return $null
+                }
+                Write-Host ("  Attempt {0}/3 — verify the path and try again." -f $srcTry) -ForegroundColor Yellow
+            }
         }
         $cfg['InstallPath'] = Read-MenuInput -Prompt 'Working/log folder' -Default 'C:\Install'
 
@@ -10921,7 +10932,7 @@ $body
         $editFields = [System.Collections.Generic.List[hashtable]]::new()
         if ($selectedMode -in @(1, 6)) {
             if ($selectedMode -eq 1) {
-                $editFields.Add(@{ Key='SourcePath';    Label='Exchange source';      Prompt='Exchange source (folder or .iso)';                               Required=$true;  Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='SourcePath';    Label='Exchange source';      Prompt='Exchange source (folder or .iso)';                               Required=$true;  Validate={ param($v) Test-Path $v }; ValidateMsg='Path not found — enter a valid folder or .iso file path' })
                 $editFields.Add(@{ Key='InstallPath';   Label='Working folder';       Prompt='Working/log folder';                                             Required=$false; Validate=$null;         ValidateMsg='' })
                 $editFields.Add(@{ Key='Organization';  Label='Organization name';    Prompt='Organization name';                                              Required=$false; Validate=$null;         ValidateMsg='' })
                 $editFields.Add(@{ Key='MDBName';       Label='Mailbox DB name';      Prompt='Mailbox DB name        (blank = default name)';                  Required=$false; Validate=$null;         ValidateMsg='' })
