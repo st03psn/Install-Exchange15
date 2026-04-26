@@ -3,7 +3,7 @@
             Write-MyVerbose 'RunEOMT not specified, skipping EOMT'
             return
         }
-        Write-MyOutput 'Running CSS-Exchange Emergency Mitigation Tool (EOMT)'
+        Write-MyStep -Label 'EOMT' -Value 'running (CSS-Exchange Emergency Mitigation)' -Status Run
         $eomtPath = Join-Path $State['SourcesPath'] 'EOMT.ps1'
         $eomtUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/EOMT.ps1'
 
@@ -43,7 +43,7 @@
             try {
                 Write-MyVerbose ('EOMT SHA256: {0}' -f (Get-FileHash -Path $eomtPath -Algorithm SHA256).Hash)
                 & $eomtPath
-                Write-MyOutput 'EOMT completed successfully'
+                Write-MyStep -Label 'EOMT' -Value 'completed successfully' -Status OK
             }
             catch {
                 Write-MyWarning ('EOMT execution failed: {0}' -f $_.Exception.Message)
@@ -56,7 +56,7 @@
             Write-MyVerbose 'Edge role has no OWA/ECP — skipping HSTS configuration'
             return
         }
-        Write-MyOutput 'Configuring HSTS (Strict-Transport-Security) for OWA and ECP'
+        Write-MyStep -Label 'HSTS' -Value 'configuring on OWA + ECP' -Status Run
         try {
             Import-Module WebAdministration -ErrorAction Stop
             $site = 'IIS:\Sites\Default Web Site'
@@ -73,7 +73,7 @@
                 }
                 else {
                     Add-WebConfigurationProperty -PSPath $path -Filter 'system.webServer/httpProtocol/customHeaders' -Name '.' -Value @{ name = 'Strict-Transport-Security'; value = 'max-age=31536000' }
-                    Write-MyOutput ('HSTS header configured on /{0} (max-age=31536000)' -f $vDir)
+                    Write-MyStep -Label ('HSTS /{0}' -f $vDir) -Value 'configured (max-age=31536000)' -Status OK
                 }
             }
         }
@@ -94,12 +94,12 @@
             return
         }
 
-        Write-MyOutput ('Importing certificate from {0}' -f $pfxPath)
+        Write-MyStep -Label 'PFX certificate' -Value ('importing from {0}' -f $pfxPath) -Status Run
         try {
             $secPwd = ConvertTo-SecureString $State['CertificatePassword']
             Register-ExecutedCommand -Category 'Certificate' -Command ("Import-ExchangeCertificate -FileData ([IO.File]::ReadAllBytes('$pfxPath')) -Password <SecureString> -PrivateKeyExportable `$true")
             $cert = Import-ExchangeCertificate -FileData ([System.IO.File]::ReadAllBytes($pfxPath)) -Password $secPwd -PrivateKeyExportable $true -ErrorAction Stop
-            Write-MyOutput ('Certificate imported: {0} (Thumbprint: {1})' -f $cert.Subject, $cert.Thumbprint)
+            Write-MyStep -Label 'Certificate' -Value ('imported: {0}' -f $cert.Subject) -Status OK
 
             # Detect wildcard certificate (CN=* or SAN with *.domain)
             $isWildcard = ($cert.Subject -match 'CN=\*') -or ($cert.SubjectAlternativeNames -match '^\*\.')
@@ -107,13 +107,13 @@
                 # Wildcard: enable for IIS and SMTP only (IMAP/POP use specific SANs)
                 Register-ExecutedCommand -Category 'Certificate' -Command ("Enable-ExchangeCertificate -Thumbprint '$($cert.Thumbprint)' -Services IIS,SMTP -Force")
                 Enable-ExchangeCertificate -Thumbprint $cert.Thumbprint -Services IIS,SMTP -Force -ErrorAction Stop
-                Write-MyOutput ('Wildcard certificate enabled for IIS and SMTP services')
+                Write-MyStep -Label 'Certificate (wildcard)' -Value 'enabled (IIS, SMTP)' -Status OK
             }
             else {
                 # Named certificate: also enable for IMAP and POP
                 Register-ExecutedCommand -Category 'Certificate' -Command ("Enable-ExchangeCertificate -Thumbprint '$($cert.Thumbprint)' -Services IIS,SMTP,IMAP,POP -Force")
                 Enable-ExchangeCertificate -Thumbprint $cert.Thumbprint -Services IIS,SMTP,IMAP,POP -Force -ErrorAction Stop
-                Write-MyOutput ('Certificate enabled for IIS, SMTP, IMAP and POP services')
+                Write-MyStep -Label 'Certificate' -Value 'enabled (IIS, SMTP, IMAP, POP)' -Status OK
             }
         }
         catch {

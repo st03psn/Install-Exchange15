@@ -1,5 +1,5 @@
 ﻿    function New-InstallationReport {
-        Write-MyOutput 'Generating Installation Report'
+        Write-MyStep -Label 'Installation Report' -Value 'generating' -Status Run
         $reportPath = Join-Path $State['ReportsPath'] ('{0}_EXpress_Report_{1}.html' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
         $reportDate = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
@@ -51,7 +51,7 @@
             $totalCores  = ($cpuList | Measure-Object -Property NumberOfCores -Sum).Sum
             $totalLogical= ($cpuList | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
             $sysRows.Add(('<tr><td>CPU</td><td>{0}</td><td>{1} cores / {2} logical</td></tr>' -f $cpu.Name.Trim(), $totalCores, $totalLogical))
-        } catch { }
+        } catch { Write-MyVerbose ('Win32_Processor query failed: {0}' -f $_) }
         try {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
             $sysRows.Add(('<tr><td>Computer Name (FQDN)</td><td>{0}.{1}</td><td></td></tr>' -f $cs.DNSHostName, $cs.Domain))
@@ -61,11 +61,11 @@
                       elseif ($cs.HypervisorPresent) { 'Virtual — unknown hypervisor' }
                       else { 'Physical ({0} {1})' -f $cs.Manufacturer.Trim(), $cs.Model.Trim() }
             $sysRows.Add(('<tr><td>Hardware Type</td><td>{0}</td><td></td></tr>' -f $hwType))
-        } catch { }
+        } catch { Write-MyVerbose ('Win32_ComputerSystem query failed: {0}' -f $_) }
         try {
             $tz = Get-CimInstance Win32_TimeZone -ErrorAction Stop
             $sysRows.Add(('<tr><td>Time Zone</td><td>{0}</td><td></td></tr>' -f $tz.Caption))
-        } catch { }
+        } catch { Write-MyVerbose ('Win32_TimeZone query failed: {0}' -f $_) }
         # Volumes — exclude DVD-ROM and removable drives
         try {
             Get-Volume -ErrorAction SilentlyContinue | Where-Object {
@@ -78,7 +78,7 @@
                 $diskBadge = if ($freePct -lt 10) { Format-Badge ('Free {0}%' -f $freePct) 'fail' } elseif ($freePct -lt 20) { Format-Badge ('Free {0}%' -f $freePct) 'warn' } else { Format-Badge ('Free {0}%' -f $freePct) 'ok' }
                 $sysRows.Add(('<tr><td>Volume {0}:</td><td>{1} GB free of {2} GB &nbsp; {3}</td><td>{4} &nbsp; Alloc: {5}</td></tr>' -f $_.DriveLetter, $freeGB, $totalGB, $diskBadge, $_.FileSystem, $auBadge))
             }
-        } catch { }
+        } catch { Write-MyVerbose ('Get-Volume failed: {0}' -f $_) }
         # Network adapters — IP address + DNS servers
         try {
             $nicIPs  = @{}
@@ -93,7 +93,7 @@
                 $dns = if ($nicDNS[$nic]) { $nicDNS[$nic] } else { '<em>not set</em>' }
                 $sysRows.Add(('<tr><td>NIC: {0}</td><td>{1}</td><td>DNS: {2}</td></tr>' -f $nic, $nicIPs[$nic], $dns))
             }
-        } catch { }
+        } catch { Write-MyVerbose ('NIC IP/DNS query failed: {0}' -f $_) }
         $sysContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Detail / Status</th></tr>' + ($sysRows -join '') + '</table>'
 
         # ── 3. ACTIVE DIRECTORY ───────────────────────────────────────────────
@@ -101,12 +101,12 @@
         try {
             $cs2 = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
             $adRows.Add('<tr><td>Domain</td><td>{0}</td><td></td></tr>' -f $cs2.Domain)
-        } catch { }
+        } catch { Write-MyVerbose ('Win32_ComputerSystem domain query failed: {0}' -f $_) }
         try {
             $ffl = Get-ForestFunctionalLevel
             $fflBadge = if ($ffl -ge $FOREST_LEVEL2012R2) { Format-Badge 'OK' 'ok' } else { Format-Badge 'WARN' 'warn' }
             $adRows.Add(('<tr><td>Forest Functional Level</td><td>{0} ({1})</td><td>{2}</td></tr>' -f $ffl, (Get-FFLText $ffl), $fflBadge))
-        } catch { }
+        } catch { Write-MyVerbose ('Get-ForestFunctionalLevel failed: {0}' -f $_) }
         try {
             $exOrg = Get-ExchangeOrganization
             if ($exOrg) { $adRows.Add('<tr><td>Exchange Organization</td><td>{0}</td><td></td></tr>' -f $exOrg) }
@@ -114,7 +114,7 @@
             $adRows.Add('<tr><td>Exchange Forest Schema</td><td>{0}</td><td></td></tr>' -f $exFL)
             $exDL = Get-ExchangeDomainLevel
             $adRows.Add('<tr><td>Exchange Domain Level</td><td>{0}</td><td></td></tr>' -f $exDL)
-        } catch { }
+        } catch { Write-MyVerbose ('Exchange forest/domain schema level query failed: {0}' -f $_) }
         $adContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Status</th></tr>' + ($adRows -join '') + '</table>'
 
         # ── 4. EXCHANGE CONFIGURATION ─────────────────────────────────────────
@@ -138,7 +138,7 @@
         try {
             $cas = Get-ClientAccessService -Identity $env:COMPUTERNAME -ErrorAction SilentlyContinue
             if ($cas) { $exRows.Add('<tr><td>Autodiscover SCP</td><td>{0}</td><td></td></tr>' -f $cas.AutoDiscoverServiceInternalUri) }
-        } catch { }
+        } catch { Write-MyVerbose ('Get-ClientAccessService (Autodiscover SCP) failed: {0}' -f $_) }
         try {
             $orgCfg = Get-OrganizationConfig -ErrorAction Stop
             $exRows.Add('<tr><td>Organization Name</td><td>{0}</td><td></td></tr>' -f $orgCfg.Name)
@@ -146,12 +146,12 @@
             $exRows.Add(('<tr><td>Modern Auth (OAuth2)</td><td>{0}</td><td>{1}</td></tr>' -f $orgCfg.OAuth2ClientProfileEnabled, $oauthBadge))
             $mapiBadge = if ($orgCfg.MapiHttpEnabled) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Disabled' 'warn' }
             $exRows.Add(('<tr><td>MAPI/HTTP</td><td>{0}</td><td>{1}</td></tr>' -f $orgCfg.MapiHttpEnabled, $mapiBadge))
-        } catch { }
+        } catch { Write-MyVerbose ('Get-OrganizationConfig failed: {0}' -f $_) }
         try {
             Get-AcceptedDomain -ErrorAction Stop | ForEach-Object {
                 $exRows.Add(('<tr><td>Accepted Domain</td><td>{0}</td><td>{1}</td></tr>' -f $_.DomainName, (Format-Badge $_.DomainType 'info')))
             }
-        } catch { }
+        } catch { Write-MyVerbose ('Get-AcceptedDomain failed: {0}' -f $_) }
 
         # Virtual directories — Autodiscover SCP + OWA, ECP, EWS, OAB, ActiveSync, MAPI
         $vdirRows.Add('<tr><th>Service</th><th>Internal URL</th><th>External URL</th></tr>')
@@ -159,7 +159,7 @@
             $cas = Get-ClientAccessService -Identity $env:COMPUTERNAME -ErrorAction Stop
             $scpUri = if ($cas.AutoDiscoverServiceInternalUri) { $cas.AutoDiscoverServiceInternalUri.AbsoluteUri } else { '<em>not set</em>' }
             $vdirRows.Add(('<tr><td>Autodiscover SCP</td><td>{0}</td><td><em>n/a (SCP)</em></td></tr>' -f $scpUri))
-        } catch { }
+        } catch { Write-MyVerbose ('Get-ClientAccessService (VDir SCP) failed: {0}' -f $_) }
         @(
             @{ Name='OWA';         Cmd={ Get-OwaVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
             @{ Name='ECP';         Cmd={ Get-EcpVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
@@ -167,6 +167,7 @@
             @{ Name='OAB';         Cmd={ Get-OabVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
             @{ Name='ActiveSync';  Cmd={ Get-ActiveSyncVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
             @{ Name='MAPI';        Cmd={ Get-MapiVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
+            @{ Name='PowerShell';  Cmd={ Get-PowerShellVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Select-Object -First 1 } }
         ) | ForEach-Object {
             try {
                 $vd = & $_.Cmd
@@ -175,7 +176,7 @@
                     $ext = if ($vd.ExternalUrl) { $vd.ExternalUrl.AbsoluteUri } else { '<em>not set</em>' }
                     $vdirRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f $_.Name, $int, $ext))
                 }
-            } catch { }
+            } catch { Write-MyVerbose ('Virtual directory URL query failed: {0}' -f $_) }
         }
 
         # Mailbox databases — try with status, fall back without
@@ -205,17 +206,26 @@
             }
         } catch { $connRows.Add('<tr><td colspan="5">Receive connector query failed</td></tr>') }
 
-        # Certificates
+        # Certificates — try with -Server first; fall back to local query if remoting fails
         $certRows.Add('<tr><th>Subject</th><th>Expiry</th><th>Services</th><th>Thumbprint</th></tr>')
+        $certFilter = { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }
+        $rawCerts = $null
         try {
-            Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | ForEach-Object {
-                # Skip phantom entries: no subject, no thumbprint, or NotAfter = DateTime.MinValue
-                if ([string]::IsNullOrEmpty($_.Thumbprint) -or $_.NotAfter -le [datetime]'1970-01-01') { return }
-                $daysLeft = [int][Math]::Floor(($_.NotAfter - (Get-Date)).TotalDays)
-                $expiryBadge = if ($daysLeft -lt 30) { Format-Badge ('Expires {0}d!' -f $daysLeft) 'fail' } elseif ($daysLeft -lt 90) { Format-Badge ('Expires {0}d' -f $daysLeft) 'warn' } else { Format-Badge ('{0} ({1}d)' -f $_.NotAfter.ToString('yyyy-MM-dd'), $daysLeft) 'ok' }
-                $certRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td><code>{3}</code></td></tr>' -f $_.Subject, $expiryBadge, $_.Services, $_.Thumbprint))
+            $rawCerts = @(Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | Where-Object $certFilter)
+        } catch {
+            Write-MyVerbose ('Get-ExchangeCertificate -Server failed in report: {0}' -f $_)
+            try { $rawCerts = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
+            catch { Write-MyVerbose ('Get-ExchangeCertificate (local) failed in report: {0}' -f $_) }
+        }
+        if ($rawCerts) {
+            foreach ($cert in $rawCerts) {
+                $daysLeft = [int][Math]::Floor(($cert.NotAfter - (Get-Date)).TotalDays)
+                $expiryBadge = if ($daysLeft -lt 30) { Format-Badge ('Expires {0}d!' -f $daysLeft) 'fail' } elseif ($daysLeft -lt 90) { Format-Badge ('Expires {0}d' -f $daysLeft) 'warn' } else { Format-Badge ('{0} ({1}d)' -f $cert.NotAfter.ToString('yyyy-MM-dd'), $daysLeft) 'ok' }
+                $certRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td><code>{3}</code></td></tr>' -f $cert.Subject, $expiryBadge, $cert.Services, $cert.Thumbprint))
             }
-        } catch { $certRows.Add('<tr><td colspan="4">Certificate query failed</td></tr>') }
+        } else {
+            $certRows.Add('<tr><td colspan="4"><em>No certificates found or query failed</em></td></tr>')
+        }
 
         # Exchange Optimizations — org/transport level settings
         $exchOptRows = [System.Collections.Generic.List[string]]::new()
@@ -231,7 +241,7 @@
                 $ceipBadge = if (-not $orgCfg2.CustomerFeedbackEnabled) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge 'Enabled' 'warn' }
                 $exchOptRows.Add(('<tr><td>CEIP / Telemetry</td><td>{0}</td><td>Disabled (privacy / GDPR)</td><td>{1}</td></tr>' -f $orgCfg2.CustomerFeedbackEnabled, $ceipBadge))
             }
-        } catch { }
+        } catch { Write-MyVerbose ('Get-OrganizationConfig (Exchange Optimizations) failed: {0}' -f $_) }
         try {
             $transCfg2 = Get-TransportConfig -ErrorAction SilentlyContinue
             if ($transCfg2) {
@@ -249,14 +259,14 @@
                 $snBadge = if ($transCfg2.SafetyNetHoldTime -ge [TimeSpan]'2.00:00:00') { Format-Badge '✓' 'ok' } else { Format-Badge 'Short' 'warn' }
                 $exchOptRows.Add(('<tr><td>Safety Net Hold Time</td><td>{0}</td><td>≥ 2 days (message redelivery after DB failover)</td><td>{1}</td></tr>' -f $transCfg2.SafetyNetHoldTime, $snBadge))
             }
-        } catch { }
+        } catch { Write-MyVerbose ('Get-TransportConfig failed: {0}' -f $_) }
         try {
             $transSvc2 = Get-TransportService -Identity $env:COMPUTERNAME -ErrorAction SilentlyContinue
             if ($transSvc2) {
                 $expBadge = if ($transSvc2.MessageExpirationTimeout -ge [TimeSpan]'7.00:00:00') { Format-Badge '✓' 'ok' } else { Format-Badge 'Default 2d' 'warn' }
                 $exchOptRows.Add(('<tr><td>Message Expiration Timeout</td><td>{0}</td><td>7 days (delay NDRs during multi-day outages)</td><td>{1}</td></tr>' -f $transSvc2.MessageExpirationTimeout, $expBadge))
             }
-        } catch { }
+        } catch { Write-MyVerbose ('Get-TransportService failed: {0}' -f $_) }
 
         $exContent = '<table class="data-table"><tr><th>Property</th><th>Value</th><th>Status</th></tr>' + ($exRows -join '') + '</table>' +
             '<h3 class="subsection">Virtual Directory URLs</h3><table class="data-table">' + ($vdirRows -join '') + '</table>' +
@@ -293,7 +303,7 @@
             $smb1 = (Get-SmbServerConfiguration -ErrorAction Stop).EnableSMB1Protocol
             $smb1Badge = if ($smb1) { Format-Badge 'Enabled (risk)' 'warn' } else { Format-Badge 'Disabled' 'ok' }
             $secRows.Add(('<tr><td>SMBv1</td><td>{0}</td><td>Disabled</td><td>{1}</td><td>{2}</td><td>CIS L1 §18.3 / BSI SYS.1</td></tr>' -f $smb1, $smb1Badge, (Format-RefLink 'https://techcommunity.microsoft.com/t5/storage-at-microsoft/stop-using-smb1/ba-p/425858' 'Microsoft Blog')))
-        } catch { }
+        } catch { Write-MyVerbose ('Get-SmbServerConfiguration failed: {0}' -f $_) }
         $wdigest = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' 'UseLogonCredential'
         $wdigestBadge = if ($wdigest -eq 0) { Format-Badge 'Disabled' 'ok' } else { Format-Badge 'Enabled (risk)' 'warn' }
         $secRows.Add(('<tr><td>WDigest Caching</td><td>UseLogonCredential = {0}</td><td>0 = Disabled</td><td>{1}</td><td>{2}</td><td>CIS L1 §18.9.48 / DISA STIG</td></tr>' -f $wdigest, $wdigestBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection' 'MS Learn')))
@@ -336,31 +346,13 @@
             }
             $nbBadge = if ($nbNics.Count -gt 0 -and $nbDisabled -eq $nbNics.Count) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge ('{0}/{1} disabled' -f $nbDisabled, $nbNics.Count) 'warn' }
             $secRows.Add(('<tr><td>NetBIOS over TCP/IP</td><td>{0} of {1} NICs disabled</td><td>Disabled on all NICs (reduces LLMNR/NBT-NS attack surface)</td><td>{2}</td><td>{3}</td><td>CIS §18 / BSI</td></tr>' -f $nbDisabled, $nbNics.Count, $nbBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/disable-netbios-tcp-ip-using-dhcp' 'MS Learn')))
-        } catch { }
+        } catch { Write-MyVerbose ('NetBIOS NIC registry check failed: {0}' -f $_) }
 
         # Root CA auto-update
         $rootAU = Get-SecRegVal 'HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\AuthRoot' 'DisableRootAutoUpdate'
         $rootAUBadge = if ($rootAU -ne 1) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge 'Disabled by policy!' 'warn' }
         $rootAUDisplay = if ($null -eq $rootAU) { '(not set — default enabled)' } else { 'DisableRootAutoUpdate = {0}' -f $rootAU }
         $secRows.Add(('<tr><td>Root CA Auto-Update</td><td>{0}</td><td>Must not be disabled (Exchange Online / M365 connectivity)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $rootAUDisplay, $rootAUBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/security/trusted-root/release-notes' 'MS Trusted Root')))
-
-        # Extended Protection (OWA VDir — evaluate Frontend only; Back End is internal and EP=None by design)
-        if (-not $State['InstallEdge']) {
-            try {
-                $owaVdirs = @(Get-OwaVirtualDirectory -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue)
-                $owaFe    = $owaVdirs | Where-Object { $_.Name -notlike '*Back End*' -and $_.WebSiteName -notlike '*Back End*' } | Select-Object -First 1
-                if (-not $owaFe) { $owaFe = $owaVdirs | Select-Object -First 1 }
-                if ($owaFe) {
-                    $siteLabel = if ($owaFe.WebSiteName) { $owaFe.WebSiteName } else { $owaFe.Name }
-                    $epVal = [string]$owaFe.ExtendedProtectionTokenChecking
-                    if ([string]::IsNullOrEmpty($epVal)) { $epVal = 'None' }
-                    # Normalize integer forms returned when deserializing AD properties
-                    if ($epVal -eq '2') { $epVal = 'Require' } elseif ($epVal -eq '1') { $epVal = 'Allow' } elseif ($epVal -eq '0') { $epVal = 'None' }
-                    $epBadge = if ($epVal -in 'Require','Allow') { Format-Badge "$epVal ✓" 'ok' } else { Format-Badge "$epVal (risk)" 'warn' }
-                    $secRows.Add(('<tr><td>Extended Protection (OWA)</td><td>{0} — {1}</td><td>Require or Allow</td><td>{2}</td><td>{3}</td><td>MS Exchange</td></tr>' -f $siteLabel, $epVal, $epBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
-                }
-            } catch { }
-        }
 
         # Extended Protection — per-VDir breakdown (Frontend only; Back End EP=None by design)
         if (-not $State['InstallEdge']) {
@@ -385,28 +377,33 @@
                             $epvBadge = if ($epv -in 'Require','Allow') { Format-Badge $epv 'ok' } else { Format-Badge "$epv" 'warn' }
                             $epVdirRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f $ep.Name, $epv, $epvBadge))
                         }
-                    } catch { }
+                    } catch { Write-MyVerbose ('Extended Protection per-VDir check failed for {0}: {1}' -f $ep.Name, $_) }
                 }
                 if ($epVdirRows.Count -gt 0) {
                     $secRows.Add(('<tr><td>Extended Protection (per VDir)</td><td colspan="4"><table style="width:100%;font-size:12px"><tr><th style="text-align:left">VDir</th><th style="text-align:left">Setting</th><th style="text-align:left">Status</th></tr>{0}</table></td><td>MS Exchange</td></tr>' -f ($epVdirRows -join '')))
                 }
-            } catch { }
+            } catch { Write-MyVerbose ('Extended Protection per-VDir section failed: {0}' -f $_) }
         }
 
         # HSTS (Strict-Transport-Security header on OWA/ECP)
+        # Only configured when a CertificatePath is provided (avoid browser lockout with self-signed cert).
         if (-not $State['InstallEdge']) {
-            try {
-                Import-Module WebAdministration -ErrorAction Stop
-                $hstsSite  = 'IIS:\Sites\Default Web Site'
-                $hstsFilter = 'system.webServer/httpProtocol/customHeaders/add[@name="Strict-Transport-Security"]'
-                $hstsOk = 0; $hstsVdirs = @('owa','ecp')
-                foreach ($hv in $hstsVdirs) {
-                    $hx = Get-WebConfigurationProperty -PSPath "$hstsSite\$hv" -Filter $hstsFilter -Name '.' -ErrorAction SilentlyContinue
-                    if ($hx) { $hstsOk++ }
-                }
-                $hstsBadge = if ($hstsOk -eq $hstsVdirs.Count) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge ('{0}/{1} configured' -f $hstsOk, $hstsVdirs.Count) 'warn' }
-                $secRows.Add(('<tr><td>HSTS (OWA/ECP)</td><td>{0}/{1} virtual directories</td><td>Enabled (max-age=31536000)</td><td>{2}</td><td>{3}</td><td>CIS / BSI</td></tr>' -f $hstsOk, $hstsVdirs.Count, $hstsBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/iis/configuration/system.webserver/security/requestfiltering/alwaysallowedurls/' 'IIS Docs')))
-            } catch { }
+            if (-not $State['CertificatePath']) {
+                $secRows.Add(('<tr><td>HSTS (OWA/ECP)</td><td>Skipped — no certificate configured</td><td>Enabled (max-age=31536000)</td><td>{0}</td><td>{1}</td><td>CIS / BSI</td></tr>' -f (Format-Badge 'N/A' 'na'), (Format-RefLink 'https://learn.microsoft.com/en-us/iis/configuration/system.webserver/security/requestfiltering/alwaysallowedurls/' 'IIS Docs')))
+            } else {
+                try {
+                    Import-Module WebAdministration -ErrorAction Stop
+                    $hstsSite   = 'IIS:\Sites\Default Web Site'
+                    $hstsFilter = 'system.webServer/httpProtocol/customHeaders/add[@name="Strict-Transport-Security"]'
+                    $hstsOk = 0; $hstsVdirs = @('owa','ecp')
+                    foreach ($hv in $hstsVdirs) {
+                        $hx = Get-WebConfigurationProperty -PSPath "$hstsSite\$hv" -Filter $hstsFilter -Name '.' -ErrorAction SilentlyContinue
+                        if ($hx) { $hstsOk++ }
+                    }
+                    $hstsBadge = if ($hstsOk -eq $hstsVdirs.Count) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge ('{0}/{1} configured' -f $hstsOk, $hstsVdirs.Count) 'warn' }
+                    $secRows.Add(('<tr><td>HSTS (OWA/ECP)</td><td>{0}/{1} virtual directories</td><td>Enabled (max-age=31536000)</td><td>{2}</td><td>{3}</td><td>CIS / BSI</td></tr>' -f $hstsOk, $hstsVdirs.Count, $hstsBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/iis/configuration/system.webserver/security/requestfiltering/alwaysallowedurls/' 'IIS Docs')))
+                } catch { Write-MyVerbose ('HSTS header check failed: {0}' -f $_) }
+            }
         }
 
         # OWA Download Domains (CVE-2021-1730)
@@ -417,7 +414,7 @@
                 $dlBadge = if ($dlEnabled) { Format-Badge 'Enabled ✓' 'ok' } else { Format-Badge 'Not enabled (CVE-2021-1730)' 'warn' }
                 $dlDomainInfo = if ($State['DownloadDomain']) { $State['DownloadDomain'] } else { '(not configured)' }
                 $secRows.Add(('<tr><td>OWA Download Domains</td><td>Org flag: {0} / Domain: {1}</td><td>EnableDownloadDomains = True + separate download FQDN</td><td>{2}</td><td>{3}</td><td>CVE-2021-1730</td></tr>' -f $dlEnabled, $dlDomainInfo, $dlBadge, (Format-RefLink 'https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-1730' 'MSRC')))
-            } catch { }
+            } catch { Write-MyVerbose ('OWA Download Domains (CVE-2021-1730) check failed: {0}' -f $_) }
         }
 
         # SSL Offloading (Outlook Anywhere) — must be off for Extended Protection
@@ -428,7 +425,7 @@
                     $oaBadge = if (-not $oaVdir.SSLOffloading) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge 'Enabled (blocks EP)' 'warn' }
                     $secRows.Add(('<tr><td>SSL Offloading (Outlook Anywhere)</td><td>{0}</td><td>False (required for Extended Protection channel binding)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $oaVdir.SSLOffloading, $oaBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/security-best-practices/exchange-extended-protection' 'MS Learn')))
                 }
-            } catch { }
+            } catch { Write-MyVerbose ('Get-OutlookAnywhere (SSL Offloading) failed: {0}' -f $_) }
         }
 
         # MRS Proxy (EWS)
@@ -439,7 +436,7 @@
                     $mrsBadge = if (-not $ewsVdir.MRSProxyEnabled) { Format-Badge 'Disabled ✓' 'ok' } else { Format-Badge 'Enabled (review)' 'warn' }
                     $secRows.Add(('<tr><td>MRS Proxy (EWS)</td><td>{0}</td><td>False (enable only for cross-forest migrations)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $ewsVdir.MRSProxyEnabled, $mrsBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/architecture/mailbox-servers/mrs-proxy-endpoint' 'MS Learn')))
                 }
-            } catch { }
+            } catch { Write-MyVerbose ('Get-WebServicesVirtualDirectory (MRS Proxy) failed: {0}' -f $_) }
         }
 
         # MAPI Encryption Required
@@ -450,7 +447,7 @@
                     $mapiEncBadge = if ($mbxSrv.MAPIEncryptionRequired) { Format-Badge 'Required ✓' 'ok' } else { Format-Badge 'Not required' 'warn' }
                     $secRows.Add(('<tr><td>MAPI Encryption Required</td><td>{0}</td><td>True (forces encrypted Outlook MAPI connections)</td><td>{1}</td><td>{2}</td><td>MS Exchange</td></tr>' -f $mbxSrv.MAPIEncryptionRequired, $mapiEncBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/clients/mapi-over-http/configure-mapi-over-http' 'MS Learn')))
                 }
-            } catch { }
+            } catch { Write-MyVerbose ('Get-MailboxServer (MAPI Encryption) failed: {0}' -f $_) }
         }
 
         # SMTP Banner hardening
@@ -462,7 +459,7 @@
                     $bannerBadge = if ($bannersHardened -eq $feBannerConns.Count) { Format-Badge 'Hardened ✓' 'ok' } else { Format-Badge ('{0}/{1} hardened' -f $bannersHardened, $feBannerConns.Count) 'warn' }
                     $secRows.Add(('<tr><td>SMTP Banner</td><td>{0}/{1} Frontend connectors hardened</td><td>Generic banner (hides Exchange version from attackers)</td><td>{2}</td><td>{3}</td><td>CIS / DISA STIG</td></tr>' -f $bannersHardened, $feBannerConns.Count, $bannerBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors' 'MS Learn')))
                 }
-            } catch { }
+            } catch { Write-MyVerbose ('Get-ReceiveConnector (SMTP Banner) failed: {0}' -f $_) }
         }
 
         $secContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th><th>Reference</th><th>CIS / BSI</th></tr>' + ($secRows -join '') + '</table>'
@@ -474,7 +471,7 @@
             $isHighPerf = $plan.InstanceID -like "*$POWERPLAN_HIGH_PERFORMANCE*"
             $planBadge  = if ($isHighPerf) { Format-Badge 'High Performance ✓' 'ok' } else { Format-Badge 'Not High Performance' 'warn' }
             $perfRows.Add(('<tr><td>Power Plan</td><td>{0}</td><td>High Performance</td><td>{1}</td></tr>' -f $plan.ElementName, $planBadge))
-        } catch { }
+        } catch { Write-MyVerbose ('Win32_PowerPlan query failed: {0}' -f $_) }
         try {
             $pf = Get-CimInstance Win32_PageFileSetting -ErrorAction Stop | Select-Object -First 1
             if ($pf) {
@@ -484,7 +481,7 @@
                 $pfBadge      = if ($pfOk) { Format-Badge '✓' 'ok' } else { Format-Badge 'Below recommendation' 'warn' }
                 $perfRows.Add(('<tr><td>Pagefile</td><td>{0} — Init: {1} MB / Max: {2} MB</td><td>≥ {3} MB</td><td>{4}</td></tr>' -f $pf.Name, $pf.InitialSize, $pf.MaximumSize, $recMB, $pfBadge))
             }
-        } catch { }
+        } catch { Write-MyVerbose ('Win32_PageFileSetting query failed: {0}' -f $_) }
         $keepAlive = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'KeepAliveTime'
         if ($keepAlive) {
             $kaBadge = if ($keepAlive -le 900000) { Format-Badge '✓' 'ok' } else { Format-Badge 'High' 'warn' }
@@ -494,7 +491,7 @@
             Get-NetAdapterRss -ErrorAction SilentlyContinue | Where-Object { $_.Enabled } | ForEach-Object {
                 $perfRows.Add(('<tr><td>RSS: {0}</td><td>Enabled — Queues: {1}</td><td>Enabled; Queues = physical cores</td><td>{2}</td></tr>' -f $_.Name, $_.NumberOfReceiveQueues, (Format-Badge 'Enabled ✓' 'ok')))
             }
-        } catch { }
+        } catch { Write-MyVerbose ('Get-NetAdapterRss failed: {0}' -f $_) }
         $maxConcAPI = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' 'MaxConcurrentApi'
         if ($maxConcAPI) {
             $mcaBadge = if ($maxConcAPI -ge 10) { Format-Badge '✓' 'ok' } else { Format-Badge 'Low' 'warn' }
@@ -778,7 +775,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
 
         try {
             $html | Out-File -FilePath $reportPath -Encoding utf8 -ErrorAction Stop
-            Write-MyOutput ('Installation Report saved to {0}' -f $reportPath)
+            Write-MyStep -Label 'Installation Report' -Value $reportPath -Status OK
         }
         catch {
             Write-MyWarning ('Could not write Installation Report: {0}' -f $_.Exception.Message)
@@ -807,7 +804,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                             -RedirectStandardError $edgeStdErr -ErrorAction Stop
                 Remove-Item $edgeStdErr -ErrorAction SilentlyContinue
                 if ($proc.ExitCode -eq 0 -and (Test-Path $pdfPath)) {
-                    Write-MyOutput ('Installation Report PDF saved to {0}' -f $pdfPath)
+                    Write-MyStep -Label 'Installation Report PDF' -Value $pdfPath -Status OK
                 }
                 else {
                     Write-MyVerbose ('Edge PDF export exit code: {0}' -f $proc.ExitCode)

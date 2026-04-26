@@ -70,7 +70,7 @@
         $res = $true
         if ( !( Test-Path $(Join-Path $InstallPath $Filename))) {
             if ( $URL) {
-                Write-MyOutput "Package $Package not found, downloading to $FileName"
+                Write-MyStep -Label $Package -Value ('downloading to {0}' -f $FileName) -Status Run
                 Write-MyVerbose "Source: $URL"
                 $destPath = Join-Path $InstallPath $Filename
                 $downloaded = $false
@@ -164,7 +164,7 @@
             if ($ccm -and ($ccm.RebootPending -or $ccm.IsHardRebootPending)) {
                 $reasons += 'CCM ClientSDK'
             }
-        } catch { }
+        } catch { Write-MyVerbose ('CCM ClientSDK reboot check skipped (SCCM not present or inaccessible): {0}' -f $_) }
         if ($reasons.Count -gt 0) {
             Write-MyVerbose ('Reboot pending: {0}' -f ($reasons -join ', '))
             return $true
@@ -211,7 +211,7 @@
     }
 
     function Enable-RunOnce {
-        Write-MyOutput 'Set script to run once after reboot'
+        Write-MyStep -Label 'RunOnce' -Value 'registered (resume after reboot)' -Status OK
         # When compiled with PS2Exe the script runs as a standalone .exe — invoke it directly.
         # Otherwise use the current PowerShell interpreter (powershell.exe or pwsh.exe).
         $isExe = $ScriptFullName -imatch '\.exe$'
@@ -245,7 +245,7 @@
         $alreadyOff = ((Get-ItemProperty -Path $AdminKey -Name IsInstalled -ErrorAction SilentlyContinue).IsInstalled -eq 0) -and
                       ((Get-ItemProperty -Path $UserKey  -Name IsInstalled -ErrorAction SilentlyContinue).IsInstalled -eq 0)
         if ($alreadyOff) { Write-MyVerbose 'IE Enhanced Security Configuration already disabled'; return }
-        Write-MyOutput 'Disabling IE Enhanced Security Configuration'
+        Write-MyVerbose 'Disabling IE Enhanced Security Configuration'
         New-Item -Path (Split-Path $AdminKey -Parent) -Name (Split-Path $AdminKey -Leaf) -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path $AdminKey -Name 'IsInstalled' -Value 0 -Force | Out-Null
         New-Item -Path (Split-Path $UserKey -Parent) -Name (Split-Path $UserKey -Leaf) -ErrorAction SilentlyContinue | Out-Null
@@ -333,6 +333,43 @@
         return $false
     }
 
+    function Remove-CredentialsFromConfig {
+        # After credentials are validated and persisted to state (DPAPI-encrypted),
+        # the plain-text copies in the config file are no longer needed. Scrub them
+        # so the config is safe to leave on disk between phases / reboots.
+        # Idempotent: lines already commented or already empty are skipped.
+        param([string]$Path)
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+
+        try { $lines = [System.IO.File]::ReadAllLines($Path) }
+        catch { Write-MyVerbose ('CredScrub: read failed: {0}' -f $_); return }
+
+        $today   = Get-Date -Format 'yyyy-MM-dd'
+        $changed = $false
+        $keys    = @('AdminPassword', 'CertificatePassword')
+
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            $line = $lines[$i]
+            if ($line -match '^\s*#') { continue }
+            foreach ($key in $keys) {
+                $rx = '^(\s*)' + [regex]::Escape($key) + '\s*=\s*[''"][^''"]+[''"]'
+                if ($line -match $rx) {
+                    $lines[$i] = "{0}{1} = ''  # scrubbed by EXpress on {2}" -f $matches[1], $key, $today
+                    $changed = $true
+                    break
+                }
+            }
+        }
+
+        if ($changed) {
+            try {
+                [System.IO.File]::WriteAllLines($Path, $lines, [System.Text.UTF8Encoding]::new($false))
+                Write-MyStep -Label 'Config scrubbed' -Value ('Plain-text passwords removed from {0}' -f $Path)
+            }
+            catch { Write-MyWarning ('CredScrub: write failed: {0}' -f $_.Exception.Message) }
+        }
+    }
+
     function Get-ValidatedCredentials {
         # Interactive credential prompt with validation retry loop (max 3 attempts).
         # Returns $true when valid credentials are stored in State, $false if all attempts fail.
@@ -362,7 +399,7 @@
                                           else { $null }
                 }
                 if (-not $Script:Credentials) {
-                    Write-MyOutput ('Enter credentials for Autopilot (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                    Write-MyStep -Label 'Credentials' -Value ('enter for Autopilot (attempt {0}/{1})' -f $attempt, $maxAttempts) -Status Run
                     $fbUser = Read-Host -Prompt ('Username [{0}]' -f $defaultUser)
                     if ([string]::IsNullOrWhiteSpace($fbUser)) { $fbUser = $defaultUser }
                     $fbPass = Read-Host -Prompt 'Password' -AsSecureString
@@ -378,9 +415,9 @@
                     # ConvertFrom-SecureString without -Key uses DPAPI (user+machine bound).
                     # Autopilot always resumes as the same user on the same machine, so this is safe.
                     $State['AdminPassword'] = ($Script:Credentials.Password | ConvertFrom-SecureString)
-                    Write-MyOutput ('Checking credentials (attempt {0}/{1})' -f $attempt, $maxAttempts)
+                    Write-MyVerbose ('Checking credentials (attempt {0}/{1})' -f $attempt, $maxAttempts)
                     if (Test-Credentials) {
-                        Write-MyOutput 'Credentials valid'
+                        Write-MyStep -Label 'Credentials' -Value 'valid' -Status OK
                         return $true
                     }
                     else {

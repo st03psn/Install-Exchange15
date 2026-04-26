@@ -3,7 +3,7 @@
     .SYNOPSIS
     Build.ps1 - Merge src/ modules and compile EXpress.ps1 into a standalone .exe via PS2Exe
 
-    Maintainer: st03ps
+    Maintainer: st03psn
 
     THIS CODE IS MADE AVAILABLE AS IS, WITHOUT WARRANTY OF ANY KIND. THE ENTIRE
     RISK OF THE USE OR THE RESULTS FROM THE USE OF THIS CODE REMAINS WITH THE USER.
@@ -105,7 +105,7 @@ $ps2exeArgs = @{
     Product      = 'EXpress'
     Description  = 'Unattended Exchange Server Installation and Configuration'
     Version      = $version
-    Company      = 'st03ps'
+    Company      = 'st03psn'
     Copyright    = 'Original author: Michel de Rooij (michel@eightwone.com)'
     Verbose      = $VerbosePreference -eq 'Continue'
 }

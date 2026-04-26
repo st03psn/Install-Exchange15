@@ -65,9 +65,9 @@
             AntispamAgents      = @{ Category='PostConfig'; Label='Install Antispam Agents'; Default=$true;  Description='Install built-in antispam agents (Mailbox role only; no effect on Edge).' }
             SSLOffloading       = @{ Category='PostConfig'; Label='SSL Offloading tuning';   Default=$true;  Description='IIS/OWA SSL offload settings for load-balanced deployments.' }
             MRSProxy            = @{ Category='PostConfig'; Label='Enable MRS Proxy';        Default=$true;  Description='Enable MRS Proxy on EWS for cross-forest/cross-org mailbox moves.' }
-            IANATimezone        = @{ Category='PostConfig'; Label='IANA timezone mapping';   Default=$true;  Description='Configure IANA ↔ Windows timezone mapping (iCal interop).' }
+            IANATimezone        = @{ Category='PostConfig'; Label='IANA timezone mapping';   Default=$true;  Description='Configure IANA ↔ Windows timezone mapping (iCal interop). Skipped for existing orgs — UseIanaTimeZoneId is a one-way org-wide change that affects existing calendar items; enable manually when ready.'; Condition={ -not [bool]$script:State['ExistingOrg'] } }
             AnonymousRelay      = @{ Category='PostConfig'; Label='Anonymous relay connector'; Default=$true; Description='Create anonymous internal/external relay connector if RelaySubnets is configured.'; Condition={ [bool]$script:State['RelaySubnets'] -or [bool]$script:State['ExternalRelaySubnets'] } }
-            AccessNamespaceMail = @{ Category='PostConfig'; Label='Access Namespace mail config'; Default=$true; Description='Add Access Namespace as Authoritative Accepted Domain and set it as primary SMTP in the default Email Address Policy. Removes .local/nonroutable templates. Only available when EXpress created the Exchange org.'; Condition={ [bool]$script:State['Namespace'] -and [bool]$script:State['NewExchangeOrg'] } }
+            AccessNamespaceMail = @{ Category='PostConfig'; Label='Access Namespace mail config'; Default=$true; Description='Add Access Namespace as Authoritative Accepted Domain and set it as primary SMTP in the default Email Address Policy. Removes .local/nonroutable templates. Skipped for existing orgs.'; Condition={ [bool]$script:State['Namespace'] -and -not [bool]$script:State['ExistingOrg'] } }
             SkipHealthCheck     = @{ Category='PostConfig'; Label='Opt-out: HealthChecker';  Default=$false; Description='Skip CSS-Exchange HealthChecker run at end of Phase 6.' }
             RBACReport          = @{ Category='PostConfig'; Label='RBAC Report';             Default=$true;  Description='Generate RBAC (role assignments / role groups) HTML report.' }
             RunEOMT             = @{ Category='PostConfig'; Label='Run EOMT';                Default=$false; Description='Run CSS-Exchange Emergency Mitigation Tool (legacy CUs; no-op on current CUs).' }
@@ -129,7 +129,7 @@
         }
 
         $useRawKey = $false
-        try { $null = $host.UI.RawUI.KeyAvailable; $useRawKey = $true } catch { }
+        try { $null = $host.UI.RawUI.KeyAvailable; $useRawKey = $true } catch { } # intentional: RawUI unavailable in PS2Exe/redirected hosts
 
         $pageIdx   = 0
         $lastName  = ''
@@ -245,11 +245,11 @@
                 }
                 'SKIP' {
                     foreach ($n in $sel.Keys.Clone()) { $sel[$n] = [bool]$catalog[$n].Default }
-                    Write-MyOutput 'Advanced configuration skipped — using defaults'
+                    Write-MyStep -Label 'Advanced config' -Value 'skipped (defaults)' -Status Info
                     return $sel
                 }
                 'CANCEL' {
-                    Write-MyOutput 'Advanced configuration cancelled — continuing with defaults'
+                    Write-MyStep -Label 'Advanced config' -Value 'cancelled (defaults)' -Status Info
                     return $null
                 }
                 default {
@@ -296,30 +296,30 @@
         Write-Progress -Id 2 -Activity 'Advanced configuration prompt' -Completed
 
         if ($answer -ne 'Y') {
-            Write-MyOutput 'Advanced configuration skipped — continuing with defaults'
+            Write-MyStep -Label 'Advanced config' -Value 'skipped (defaults)' -Status Info
             return $false
         }
         Write-Host ''
 
         $result = Show-AdvancedMenu
         if ($null -eq $result) {
-            Write-MyOutput 'Advanced configuration cancelled — continuing with defaults'
+            Write-MyStep -Label 'Advanced config' -Value 'cancelled (defaults)' -Status Info
             return $false
         }
 
         $State['AdvancedFeatures'] = $result
         Save-State $State
         $changed = @($result.Keys | Where-Object { $result[$_] -ne [bool](Get-AdvancedFeatureCatalog)[$_].Default }).Count
-        Write-MyOutput ('Advanced configuration applied — {0} setting(s) differ from defaults' -f $changed)
+        Write-MyStep -Label 'Advanced config' -Value ('{0} setting(s) differ from defaults' -f $changed) -Status OK
         return $true
     }
 
     function Test-Feature {
         # Returns $true when an Advanced feature is enabled.
-        # Precedence: $State['AdvancedFeatures'][Name] > catalog default.
-        # Condition scriptblock (if any) is evaluated first — returns $false when not met,
-        # regardless of the stored or default value. Prevents config-file bypass of
-        # runtime-gated features (e.g. ShadowRedundancy without DAG, EnableTLS13 on WS2019).
+        # Precedence: explicit $State['AdvancedFeatures'][Name] > Condition-gated default.
+        # Explicit config always wins — admin made a deliberate choice; Condition only
+        # gates the DEFAULT value (e.g. skip AccessNamespaceMail for existing orgs by default,
+        # but apply it when the admin explicitly configured it in the deploy config).
         # Unknown names return $false (fail closed) and log a verbose warning.
         param([Parameter(Mandatory)][string]$Name)
 
@@ -330,14 +330,17 @@
         }
 
         $entry = $catalog[$Name]
-        if ($entry.ContainsKey('Condition')) {
-            try   { if (-not (& $entry.Condition)) { return $false } }
-            catch { return $false }
-        }
 
+        # Explicit config — always respected, regardless of Condition
         $features = $State['AdvancedFeatures']
         if ($features -is [hashtable] -and $features.ContainsKey($Name)) {
             return [bool]$features[$Name]
+        }
+
+        # Default path — Condition gates whether the catalog default applies
+        if ($entry.ContainsKey('Condition')) {
+            try   { if (-not (& $entry.Condition)) { return $false } }
+            catch { return $false }
         }
         return [bool]$entry.Default
     }
@@ -472,7 +475,7 @@
         try {
             $null = $host.UI.RawUI.KeyAvailable  # throws if RawUI is not available
             $useRawKey = $true
-        } catch { }
+        } catch { } # intentional: RawUI unavailable in PS2Exe/redirected hosts
 
         $statusMsg = ''
         while ($true) {
@@ -577,6 +580,14 @@
                 $_ -match '^\d{1,3}(\.\d{1,3}){3}(/([0-9]|[12]\d|3[0-2]))?$'
             } | Where-Object { -not $_ } | Measure-Object | Select-Object -ExpandProperty Count | ForEach-Object { $_ -eq 0 }
         }
+        # Exchange org name: 1–64 chars, letters/digits/spaces/hyphens, start with letter or digit
+        $validateOrgName  = { param($v) $v -match '^[a-zA-Z0-9][a-zA-Z0-9 \-]{0,62}[a-zA-Z0-9]$' -or ($v.Length -eq 1 -and $v -match '^[a-zA-Z0-9]$') }
+        # Log retention: integer 1–3650
+        $validateRetDays  = { param($v) $v -match '^\d+$' -and [int]$v -ge 1 -and [int]$v -le 3650 }
+        # PFX path: file must exist and have .pfx extension
+        $validatePfxPath  = { param($v) $v -like '*.pfx' -and (Test-Path $v -PathType Leaf) }
+        # DB / folder name: printable chars, no path separators, max 64 chars
+        $validateDbName   = { param($v) $v -match '^[^\\/:*?"<>|]{1,64}$' }
 
         $cfg = @{}
         $cfg['Mode']       = $selectedMode
@@ -607,23 +618,14 @@
                 $searcher.PropertiesToLoad.Add('name') | Out-Null
                 $result = $searcher.FindOne()
                 if ($result) { $detectedOrg = $result.Properties['name'][0] }
-            } catch { }
+            } catch { Write-MyVerbose ('AD Exchange organisation detection failed (AD may be unreachable): {0}' -f $_) }
 
             if ($detectedOrg) {
                 Write-Host ("  Existing Exchange organisation detected: {0}" -f $detectedOrg) -ForegroundColor Green
-                $cfg['Organization'] = Read-MenuInput -Prompt 'Organization name      (ENTER = keep existing)' -Default $detectedOrg
+                $cfg['Organization'] = Read-MenuInput -Prompt 'Organization name      (ENTER = keep existing)' -Default $detectedOrg -Validate $validateOrgName -ValidateMessage 'Invalid name — use 1-64 chars: letters, digits, spaces, hyphens; must start/end with letter or digit'
             } else {
                 Write-Host '  No existing Exchange organisation found in AD.' -ForegroundColor Yellow
-                # Require an org name — cannot install into a new org without a name
-                $orgInput = ''
-                while (-not $orgInput) {
-                    $orgInput = (Read-Host '  Organization name      (required for new org)').Trim()
-                    if (-not $orgInput) {
-                        Write-Host '  Organisation name is required when no existing organisation is found. Enter Q to quit.' -ForegroundColor Yellow
-                        if ($orgInput -imatch '^[Qq]$') { return $null }
-                    }
-                }
-                $cfg['Organization'] = $orgInput
+                $cfg['Organization'] = Read-MenuInput -Prompt 'Organization name      (required for new org)' -Required $true -Validate $validateOrgName -ValidateMessage 'Invalid name — use 1-64 chars: letters, digits, spaces, hyphens; must start/end with letter or digit'
             }
 
             # Detect current Autodiscover SCP URL from AD
@@ -635,9 +637,9 @@
                 $scpSearch.PropertiesToLoad.Add('serviceBindingInformation') | Out-Null
                 $scpResult = $scpSearch.FindOne()
                 if ($scpResult) { $currentSCP = $scpResult.Properties['serviceBindingInformation'][0] }
-            } catch { }
+            } catch { Write-MyVerbose ('Autodiscover SCP detection failed: {0}' -f $_) }
 
-            $cfg['MDBName']          = Read-MenuInput -Prompt 'Mailbox DB name        (blank = default name)'
+            $cfg['MDBName']          = Read-MenuInput -Prompt 'Mailbox DB name        (blank = default name)' -Validate $validateDbName -ValidateMessage 'Invalid DB name — avoid path separators and special characters (max 64 chars)'
             $cfg['MDBDBPath']        = Read-MenuInput -Prompt 'Mailbox DB path        (blank = Exchange default)'
             $cfg['MDBLogPath']       = Read-MenuInput -Prompt 'Mailbox log path       (blank = Exchange default)'
             if ($currentSCP) {
@@ -655,7 +657,7 @@
                 $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
             }
             $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none) [not tested]' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. ex01.contoso.com)'
-            $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
+            $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)' -Validate $validatePfxPath -ValidateMessage 'File not found or not a .pfx file — enter a valid path or leave blank'
             $cfg['Namespace']        = Read-MenuInput -Prompt 'Access namespace       (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
                 # Default mail domain = parent of access namespace (drop leftmost label)
@@ -665,7 +667,7 @@
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
-                $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
+                $retDays = Read-MenuInput -Prompt 'Log retention days     (1-3650)' -Default '30' -Required $true -Validate $validateRetDays -ValidateMessage 'Enter a number between 1 and 3650'
                 $cfg['LogRetentionDays'] = [int]$retDays
                 $cfg['LogCleanupFolder'] = Read-MenuInput -Prompt 'Log cleanup script folder' -Default 'C:\#service'
             } else {
@@ -702,7 +704,7 @@
                 $cfg['MailDomain']     = Read-MenuInput -Prompt 'Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)' -Default $defaultMailDomain2 -Validate $validateFQDN -ValidateMessage 'Not a valid domain (e.g. contoso.com)'
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
-            $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)        [not tested]'
+            $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)' -Validate $validatePfxPath -ValidateMessage 'File not found or not a .pfx file — enter a valid path or leave blank'
             $knownDAGs2 = Get-ExchangeDAGNames
             if ($knownDAGs2.Count -gt 0) {
                 Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs2 -join ', ')) -ForegroundColor DarkGray
@@ -711,7 +713,7 @@
                 $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
             }
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
-                $retDays = Read-MenuInput -Prompt 'Log retention days' -Default '30' -Required $true
+                $retDays = Read-MenuInput -Prompt 'Log retention days     (1-3650)' -Default '30' -Required $true -Validate $validateRetDays -ValidateMessage 'Enter a number between 1 and 3650'
                 $cfg['LogRetentionDays'] = [int]$retDays
                 $cfg['LogCleanupFolder'] = Read-MenuInput -Prompt 'Log cleanup script folder' -Default 'C:\#service'
             } else {
@@ -744,14 +746,14 @@
         if ($selectedMode -in @(1, 6)) {
             if ($selectedMode -eq 1) {
                 $editFields.Add(@{ Key='SourcePath';    Label='Exchange source';      Prompt='Exchange source (folder or .iso)';                               Required=$true;  Validate={ param($v) Test-Path $v }; ValidateMsg='Path not found — enter a valid folder or .iso file path' })
-                $editFields.Add(@{ Key='Organization';  Label='Organization name';    Prompt='Organization name';                                              Required=$false; Validate=$null;         ValidateMsg='' })
-                $editFields.Add(@{ Key='MDBName';       Label='Mailbox DB name';      Prompt='Mailbox DB name        (blank = default name)';                  Required=$false; Validate=$null;         ValidateMsg='' })
-                $editFields.Add(@{ Key='MDBDBPath';     Label='Mailbox DB path';      Prompt='Mailbox DB path        (blank = Exchange default)';              Required=$false; Validate=$null;         ValidateMsg='' })
-                $editFields.Add(@{ Key='MDBLogPath';    Label='Mailbox log path';     Prompt='Mailbox log path       (blank = Exchange default)';              Required=$false; Validate=$null;         ValidateMsg='' })
-                $editFields.Add(@{ Key='SCP';           Label='Autodiscover SCP URL'; Prompt='Autodiscover SCP URL   (blank = let Setup set, - = remove)';    Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='Organization';  Label='Organization name';    Prompt='Organization name';                                              Required=$false; Validate=$validateOrgName; ValidateMsg='Invalid name — use 1-64 chars: letters, digits, spaces, hyphens; must start/end with letter or digit' })
+                $editFields.Add(@{ Key='MDBName';       Label='Mailbox DB name';      Prompt='Mailbox DB name        (blank = default name)';                  Required=$false; Validate=$validateDbName; ValidateMsg='Invalid DB name — avoid path separators and special characters (max 64 chars)' })
+                $editFields.Add(@{ Key='MDBDBPath';     Label='Mailbox DB path';      Prompt='Mailbox DB path        (blank = Exchange default)';              Required=$false; Validate=$null;           ValidateMsg='' })
+                $editFields.Add(@{ Key='MDBLogPath';    Label='Mailbox log path';     Prompt='Mailbox log path       (blank = Exchange default)';              Required=$false; Validate=$null;           ValidateMsg='' })
+                $editFields.Add(@{ Key='SCP';           Label='Autodiscover SCP URL'; Prompt='Autodiscover SCP URL   (blank = let Setup set, - = remove)';    Required=$false; Validate=$null;           ValidateMsg='' })
                 $editFields.Add(@{ Key='TargetPath';    Label='Exchange install path';Prompt='Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'; Required=$false; Validate=$null; ValidateMsg='' })
-                $editFields.Add(@{ Key='DAGName';       Label='DAG name';             Prompt='DAG name               (blank = no DAG join)';                  Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. dag01.contoso.com)' })
-                $editFields.Add(@{ Key='CertificatePath'; Label='PFX certificate';   Prompt='PFX certificate path   (blank = none)';                          Required=$false; Validate=$null;         ValidateMsg='' })
+                $editFields.Add(@{ Key='DAGName';       Label='DAG name';             Prompt='DAG name               (blank = no DAG join)';                  Required=$false; Validate=$validateFQDN;   ValidateMsg='Not a valid FQDN (e.g. dag01.contoso.com)' })
+                $editFields.Add(@{ Key='CertificatePath'; Label='PFX certificate';   Prompt='PFX certificate path   (blank = none)';                          Required=$false; Validate=$validatePfxPath; ValidateMsg='File not found or not a .pfx file — enter a valid path or leave blank' })
             }
             $editFields.Add(@{ Key='Namespace';      Label='Access Namespace';        Prompt='Access namespace       (e.g. mail.contoso.com, blank = skip URL config)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. mail.contoso.com)' })
             $editFields.Add(@{ Key='MailDomain';     Label='Mail domain';             Prompt='Mail domain             (e.g. contoso.com — for Accepted Domain + email addresses)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid domain (e.g. contoso.com)' })

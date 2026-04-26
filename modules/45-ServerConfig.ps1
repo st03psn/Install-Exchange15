@@ -1,6 +1,6 @@
 ﻿    function Export-SourceServerConfig {
         param([string]$SourceServer)
-        Write-MyOutput ('Exporting configuration from source server {0}' -f $SourceServer)
+        Write-MyStep -Label 'Source server export' -Value $SourceServer -Status Run
         $configPath = Join-Path $State['InstallPath'] ('{0}_EXpress_Config.xml' -f $SourceServer)
 
         try {
@@ -71,7 +71,7 @@
             exit $ERR_CONFIGEXPORTFAILED
         }
         $State['ServerConfigExportPath'] = $configPath
-        Write-MyOutput ('Server configuration exported to {0}' -f $configPath)
+        Write-MyStep -Label 'Source server export' -Value $configPath -Status OK
     }
 
     function Import-ServerConfig {
@@ -81,7 +81,7 @@
             return
         }
 
-        Write-MyOutput ('Importing server configuration from {0}' -f $configPath)
+        Write-MyStep -Label 'Server config import' -Value $configPath -Status Run
         $config = Import-Clixml -Path $configPath
 
         $localServer = $env:COMPUTERNAME
@@ -205,7 +205,7 @@
             }
         }
 
-        Write-MyOutput 'Server configuration import completed'
+        Write-MyStep -Label 'Server config import' -Value 'completed' -Status OK
     }
 
     function Test-DBLogPathSeparation {
@@ -216,13 +216,13 @@
         $dbRoot  = [System.IO.Path]::GetPathRoot($State['MDBDBPath']).TrimEnd('\')
         $logRoot = [System.IO.Path]::GetPathRoot($State['MDBLogPath']).TrimEnd('\')
 
-        Write-MyOutput ('Checking DB/Log path separation — DB root: {0}  Log root: {1}' -f $dbRoot, $logRoot)
+        Write-MyVerbose ('Checking DB/Log path separation — DB root: {0}  Log root: {1}' -f $dbRoot, $logRoot)
 
         if ($dbRoot -and $logRoot -and ($dbRoot -eq $logRoot)) {
             Write-MyWarning ('Database and transaction logs share the same volume ({0}). Microsoft recommends separate volumes for performance and recoverability.' -f $dbRoot)
         }
         else {
-            Write-MyOutput 'Database and transaction logs are on separate volumes (best practice confirmed).'
+            Write-MyStep -Label 'DB/Log separation' -Value 'separate volumes (best practice)' -Status OK
         }
 
         if ($State['DAGName']) {
@@ -235,7 +235,7 @@
 
     function Wait-ADReplication {
         if (-not $State['WaitForADSync']) { return }
-        Write-MyOutput 'Checking AD replication health after PrepareAD (-WaitForADSync)'
+        Write-MyStep -Label 'AD replication' -Value 'checking after PrepareAD' -Status Run
         $maxAttempts = 18   # 18 x 20 s = 6 min
         $healthy     = $false
         for ($i = 1; $i -le $maxAttempts; $i++) {
@@ -249,12 +249,12 @@
                 $replErrors = & repadmin /showrepl /errorsonly 2>&1 |
                     Where-Object { $_ -match 'consecutive failure|Last attempt .* FAILED' }
                 if (-not $replErrors) {
-                    Write-MyOutput ('AD replication healthy (attempt {0}/{1})' -f $i, $maxAttempts)
+                    Write-MyStep -Label 'AD replication' -Value ('healthy (attempt {0}/{1})' -f $i, $maxAttempts) -Status OK
                     $healthy = $true
                     break
                 }
                 Write-MyVerbose ('Replication errors ({0}/{1}): {2}' -f $i, $maxAttempts, ($replErrors -join ' | '))
-                Write-MyOutput ('Waiting for AD replication... ({0}/{1})' -f $i, $maxAttempts)
+                Write-MyVerbose ('Waiting for AD replication... ({0}/{1})' -f $i, $maxAttempts)
             }
             catch {
                 Write-MyWarning ('repadmin check failed: {0}' -f $_.Exception.Message)
@@ -269,18 +269,18 @@
 
     function Register-ExchangeLogCleanup {
         $days = if ($State['LogRetentionDays'] -and [int]$State['LogRetentionDays'] -gt 0) { [int]$State['LogRetentionDays'] } else { 30 }
-        Write-MyOutput 'Registering Exchange log cleanup scheduled task'
+        Write-MyStep -Label 'Log cleanup task' -Value 'registering' -Status Run
 
         # Use folder from menu/config if already provided; otherwise prompt interactively
         $defaultScriptFolder = 'C:\#service'
         $scriptFolder = if ($State['LogCleanupFolder']) { $State['LogCleanupFolder'] } else { $defaultScriptFolder }
         if ($State['LogCleanupFolder']) {
             Write-MyVerbose ('Log cleanup folder from configuration: {0}' -f $scriptFolder)
-        } elseif ([Environment]::UserInteractive) {
+        } elseif (-not $State['Autopilot'] -and [Environment]::UserInteractive) {
             Write-MyOutput ('Enter folder for log cleanup script [{0}] (ENTER = default, S = skip, auto-accept in 2 min):' -f $defaultScriptFolder)
             $inputBuffer = ''
             try {
-                try { $host.UI.RawUI.FlushInputBuffer() } catch { }
+                try { $host.UI.RawUI.FlushInputBuffer() } catch { } # intentional: RawUI unavailable in PS2Exe/redirected hosts
                 $totalSecs = 120
                 $deadline = [DateTime]::Now.AddSeconds($totalSecs)
                 while ([DateTime]::Now -lt $deadline) {
@@ -360,7 +360,7 @@ Write-Log ('Removing files older than {0} days' -f `$DaysToKeep)
 try {
     Import-Module WebAdministration -ErrorAction Stop
     `$iisRoot = ((Get-WebConfigurationProperty -Filter 'system.applicationHost/sites/siteDefaults' -Name logFile).directory) -replace '%SystemDrive%', `$env:SystemDrive
-} catch { }
+} catch { } # intentional: falls back to default IIS log path when WebAdministration module unavailable
 if (-not `$iisRoot) { `$iisRoot = Join-Path `$env:SystemDrive 'inetpub\logs\LogFiles' }
 if (Test-Path `$iisRoot) {
     `$files = @(Get-ChildItem -Path `$iisRoot -Recurse -File -Filter '*.log' | Where-Object { `$_.LastWriteTime -lt `$cutoff })
@@ -398,7 +398,7 @@ Write-Log 'Exchange log cleanup finished'
 "@
         try {
             $cleanupScript | Out-File -FilePath $scriptPath -Encoding utf8 -Force
-            Write-MyOutput ('Log cleanup script saved to: {0}' -f $scriptPath)
+            Write-MyStep -Label 'Log cleanup script' -Value $scriptPath -Status OK
 
             $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
                              -Argument ('-NonInteractive -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath)
@@ -412,7 +412,7 @@ Write-Log 'Exchange log cleanup finished'
             Register-ExecutedCommand -Category 'ScheduledTask' -Command ("Register-ScheduledTask -TaskName '$taskName' -TaskPath '$taskPath' -Action (New-ScheduledTaskAction …Clean-ExchangeLogs.ps1 -RetentionDays $days) -Trigger (Daily 02:00) -Principal SYSTEM -RunLevel Highest")
             Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action `
                 -Trigger $trigger -Settings $settings -Principal $principal -ErrorAction Stop | Out-Null
-            Write-MyOutput ('Scheduled task "{0}" registered — runs daily at 02:00, retention {1} days' -f $taskName, $days)
+            Write-MyStep -Label 'Log cleanup task' -Value ('"{0}" daily 02:00, retention {1}d' -f $taskName, $days) -Status OK
         }
         catch {
             Write-MyWarning ('Failed to register log cleanup task: {0}' -f $_.Exception.Message)

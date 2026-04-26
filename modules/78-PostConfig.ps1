@@ -1,5 +1,5 @@
 ﻿    function Get-RBACReport {
-        Write-MyOutput 'Generating RBAC role group membership report'
+        Write-MyStep -Label 'RBAC report' -Value 'generating' -Status Run
         $reportPath = Join-Path $State['ReportsPath'] ('{0}_EXpress_RBAC_{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
 
         $roleGroups = @(
@@ -51,7 +51,7 @@
 
         try {
             $lines | Set-Content -Path $reportPath -Encoding UTF8 -ErrorAction Stop
-            Write-MyOutput "RBAC report saved to $reportPath"
+            Write-MyStep -Label 'RBAC report' -Value $reportPath -Status OK
         }
         catch {
             Write-MyWarning "Could not save RBAC report: $($_.Exception.Message)"
@@ -83,7 +83,7 @@
                 Description = 'Enables OAuth2 / Modern Authentication org-wide (Set-OrganizationConfig -OAuth2ClientProfileEnabled $true). Required for Outlook 2016+, Microsoft Teams, all mobile clients and any Hybrid / Azure AD configuration. Safe to enable on all Exchange 2016 / 2019 / SE installations. Without this, Outlook falls back to Basic Auth which Microsoft is deprecating.'
                 Default     = $true
                 Action      = {
-                    Write-MyOutput 'Enabling Modern Authentication (OAuth2)'
+                    Write-MyStep -Label 'Modern Authentication' -Value 'enabling (OAuth2)' -Status Run
                     Set-OrganizationConfig -OAuth2ClientProfileEnabled $true -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
@@ -95,7 +95,7 @@
                 Description = 'Sets activity-based OWA/ECP session timeout to 6 hours (Set-OrganizationConfig -ActivityBasedAuthenticationTimeoutEnabled $true -ActivityBasedAuthenticationTimeoutInterval 06:00:00). After 6 hours of inactivity the browser session is automatically logged out. Recommended for open-plan or shared workstation environments and for compliance requirements that mandate session expiry.'
                 Default     = $true
                 Action      = {
-                    Write-MyOutput 'Configuring OWA/ECP session timeout (6 hours inactivity)'
+                    Write-MyStep -Label 'OWA/ECP timeout' -Value '6h inactivity' -Status OK
                     Set-OrganizationConfig -ActivityBasedAuthenticationTimeoutEnabled $true -ActivityBasedAuthenticationTimeoutInterval '06:00:00' -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
@@ -107,7 +107,7 @@
                 Description = 'Disables the Microsoft Customer Experience Improvement Program (CEIP) and Watson crash telemetry (Set-OrganizationConfig -CustomerFeedbackEnabled $false). Prevents Exchange from sending diagnostic and usage data to Microsoft. Recommended for environments with strict data-privacy requirements (GDPR / DSGVO) or where external telemetry is blocked by policy.'
                 Default     = $true
                 Action      = {
-                    Write-MyOutput 'Disabling CEIP / telemetry'
+                    Write-MyStep -Label 'CEIP / telemetry' -Value 'disabled' -Status OK
                     Set-OrganizationConfig -CustomerFeedbackEnabled $false -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
@@ -119,7 +119,7 @@
                 Description = 'Explicitly enables MAPI over HTTP (Set-OrganizationConfig -MapiHttpEnabled $true). MAPI/HTTP replaces the older Outlook Anywhere (RPC/HTTP), offering faster failover, better behaviour across NAT and load balancers, and improved Outlook startup performance. Enabled by default since Exchange 2016, but explicit activation avoids edge cases after upgrades or migrations.'
                 Default     = $true
                 Action      = {
-                    Write-MyOutput 'Enabling MAPI over HTTP'
+                    Write-MyStep -Label 'MAPI over HTTP' -Value 'enabled' -Status OK
                     Set-OrganizationConfig -MapiHttpEnabled $true -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
@@ -131,7 +131,17 @@
                 Description = 'Raises the organisation-wide maximum message size to 150MB for both send and receive, and limits recipients per message to 500 (Set-TransportConfig -MaxSendSize/-MaxReceiveSize/-MaxRecipientEnvelopeLimit). The Exchange default of 25MB is often too restrictive for modern file-sharing workflows. Frontend Receive Connectors are updated consistently. Adjust to match your storage capacity and bandwidth.'
                 Default     = $true
                 Action      = {
-                    Write-MyOutput 'Setting org-wide max message size to 150MB'
+                    if ($State['ExistingOrg']) {
+                        $cur = Get-TransportConfig -ErrorAction SilentlyContinue
+                        if ($cur) {
+                            $sendVal = $cur.MaxSendSize.Value
+                            $recvVal = $cur.MaxReceiveSize.Value
+                            $curSend = if ($null -eq $sendVal) { 'Unlimited' } else { try { '{0}MB' -f [math]::Round($sendVal.ToBytes() / 1MB) } catch { "$sendVal" } }
+                            $curRecv = if ($null -eq $recvVal) { 'Unlimited' } else { try { '{0}MB' -f [math]::Round($recvVal.ToBytes() / 1MB) } catch { "$recvVal" } }
+                            Write-MyStep -Label 'MaxMessageSize' -Value ('overwriting existing (Send {0} / Recv {1}) with 150MB' -f $curSend, $curRecv) -Status Warn
+                        }
+                    }
+                    Write-MyStep -Label 'MaxMessageSize' -Value '150MB org-wide' -Status OK
                     Set-TransportConfig -MaxSendSize 150MB -MaxReceiveSize 150MB -MaxRecipientEnvelopeLimit 500 -ErrorAction Stop -WarningAction SilentlyContinue
                     Get-ReceiveConnector | Where-Object { $_.TransportRole -eq 'FrontendTransport' } | ForEach-Object {
                         Set-ReceiveConnector -Identity $_.Identity -MaxMessageSize 150MB -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
@@ -149,7 +159,7 @@
                 Action      = {
                     $current = (Get-TransportService -Identity $env:COMPUTERNAME).MessageExpirationTimeout
                     if ($current -ne [TimeSpan]'7.00:00:00') {
-                        Write-MyOutput 'Setting message expiration timeout to 7 days'
+                        Write-MyStep -Label 'Message expiration' -Value '7 days' -Status OK
                         Set-TransportService -Identity $env:COMPUTERNAME -MessageExpirationTimeout 7.00:00:00 -ErrorAction Stop -WarningAction SilentlyContinue
                     }
                     else {
@@ -165,7 +175,7 @@
                 Description = 'Replaces the default SMTP greeting banner on all Frontend Receive Connectors with a generic "220 Mail Service" message (Set-ReceiveConnector -Banner). The default banner discloses the exact Exchange version, which helps attackers identify applicable CVEs. This is a low-effort hardening step recommended by security benchmarks (CIS, DISA STIG).'
                 Default     = $true
                 Action      = {
-                    Write-MyOutput 'Hardening SMTP banner on Frontend Receive Connectors'
+                    Write-MyStep -Label 'SMTP banner' -Value 'hardened on Frontend' -Status OK
                     Get-ReceiveConnector | Where-Object { $_.TransportRole -eq 'FrontendTransport' } | ForEach-Object {
                         Set-ReceiveConnector -Identity $_.Identity -Banner '220 Mail Service' -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
                     }
@@ -179,7 +189,7 @@
                 Description = 'Configures Exchange to generate HTML-formatted Non-Delivery Reports for both internal and external messages (Set-TransportConfig -InternalDsnSendHtml $true -ExternalDsnSendHtml $true). Plain-text NDRs are difficult for end users to interpret. HTML NDRs include formatted error descriptions and suggested next steps, reducing helpdesk escalations.'
                 Default     = $true
                 Action      = {
-                    Write-MyOutput 'Enabling HTML-formatted Non-Delivery Reports'
+                    Write-MyStep -Label 'HTML NDR' -Value 'enabled' -Status OK
                     Set-TransportConfig -InternalDsnSendHtml $true -ExternalDsnSendHtml $true -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
@@ -192,7 +202,7 @@
                 Default     = $false
                 Condition   = { $State['DAGName'] }
                 Action      = {
-                    Write-MyOutput 'Configuring Shadow Redundancy to prefer remote DAG member'
+                    Write-MyStep -Label 'Shadow Redundancy' -Value 'prefer remote DAG member' -Status OK
                     Set-TransportConfig -ShadowMessagePreferenceSetting PreferRemote -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
@@ -204,7 +214,7 @@
                 Description = 'Explicitly sets the Safety Net message hold time to 2 days (Set-TransportConfig -SafetyNetHoldTime 2.00:00:00). Safety Net retains a redundant copy of successfully delivered messages, enabling redelivery after a database failure or mailbox switchover. The 2-day default is appropriate for most environments; adjust to match your backup and recovery SLA.'
                 Default     = $true
                 Action      = {
-                    Write-MyOutput 'Setting Safety Net hold time to 2 days'
+                    Write-MyStep -Label 'Safety Net hold' -Value '2 days' -Status OK
                     Set-TransportConfig -SafetyNetHoldTime '2.00:00:00' -ErrorAction Stop -WarningAction SilentlyContinue
                 }
             }
@@ -237,7 +247,7 @@
         # ── Autopilot / non-interactive: apply defaults without menu ──────────
         if ($State['Autopilot'] -or -not [Environment]::UserInteractive) {
             $defaults = @($applicable | Where-Object { $sel[$_.Key] })
-            Write-MyOutput ('Applying Exchange optimizations — {0} of {1} selected (defaults)' -f $defaults.Count, $applicable.Count)
+            Write-MySection ('Exchange Org Optimizations ({0} of {1} selected)' -f $defaults.Count, $applicable.Count)
             foreach ($opt in $defaults) { Invoke-SingleOptimization $opt }
             return
         }
@@ -251,7 +261,7 @@
         $statusMsg = ''
 
         $useRawKey = $false
-        try { $null = $host.UI.RawUI.KeyAvailable; $useRawKey = $true } catch { }
+        try { $null = $host.UI.RawUI.KeyAvailable; $useRawKey = $true } catch { } # intentional: RawUI unavailable in PS2Exe/redirected hosts
 
         function Draw-OptimizationMenu {
             param([string]$Status = '', [string]$LastKey = '')
@@ -328,19 +338,19 @@
                     $raw = $keyInfo.Character.ToString().ToUpper()
                     Write-Host $raw
                     if ($vk -eq 13)    { break }        # Enter = apply
-                    if ($vk -eq 27 -or $raw -eq 'S') { Write-MyOutput 'Exchange optimizations skipped'; return }
+                    if ($vk -eq 27 -or $raw -eq 'S') { Write-MyStep -Label 'Exchange optimizations' -Value 'skipped (user)' -Status Info; return }
                 }
                 catch {
                     $useRawKey = $false
                     $raw = (Read-Host '').Trim().ToUpper()
                     if ($raw -eq '')   { break }
-                    if ($raw -eq 'S')  { Write-MyOutput 'Exchange optimizations skipped'; return }
+                    if ($raw -eq 'S')  { Write-MyStep -Label 'Exchange optimizations' -Value 'skipped (user)' -Status Info; return }
                 }
             }
             else {
                 $raw = (Read-Host ('  Toggle [{0}]  |  ENTER = apply  |  S = skip all' -f ($keys -join '/'))).Trim().ToUpper()
                 if ($raw -eq '')  { break }
-                if ($raw -eq 'S') { Write-MyOutput 'Exchange optimizations skipped'; return }
+                if ($raw -eq 'S') { Write-MyStep -Label 'Exchange optimizations' -Value 'skipped (user)' -Status Info; return }
             }
 
             if ($raw.Length -eq 1 -and $byKey.ContainsKey($raw)) {
@@ -358,6 +368,6 @@
             Invoke-SingleOptimization $opt
             $applied++
         }
-        Write-MyOutput ('{0} of {1} Exchange optimization(s) applied' -f $applied, $applicable.Count)
+        Write-MyStep -Label 'Exchange optimizations' -Value ('{0} of {1} applied' -f $applied, $applicable.Count) -Status OK
     }
 

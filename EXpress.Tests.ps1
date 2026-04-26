@@ -4,7 +4,7 @@
     Pester unit tests for EXpress.ps1 helper functions.
 
 .NOTES
-    Run with: Invoke-Pester .\Install-Exchange15.Tests.ps1 -Output Detailed
+    Run with: Invoke-Pester .\EXpress.Tests.ps1 -Output Detailed
     Requires Pester 5.x: Install-Module Pester -Force -SkipPublisherCheck
 
     These tests exercise pure-logic helpers extracted from the main script.
@@ -17,10 +17,6 @@ BeforeAll {
     #  dot-sourced without invoking the whole script. We replicate them here.)
 
     $EX2016SETUPEXE_CU23 = '15.01.2507.006'
-    $EX2019SETUPEXE_CU10 = '15.02.0922.007'
-    $EX2019SETUPEXE_CU11 = '15.02.0986.005'
-    $EX2019SETUPEXE_CU12 = '15.02.1118.007'
-    $EX2019SETUPEXE_CU13 = '15.02.1258.012'
     $EX2019SETUPEXE_CU14 = '15.02.1544.004'
     $EX2019SETUPEXE_CU15 = '15.02.1748.008'
     $EXSESETUPEXE_RTM    = '15.02.2562.017'
@@ -28,10 +24,6 @@ BeforeAll {
     function Get-SetupTextVersion($FileVersion) {
         $Versions = @{
             $EX2016SETUPEXE_CU23 = 'Exchange Server 2016 Cumulative Update 23'
-            $EX2019SETUPEXE_CU10 = 'Exchange Server 2019 CU10'
-            $EX2019SETUPEXE_CU11 = 'Exchange Server 2019 CU11'
-            $EX2019SETUPEXE_CU12 = 'Exchange Server 2019 CU12'
-            $EX2019SETUPEXE_CU13 = 'Exchange Server 2019 CU13'
             $EX2019SETUPEXE_CU14 = 'Exchange Server 2019 CU14'
             $EX2019SETUPEXE_CU15 = 'Exchange Server 2019 CU15'
             $EXSESETUPEXE_RTM    = 'Exchange Server SE RTM'

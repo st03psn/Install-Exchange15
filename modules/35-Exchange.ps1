@@ -1,15 +1,15 @@
 ﻿    function Install-EXpress_ {
         $ver = $State['MajorSetupVersion']
-        Write-MyOutput "Installing Microsoft Exchange Server ($ver)"
+        Write-MyStep -Label 'Exchange Server' -Value ('installing ({0})' -f $ver) -Status Run
         $PresenceKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{CD981244-E9B8-405A-9026-6AEB9DCEF1F1}'
 
         if (Get-ItemProperty -Path $PresenceKey -Name InstallDate -ErrorAction SilentlyContinue) {
-            Write-MyOutput 'Exchange is already installed, skipping setup'
+            Write-MyStep -Label 'Exchange Server' -Value 'already installed (setup skipped)' -Status OK
             return
         }
 
         if ( $State['Recover']) {
-            Write-MyOutput 'Will run Setup in recover mode'
+            Write-MyStep -Label 'Setup mode' -Value 'recover' -Status Info
             $Params = '/mode:RecoverServer', $State['IAcceptSwitch'], '/DoNotStartTransport', '/InstallWindowsComponents'
             if ( $State['TargetPath']) {
                 $Params += "/TargetDir:`"$($State['TargetPath'])`""
@@ -17,7 +17,7 @@
         }
         else {
             if ( $State['Upgrade']) {
-                Write-MyOutput 'Will run Setup in upgrade mode'
+                Write-MyStep -Label 'Setup mode' -Value 'upgrade' -Status Info
                 $Params = '/mode:Upgrade', $State['IAcceptSwitch']
             }
             else {
@@ -78,28 +78,32 @@
             $MinDFL = $EX2016_MINDOMAINLEVEL
         }
 
-        Write-MyOutput 'Checking whether Active Directory preparation is required'
+        Write-MyVerbose 'Checking whether Active Directory preparation is required'
         if ($null -ne (Test-ExchangeOrganization $State['OrganizationName'])) {
-            Write-MyOutput "Exchange organization '$($State['OrganizationName'])' does not exist — PrepareAD required"
+            Write-MyStep -Label 'Exchange organization' -Value ("'$($State['OrganizationName'])' does not exist — PrepareAD required") -Status Info
             $params += '/PrepareAD', "/OrganizationName:`"$($State['OrganizationName'])`""
             $State['NewExchangeOrg'] = $true   # org created by this run — Enable-AccessNamespaceMailConfig may run
             Save-State $State
         }
         else {
+            # Org already exists in this forest — flag it so Phase 5 can adjust defaults for
+            # org-wide settings (MaxMessageSize, IANA timezone) that risk overwriting admin choices.
+            $State['ExistingOrg'] = $true
+            Save-State $State
             $forestlvl = Get-ExchangeForestLevel
             $domainlvl = Get-ExchangeDomainLevel
-            Write-MyOutput "Exchange Forest Schema: $forestlvl (min $MinFFL), Domain: $domainlvl (min $MinDFL)"
+            Write-MyStep -Label 'Forest Schema / Domain' -Value ('{0} (min {1}) / {2} (min {3})' -f $forestlvl, $MinFFL, $domainlvl, $MinDFL)
             if (($forestlvl -lt $MinFFL) -or ($domainlvl -lt $MinDFL)) {
-                Write-MyOutput 'AD schema or domain level below minimum — PrepareAD required'
+                Write-MyStep -Label 'AD schema/domain' -Value 'below minimum — PrepareAD required' -Status Info
                 $params += '/PrepareAD'
             }
             else {
-                Write-MyOutput 'Active Directory is already prepared — skipping PrepareAD'
+                Write-MyStep -Label 'Active Directory' -Value 'already prepared (skipping PrepareAD)' -Status OK
                 return $false
             }
         }
 
-        Write-MyOutput "Preparing Active Directory — Exchange organization: $($State['OrganizationName'])"
+        Write-MyStep -Label 'PrepareAD' -Value ('org: {0}' -f $State['OrganizationName']) -Status Run
         $params += $State['IAcceptSwitch']
         $exitCode = Invoke-Process $State['SourcePath'] 'setup.exe' $params
         if ($exitCode -ne 0) {

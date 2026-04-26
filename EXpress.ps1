@@ -4,8 +4,8 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.1.8
-    Maintainer:  st03ps
+    Version:     1.2.1
+    Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
     EXpress stands on the shoulders of giants — Michel's Install-Exchange15.ps1
@@ -84,50 +84,41 @@
 
     .REVISIONS
     Full per-version history: see RELEASE-NOTES.md in the repository root.
+    EXpress is a fork of Install-Exchange15.ps1 by Michel de Rooij (v1.0–v4.23).
+    Michel's versioning ends at 4.23. EXpress starts its own numbering from 1.0.
 
-    EXpress development history (pre-1.0):
+    ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
-    0.1     Foundation (Rounds 1-7, v5.0, v5.1): WMI-to-CIM migration, Write-ToTranscript,
-            security baseline, $WS2025_PREFULL fix. Pre-flight HTML report, source-server
-            config export/import, HealthChecker, DAG, PFX cert. Interactive menu, Autopilot,
-            Windows Updates, Exchange SU, ConfigFile, Build.ps1.
-    0.2     Hardening + connector framework (v5.2, v5.3): HSTS, EOMT, VDir URLs,
-            Wait-ADReplication, relay connectors, RBAC report. Add-BackgroundJob,
-            New-LDAPSearch, registry idempotency, BSTR zeroing.
-    0.3     Installation reports + post-config (v5.4-v5.6): HTML Installation Report, PDF
-            export. Anti-spam, log cleanup, reconnect session, relay improvements, reports
-            subfolder. Bugfix series (v0.3.1-v0.3.4): disable services, link fixes, edge
-            guards, SU reboot timing, FormatException in HTML report.
-    0.4     Word Installation Document (v5.82, v5.83): pure-PowerShell OpenXML engine, 15
-            chapters. Three-tier logging (INFO/VERBOSE/DEBUG), unified file naming, dev tools.
-    0.5     Org-wide documentation + conditional reboots (v5.84, v5.85): all Exchange servers
-            documented via CIM/WSMan remote query. Phase 2-3 and 5-6 reboots skipped when
-            nothing pending. Test-RebootPending helper. VC++ 2013 URL updated.
-    0.6     Security hardening + MEAC (v5.86-v5.88.3): Defender realtime/Tamper Protection,
-            LLMNR/mDNS disable, Disable-UnnecessaryServices. MEAC Auth-Cert auto-renewal task.
-            Word doc enrichment: TLS semantics, IMAP/POP3, connector detail, DNS template,
-            Admin Audit Log, Anti-Spam, Crimson channels. Bugfixes: Phase 5-6 spurious reboot,
-            nested-array reshape, Auth Cert validity, $state/$State shadow, (if...) crashes.
-    0.7     Language reform + MEAC hybrid (v5.90-v5.94.1): default output English, -German
-            switch. Plain-text credentials in config file. Hybrid-aware MEAC + AD Split
-            Permissions. Word doc audit-readiness: 9 new sections (change mgmt, RBAC, ports,
-            compliance mapping, GDPR, backup, monitoring, acceptance tests).
-    0.8     Advanced Configuration menu + templates (v5.95, v5.96): ~55 toggles across 6
-            pages, Test-Feature condition gate, config-file parity. Installation-Document
-            Template support with {{token}} replacement.
-
-    1.0     EXpress rename + modularization: Install-Exchange15.ps1 renamed to EXpress.ps1;
-            split into 21 modules/*.ps1; dist/EXpress.ps1 merged build. Centralized downloads
-            to sources/. Install-target matrix tightened to latest CU per Exchange line.
-    1.1     src/ renamed to modules/. Install-target matrix: Ex2019 CU10-CU14 rejected; Ex2016
-            CU23 restricted to WS2016. F26: Access Namespace mail config. Menu back/edit step.
-            tools/Get-EXpressDownloads.ps1. CI merge-guard workflow.
-    1.1.2   NuGet auto-install, RunOnce path fix (dot-source module resolution), Exchange
-            source default path, module parse errors, PS 5.1 (if...) menu crashes.
-    1.1.3   Windows Updates: [A]=all removed; each Security/Critical update confirmed individually.
-    1.1.4   AutoApproveWindowsUpdates toggle (default off): Security/Critical no longer
-            auto-approved in Autopilot without explicit opt-in.
-    1.1.5   Docs: menu screenshots + Word doc mockup nav fix.
+    1.2.1   Bugfixes: parser error in DNS template rows (if-in-array, PS 5.1); ExistingOrg
+            probe re-run after Phase 3 (catch sets $false); Test-Feature explicit config
+            blocked by Condition (precedence inverted); Enable-IanaTimeZoneMappings
+            ignored explicit config; HTML report — certificates empty (local fallback),
+            EP duplicate row removed, HSTS N/A when no cert, PowerShell VDir URL missing;
+            URL Rewrite OK step now logged.
+    1.2     Debug-mode overhaul: streaming Debug log under .\Debug\ (superset of install
+            log), per-phase state+system snapshots, magenta startup banner + window-title
+            indicator, halt after Phase 4 in Copilot+Debug for VM snapshot. ConfigFile
+            runs are now fully unattended: implicit AutoApproveWindowsUpdates=$true,
+            CertificatePassword config key skips PFX prompt. ExistingOrg auto-detection
+            (ADSI + Initialize-Exchange) flips defaults to $false for 8 org-wide settings
+            (MaxMessageSize150MB, MessageExpiration7d, SafetyNet2d, HtmlNDR, ModernAuth,
+            OWASessionTimeout6h, DisableTelemetry, MapiHttp). Language switched from
+            $German to 2-letter ISO code (-Language 'DE'/'EN', future IT/FR/...).
+            AnonymousRelay=$true without subnets seeds RFC 5737 placeholders (matches
+            Copilot blank-answer). Menu input validation: org name, retention days, PFX
+            path, MDB name. Sprint 1: 101 empty catch blocks filled. Sprint 3:
+            73-DocHelpers.ps1 extraction (sections 4 + 9 of New-InstallationDocument).
+            CI: PSScriptAnalyzer + JUnit Pester artefact. IMAP4/POP3 namespace config.
+            PSWindowsUpdate air-gap (4-tier: installed/SourcesPath/TEMP/PSGallery);
+            Get-EXpressDownloads.ps1 pre-stages PSWindowsUpdate to %TEMP%\EXpress-sources.
+            Bugfixes: DriverDate cast, ByteQuantifiedSize null guard in Word doc,
+            Word-doc-failed log severity ERROR (was WARN), end-of-script non-fatal error
+            summary, deploy-example cleanup (org-wide warning, credentials moved to top,
+            duplicates removed).
+    1.1.8   Word doc + HTML report enhancements: hardware type, time zone, uptime, NIC
+            drivers, readable Exchange version, EP column in VDir table, VC++ table,
+            TLS cipher suites, HSTS, Download Domains; phantom cert filter at source;
+            Start-EXpress.cmd dynamic path; Processing log output demoted to Verbose.
     1.1.7   Bugfix: HTML report — phantom certs filtered (DateTime.MinValue), cert expiry
             uses TotalDays, Root CA display shows '(not set)' when absent, NetBIOS
             count null-safe; Register-ExecutedCommand for IANA timezone moved inside
@@ -136,8 +127,49 @@
             PowerShell VDir sets ExternalUrl only (InternalUrl stays http); NetBIOS report
             now checks registry for pending-reboot state; OWA EP integer normalization;
             certificate expiry used .Days (days-component) instead of TotalDays.
+    1.1.5   Docs: menu screenshots + Word doc mockup nav fix.
+    1.1.4   AutoApproveWindowsUpdates toggle (default off): Security/Critical no longer
+            auto-approved in Autopilot without explicit opt-in.
+    1.1.3   Windows Updates: [A]=all removed; each Security/Critical update confirmed individually.
+    1.1.2   NuGet auto-install, RunOnce path fix (dot-source module resolution), Exchange
+            source default path, module parse errors, PS 5.1 (if...) menu crashes.
+    1.1     src/ renamed to modules/. Install-target matrix: Ex2019 CU10-CU14 rejected; Ex2016
+            CU23 restricted to WS2016. F26: Access Namespace mail config. Menu back/edit step.
+            tools/Get-EXpressDownloads.ps1. CI merge-guard workflow.
+    1.0     EXpress rename + modularization: Install-Exchange15.ps1 renamed to EXpress.ps1;
+            split into 21 modules/*.ps1; dist/EXpress.ps1 merged build. Centralized downloads
+            to sources/. Install-target matrix tightened to latest CU per Exchange line.
+    0.8     Advanced Configuration menu + templates (v5.95, v5.96): ~55 toggles across 6
+            pages, Test-Feature condition gate, config-file parity. Installation-Document
+            Template support with {{token}} replacement.
+    0.7     Language reform + MEAC hybrid (v5.90-v5.94.1): default output English, -German
+            switch. Plain-text credentials in config file. Hybrid-aware MEAC + AD Split
+            Permissions. Word doc audit-readiness: 9 new sections (change mgmt, RBAC, ports,
+            compliance mapping, GDPR, backup, monitoring, acceptance tests).
+    0.6     Security hardening + MEAC (v5.86-v5.88.3): Defender realtime/Tamper Protection,
+            LLMNR/mDNS disable, Disable-UnnecessaryServices. MEAC Auth-Cert auto-renewal task.
+            Word doc enrichment: TLS semantics, IMAP/POP3, connector detail, DNS template,
+            Admin Audit Log, Anti-Spam, Crimson channels. Bugfixes: Phase 5-6 spurious reboot,
+            nested-array reshape, Auth Cert validity, $state/$State shadow, (if...) crashes.
+    0.5     Org-wide documentation + conditional reboots (v5.84, v5.85): all Exchange servers
+            documented via CIM/WSMan remote query. Phase 2-3 and 5-6 reboots skipped when
+            nothing pending. Test-RebootPending helper. VC++ 2013 URL updated.
+    0.4     Word Installation Document (v5.82, v5.83): pure-PowerShell OpenXML engine, 15
+            chapters. Three-tier logging (INFO/VERBOSE/DEBUG), unified file naming, dev tools.
+    0.3     Installation reports + post-config (v5.4-v5.6): HTML Installation Report, PDF
+            export. Anti-spam, log cleanup, reconnect session, relay improvements, reports
+            subfolder. Bugfix series (v0.3.1-v0.3.4): disable services, link fixes, edge
+            guards, SU reboot timing, FormatException in HTML report.
+    0.2     Hardening + connector framework (v5.2, v5.3): HSTS, EOMT, VDir URLs,
+            Wait-ADReplication, relay connectors, RBAC report. Add-BackgroundJob,
+            New-LDAPSearch, registry idempotency, BSTR zeroing.
+    0.1     Foundation (Rounds 1-7, v5.0, v5.1): WMI-to-CIM migration, Write-ToTranscript,
+            security baseline, $WS2025_PREFULL fix. Pre-flight HTML report, source-server
+            config export/import, HealthChecker, DAG, PFX cert. Interactive menu, Autopilot,
+            Windows Updates, Exchange SU, ConfigFile, Build.ps1.
 
-    Original Install-Exchange15.ps1 by Michel de Rooij (forked after v4.23):
+    ── Predecessor: Install-Exchange15.ps1 by Michel de Rooij (v1.0–v4.23) ─────
+    EXpress is built on Michel's work. His version history (oldest first):
 
     1.0     Initial community release
     1.01    Added logic to prepare AD when organization present
@@ -831,7 +863,6 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
     [parameter( Mandatory = $true, ParameterSetName = 'R')]
     [parameter( Mandatory = $true, ParameterSetName = 'T')]
-    [ValidateScript({ if ((Test-Path -Path $_ -PathType Container) -or (Get-DiskImage -ImagePath $_)) { $true } else { throw ('Specified source path or image {0} not found or inaccessible' -f $_) } })]
     [string]$SourcePath,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'E')]
@@ -1051,7 +1082,13 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'E')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
     [parameter( Mandatory = $false, ParameterSetName = 'W')]
-    [switch]$German,
+    [switch]$German,  # Deprecated, kept for backwards compat. Use -Language 'DE' instead.
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'E')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    [parameter( Mandatory = $false, ParameterSetName = 'W')]
+    [ValidatePattern('^[A-Za-z]{2}$')]
+    [string]$Language = 'EN',
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
     [parameter( Mandatory = $false, ParameterSetName = 'W')]
@@ -1085,8 +1122,9 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'NoSetup')]
     [parameter( Mandatory = $false, ParameterSetName = 'Recover')]
-    [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')]
-    [string]$MEACNotificationEmail,
+    [AllowEmptyString()]
+    [ValidatePattern('^$|^[^@\s]+@[^@\s]+\.[^@\s]+$')]
+    [string]$MEACNotificationEmail = '',
 
     # --- MEAC Split-Permissions prep (v5.93) — standalone mode, AD administrator
     # runs this on a non-Exchange box BEFORE Exchange is installed. Downloads MEAC,
