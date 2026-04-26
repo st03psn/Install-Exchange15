@@ -2,8 +2,8 @@
 
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, post-configuration, security hardening, and Word installation documentation.
 
-**Maintainer:** st03ps | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 1.1.5 (April 2026)
+**Maintainer:** st03psn | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
+**Version:** 1.2.1 (April 2026)
 **License:** As-Is, without warranty
 
 **Versioning scheme:** `MAJOR.MINOR` = feature release · `MAJOR.MINOR.PATCH` = bugfix / maintenance release. Example: `1.1` introduces features, `1.1.1` contains only bugfixes on top of `1.1`.
@@ -315,7 +315,7 @@ EXpress/
 │   ├── 72-ReportHtml.ps1         ← HTML installation report
 │   ├── 74-OpenXml.ps1            ← pure-PS OpenXML engine
 │   ├── 76-InstallDoc.ps1         ← Word installation document
-│   ├── 78-RBAC.ps1               ← RBAC report
+│   ├── 78-PostConfig.ps1         ← post-install config (RBAC report, OWA/org settings)
 │   ├── 85-WU-SU.ps1              ← Windows Update + Exchange SU
 │   ├── 88-RecipientMgmt.ps1
 │   ├── 90-Hardening.ps1          ← security hardening functions

@@ -50,10 +50,10 @@
             $existingUser = Get-User -Identity 'SystemMailbox{b963af59-3975-4f92-9d58-ad0b1fe3a1a3}' -ErrorAction SilentlyContinue
         }
         if ($existingTask -and $existingUser) {
-            Write-MyOutput 'Auth Certificate renewal already registered (scheduled task + automation account present) - skipping MEAC'
+            Write-MyStep -Label 'MEAC' -Value 'already registered (skipped)' -Status OK
             return
         }
-        Write-MyOutput 'Registering Auth Certificate renewal (MEAC / CSS-Exchange MonitorExchangeAuthCertificate.ps1)'
+        Write-MyStep -Label 'MEAC' -Value 'registering (CSS-Exchange MonitorExchangeAuthCertificate.ps1)' -Status Run
         $meacPath = Join-Path $State['SourcesPath'] 'MonitorExchangeAuthCertificate.ps1'
         $meacUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/MonitorExchangeAuthCertificate.ps1'
         if (-not (Test-Path $meacPath)) {
@@ -90,7 +90,7 @@
         $autoCred = if ($State['MEACAutomationUser']) { Get-MEACAutomationCredentialFromState } else { $MEACAutomationCredential }
         if ($autoCred) {
             $meacParams.AutomationAccountCredential = $autoCred
-            Write-MyOutput ('MEAC: using pre-created automation account {0} (AD Split-Permissions passthrough)' -f $autoCred.UserName)
+            Write-MyStep -Label 'MEAC account' -Value $autoCred.UserName
         }
         else {
             # Standard (non-Split) deployment: MEAC self-provisions the
@@ -132,7 +132,7 @@
         }
         if ($MEACNotificationEmail) {
             $meacParams.SendEmailNotificationTo = $MEACNotificationEmail
-            Write-MyOutput ('MEAC: renewal notifications will be sent to {0}' -f $MEACNotificationEmail)
+            Write-MyStep -Label 'MEAC alerts' -Value $MEACNotificationEmail
         }
 
         # Hybrid advisory — transparent to the operator.
@@ -169,7 +169,7 @@
         }
         $meacTask = Get-ScheduledTask -TaskName 'Daily Auth Certificate Check' -ErrorAction SilentlyContinue
         if ($meacTask) {
-            Write-MyOutput 'MEAC scheduled task registered — auth cert will auto-renew 60 days before expiry'
+            Write-MyStep -Label 'MEAC task' -Value 'registered (auto-renew 60d before expiry)' -Status OK
         }
         else {
             Write-MyWarning 'MEAC: task "Daily Auth Certificate Check" not found after registration — check MEAC log in Exchange Logging\AuthCertificateMonitoring\ for details'
@@ -190,7 +190,7 @@
                 Write-MyVerbose 'All Send Connectors already include this server'
                 return
             }
-            Write-MyOutput ('{0} Send Connector(s) do not include this server:' -f $sendConnectors.Count)
+            Write-MyStep -Label 'Send connectors' -Value ('{0} missing this server' -f $sendConnectors.Count) -Status Warn
             foreach ($sc in $sendConnectors) {
                 Write-MyOutput ('  - {0}' -f $sc.Name)
             }
@@ -210,7 +210,7 @@
                     $sources.Add($env:COMPUTERNAME) | Out-Null
                     Register-ExecutedCommand -Category 'SendConnector' -Command ("Set-SendConnector -Identity '$($sc.Identity)' -SourceTransportServers $($sources -join ',')")
                     Set-SendConnector -Identity $sc.Identity -SourceTransportServers $sources -ErrorAction Stop
-                    Write-MyOutput ('Added {0} to Send Connector: {1}' -f $env:COMPUTERNAME, $sc.Name)
+                    Write-MyStep -Label 'Send connector' -Value ('added {0}: {1}' -f $env:COMPUTERNAME, $sc.Name) -Status OK
                 }
             }
             else {
@@ -242,7 +242,7 @@
         $existingAgents = Get-TransportAgent -ErrorAction SilentlyContinue |
                           Where-Object { $_.Identity -like '*Filter*' -or $_.Identity -like '*Antispam*' }
         if (-not $existingAgents) {
-            Write-MyOutput 'Installing Exchange antispam agents'
+            Write-MyStep -Label 'Antispam agents' -Value 'installing' -Status Run
             # Capture everything that bypasses the pipeline (Write-Host / $host.UI.WriteWarningLine /
             # [Console]::WriteLine) by redirecting Console.Out + Console.Error to StringWriters.
             # Combined with *>&1 this catches both stream-based and host-UI-based output.
@@ -365,12 +365,12 @@
                 if ($wantEnabled) {
                     Register-ExecutedCommand -Category 'Antispam' -Command ("Enable-TransportAgent -Identity '$id'")
                     Enable-TransportAgent  -Identity $id -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue *>&1 | Out-Null
-                    Write-MyOutput ('Enabled: {0}' -f $id)
+                    Write-MyVerbose ('Enabled: {0}' -f $id)
                 }
                 else {
                     Register-ExecutedCommand -Category 'Antispam' -Command ("Disable-TransportAgent -Identity '$id'")
                     Disable-TransportAgent -Identity $id -Confirm:$false -WarningAction SilentlyContinue -ErrorAction SilentlyContinue *>&1 | Out-Null
-                    Write-MyOutput ('Disabled: {0}' -f $id)
+                    Write-MyVerbose ('Disabled: {0}' -f $id)
                 }
                 $configChanged = $true
             }
@@ -389,7 +389,7 @@
             if (-not $rfc.RecipientValidationEnabled) {
                 Register-ExecutedCommand -Category 'Antispam' -Command 'Set-RecipientFilterConfig -RecipientValidationEnabled $true'
                 Set-RecipientFilterConfig -RecipientValidationEnabled $true -Confirm:$false -ErrorAction Stop
-                Write-MyOutput 'Enabled recipient lookup (RecipientFilterConfig.RecipientValidationEnabled = True)'
+                Write-MyStep -Label 'Recipient lookup' -Value 'enabled' -Status OK
                 $configChanged = $true
             }
             else {
@@ -404,11 +404,11 @@
         # enable/disable changes. Nothing downstream looks at the agents before
         # this point, so a single bounce is sufficient.
         if ($installDidRun -or $configChanged) {
-            Write-MyOutput 'Restarting MSExchangeTransport (may take ~30s)'
+            Write-MyStep -Label 'MSExchangeTransport' -Value 'restarting (~30s)' -Status Run
             Restart-Service MSExchangeTransport -Force -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-            Write-MyOutput 'MSExchangeTransport restarted'
+            Write-MyStep -Label 'MSExchangeTransport' -Value 'restarted' -Status OK
         }
-        Write-MyOutput 'Antispam agents configured: only Recipient Filter Agent is enabled'
+        Write-MyStep -Label 'Antispam config' -Value 'Recipient Filter only' -Status OK
     }
 
     function New-AnonymousRelayConnector {
@@ -443,7 +443,7 @@
                 Write-MyWarning 'Internal relay connector: no subnets specified — using placeholder IP (192.0.2.1/32, RFC 5737).'
                 Write-MyWarning 'No real SMTP traffic will match this connector until you set RemoteIPRanges to your actual relay sources.'
             }
-            Write-MyOutput ('Configuring internal relay connector "{0}" — subnets: {1}' -f $intName, $subnetList)
+            Write-MyStep -Label 'Internal relay' -Value ('"{0}" — subnets: {1}' -f $intName, $subnetList) -Status Run
             try {
                 $existing = Get-ReceiveConnector -Identity "$server\$intName" -ErrorAction SilentlyContinue
                 if ($existing) {
@@ -458,7 +458,7 @@
                         -RemoteIPRanges $State['RelaySubnets'] -Bindings '0.0.0.0:25' `
                         -PermissionGroups AnonymousUsers -AuthMechanism Tls `
                         -ProtocolLoggingLevel Verbose -Banner '220 Mail Service' -ErrorAction Stop | Out-Null
-                    Write-MyOutput 'Internal relay connector created (TLS offered, accepted domains only, no external relay right, hardened banner)'
+                    Write-MyStep -Label 'Internal relay' -Value 'created (TLS, AcceptedDomains only)' -Status OK
                 }
             }
             catch {
@@ -512,7 +512,7 @@
                 Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Get-ReceiveConnector '$server\$extName' | Add-ADPermission -User '$anonLogon' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'")
                 $connObj | Add-ADPermission -User $anonLogon `
                     -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
-                Write-MyOutput ('External relay connector created with Ms-Exch-SMTP-Accept-Any-Recipient for {0}' -f $anonLogon)
+                Write-MyStep -Label 'External relay' -Value ('created ({0})' -f $anonLogon) -Status OK
             }
             catch {
                 Write-MyWarning ('Failed to configure external relay connector: {0}' -f $_.Exception.Message)
@@ -535,7 +535,7 @@
                     $pgList  = ($rc.PermissionGroups.ToString() -split ',\s*') | Where-Object { $_.Trim() -ne 'AnonymousUsers' }
                     Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Set-ReceiveConnector -Identity '$server\$defaultName' -PermissionGroups '$($pgList -join ',')'  # AnonymousUsers removed")
                     Set-ReceiveConnector -Identity "$server\$defaultName" -PermissionGroups ($pgList -join ',') -ErrorAction Stop
-                    Write-MyOutput ('Removed AnonymousUsers from "{0}" receive connector' -f $defaultName)
+                    Write-MyStep -Label 'AnonymousUsers' -Value ('removed from {0}' -f $defaultName) -Status OK
                 }
                 else {
                     Write-MyVerbose ('AnonymousUsers already absent from "{0}"' -f $defaultName)
@@ -582,7 +582,7 @@
             if ($part -match '\.') { $part } else { $State['Namespace'] }
         }
 
-        Write-MyOutput ('Configuring access namespace mail settings — mail domain: {0}' -f $ns)
+        Write-MyStep -Label 'Access Namespace' -Value ('configuring ({0})' -f $ns) -Status Run
 
         # ── 1. Accepted Domain ──────────────────────────────────────────────────
         try {
@@ -593,7 +593,7 @@
             else {
                 New-AcceptedDomain -Name $ns -DomainName $ns -DomainType Authoritative -ErrorAction Stop | Out-Null
                 Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("New-AcceptedDomain -Name '{0}' -DomainName '{0}' -DomainType Authoritative" -f $ns)
-                Write-MyOutput ('Accepted domain added: {0} (Authoritative)' -f $ns)
+                Write-MyStep -Label 'Accepted domain' -Value ('{0} (Authoritative)' -f $ns) -Status OK
             }
         }
         catch {
@@ -618,10 +618,10 @@
                         -EnabledEmailAddressTemplates @($nsTemplate) -ErrorAction Stop
                     Register-ExecutedCommand -Category 'ExchangePolicy' `
                         -Command ("Set-EmailAddressPolicy -Identity '{0}' -EnabledEmailAddressTemplates @('{1}')" -f $policyName, $nsTemplate)
-                    Write-MyOutput ("Email Address Policy '{0}' updated — primary SMTP: %m@{1}" -f $policyName, $ns)
+                    Write-MyStep -Label 'EAP updated' -Value ("{0} -> %m@{1}" -f $policyName, $ns) -Status OK
                     Update-EmailAddressPolicy -Identity $existing.Identity -ErrorAction Stop
                     Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policyName)
-                    Write-MyOutput 'Email Address Policy applied.'
+                    Write-MyVerbose 'Email Address Policy applied.'
                 }
             } else {
                 New-EmailAddressPolicy -Name $policyName -IncludedRecipients AllRecipients `
@@ -629,10 +629,10 @@
                     -ErrorAction Stop | Out-Null
                 Register-ExecutedCommand -Category 'ExchangePolicy' `
                     -Command ("New-EmailAddressPolicy -Name '{0}' -IncludedRecipients AllRecipients -EnabledEmailAddressTemplates @('{1}') -Priority 1" -f $policyName, $nsTemplate)
-                Write-MyOutput ("Email Address Policy '{0}' created — primary SMTP: %m@{1}" -f $policyName, $ns)
+                Write-MyStep -Label 'EAP created' -Value ("{0} -> %m@{1}" -f $policyName, $ns) -Status OK
                 Update-EmailAddressPolicy -Identity $policyName -ErrorAction Stop
                 Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Update-EmailAddressPolicy -Identity '{0}'" -f $policyName)
-                Write-MyOutput 'Email Address Policy applied.'
+                Write-MyVerbose 'Email Address Policy applied.'
             }
         }
         catch {

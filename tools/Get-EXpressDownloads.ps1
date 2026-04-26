@@ -34,7 +34,7 @@
     Downloads everything except .NET installers.
 #>
 param(
-    [string]$OutputPath = (Join-Path (Split-Path $PSScriptRoot) 'sources'),
+    [string]$OutputPath = (Join-Path $env:TEMP 'EXpress-sources'),
     [switch]$SkipDotNet
 )
 $ErrorActionPreference = 'Stop'
@@ -105,6 +105,22 @@ Get-Prerequisite `
     -Label    'UCMA 4.0 Runtime' `
     -Url      'https://download.microsoft.com/download/2/C/4/2C47A5C1-A1F3-4843-B9FE-84C0032C61EC/UcmaRuntimeSetup.exe' `
     -FileName 'UcmaRuntimeSetup.exe'
+
+# PSWindowsUpdate module — saved as a versioned module folder for air-gap installs.
+# EXpress looks for <SourcesPath>\PSWindowsUpdate and copies it into the module path.
+$pswuDest = Join-Path $OutputPath 'PSWindowsUpdate'
+if (Test-Path $pswuDest) {
+    Write-Host ("  [SKIP] PSWindowsUpdate module (already present)") -ForegroundColor DarkGray
+} else {
+    Write-Host ("  [DOWN] PSWindowsUpdate module (Save-Module) ...") -ForegroundColor Cyan
+    try {
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
+        Save-Module -Name PSWindowsUpdate -Path $OutputPath -Force -ErrorAction Stop
+        Write-Host ("         OK") -ForegroundColor Green
+    } catch {
+        Write-Host ("         FAILED: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    }
+}
 
 if (-not $SkipDotNet) {
     Write-Host "`n.NET Framework (large downloads)" -ForegroundColor Yellow

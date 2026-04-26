@@ -8,7 +8,7 @@
         $server = $env:COMPUTERNAME
         $errors = 0
         $changed = 0
-        Write-MyOutput ('Configuring Virtual Directory URLs for namespace: {0}' -f $ns)
+        Write-MyStep -Label 'VDir URLs' -Value ('configuring for {0}' -f $ns) -Status Run
 
         # Exchange VDir cmdlets call ShouldContinue("host can't be resolved") when the namespace
         # doesn't resolve in DNS — ShouldContinue cannot be suppressed by -Confirm:$false or
@@ -19,8 +19,8 @@
         $dlDomain       = $State['DownloadDomain']
         $nsResolves     = $false
         $dlResolves     = $false
-        try { [System.Net.Dns]::GetHostEntry($ns) | Out-Null; $nsResolves = $true } catch { }
-        if ($dlDomain) { try { [System.Net.Dns]::GetHostEntry($dlDomain) | Out-Null; $dlResolves = $true } catch { } }
+        try { [System.Net.Dns]::GetHostEntry($ns) | Out-Null; $nsResolves = $true } catch { } # intentional: exception = not resolvable; handled below
+        if ($dlDomain) { try { [System.Net.Dns]::GetHostEntry($dlDomain) | Out-Null; $dlResolves = $true } catch { } } # intentional: same
         if (-not $nsResolves) {
             Write-MyVerbose ('Namespace {0} not resolvable — adding temporary hosts entry to suppress VDir confirmation prompt' -f $ns)
             $hostsBackup = [System.IO.File]::ReadAllBytes($hostsFile)
@@ -214,6 +214,46 @@
         }
         catch { Write-MyWarning ('Autodiscover SCP: {0}' -f $_.Exception.Message); $errors++ }
 
+        # IMAP4 — ExternalConnectionSettings / InternalConnectionSettings
+        try {
+            $imapTarget = "$ns`:993:SSL"
+            $imap = Get-ImapSettings -Server $server -ErrorAction Stop
+            $extOk = [bool]($imap.ExternalConnectionSettings | Where-Object { [string]$_ -eq $imapTarget })
+            $intOk = [bool]($imap.InternalConnectionSettings | Where-Object { [string]$_ -eq $imapTarget })
+            if ($extOk -and $intOk) {
+                Write-MyVerbose 'IMAP4: connection settings already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-ImapSettings -Server '$server' -ExternalConnectionSettings @('$imapTarget') -InternalConnectionSettings @('$imapTarget')")
+                Set-ImapSettings -Server $server `
+                    -ExternalConnectionSettings @($imapTarget) `
+                    -InternalConnectionSettings @($imapTarget) `
+                    -ErrorAction Stop
+                Write-MyVerbose ('IMAP4 connection settings configured: {0}' -f $imapTarget)
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('IMAP4: {0}' -f $_.Exception.Message); $errors++ }
+
+        # POP3 — ExternalConnectionSettings / InternalConnectionSettings
+        try {
+            $popTarget = "$ns`:995:SSL"
+            $pop = Get-PopSettings -Server $server -ErrorAction Stop
+            $extOk = [bool]($pop.ExternalConnectionSettings | Where-Object { [string]$_ -eq $popTarget })
+            $intOk = [bool]($pop.InternalConnectionSettings | Where-Object { [string]$_ -eq $popTarget })
+            if ($extOk -and $intOk) {
+                Write-MyVerbose 'POP3: connection settings already set, skipping'
+            } else {
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-PopSettings -Server '$server' -ExternalConnectionSettings @('$popTarget') -InternalConnectionSettings @('$popTarget')")
+                Set-PopSettings -Server $server `
+                    -ExternalConnectionSettings @($popTarget) `
+                    -InternalConnectionSettings @($popTarget) `
+                    -ErrorAction Stop
+                Write-MyVerbose ('POP3 connection settings configured: {0}' -f $popTarget)
+                $changed++
+            }
+        }
+        catch { Write-MyWarning ('POP3: {0}' -f $_.Exception.Message); $errors++ }
+
         # Restore hosts file to exact pre-modification state using the binary backup.
         if ($hostsBackup) {
             try {
@@ -225,9 +265,9 @@
 
         if ($errors -eq 0) {
             if ($changed -gt 0) {
-                Write-MyOutput ('Virtual Directory URLs configured for https://{0} (OWA logon: UPN)' -f $ns)
+                Write-MyStep -Label 'VDir URLs' -Value ('https://{0} (OWA: UPN)' -f $ns) -Status OK
             } else {
-                Write-MyOutput ('Virtual Directory URLs already correct for https://{0} — no changes made' -f $ns)
+                Write-MyStep -Label 'VDir URLs' -Value ('https://{0} (already correct)' -f $ns) -Status OK
             }
         }
         else {
@@ -240,7 +280,7 @@
             return
         }
 
-        Write-MyOutput ('Joining Database Availability Group: {0}' -f $State['DAGName'])
+        Write-MyStep -Label 'DAG join' -Value $State['DAGName'] -Status Run
 
         # Ensure Exchange module is loaded
         Import-ExchangeModule
@@ -252,13 +292,13 @@
                 exit $ERR_DAGJOIN
             }
             if ($dag.Servers -contains $env:COMPUTERNAME) {
-                Write-MyOutput ('Server {0} is already a member of DAG {1}' -f $env:COMPUTERNAME, $State['DAGName'])
+                Write-MyStep -Label 'DAG' -Value ('{0} (already member)' -f $State['DAGName']) -Status OK
                 return
             }
 
             Register-ExecutedCommand -Category 'DAG' -Command ("Add-DatabaseAvailabilityGroupServer -Identity '$($State['DAGName'])' -MailboxServer '$env:COMPUTERNAME'")
             Add-DatabaseAvailabilityGroupServer -Identity $State['DAGName'] -MailboxServer $env:COMPUTERNAME -ErrorAction Stop
-            Write-MyOutput ('Successfully joined DAG {0}' -f $State['DAGName'])
+            Write-MyStep -Label 'DAG join' -Value ('{0} (joined)' -f $State['DAGName']) -Status OK
         }
         catch {
             Write-MyError ('Failed to join DAG {0}: {1}' -f $State['DAGName'], $_.Exception.Message)
@@ -272,7 +312,7 @@
             return
         }
 
-        Write-MyOutput 'Running CSS-Exchange HealthChecker'
+        Write-MyStep -Label 'HealthChecker' -Value 'running' -Status Run
         $hcPath = Join-Path $State['SourcesPath'] 'HealthChecker.ps1'
         $hcUrl = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/HealthChecker.ps1'
 
@@ -330,14 +370,14 @@
                     try {
                         Rename-Item -Path $hcReport.FullName -NewName $newHcName -ErrorAction Stop
                         $State['HCReportPath'] = $newHcPath
-                        Write-MyOutput ('HealthChecker report saved to {0}' -f $newHcPath)
+                        Write-MyStep -Label 'HC report' -Value $newHcPath -Status OK
                     }
                     catch {
                         $State['HCReportPath'] = $hcReport.FullName
-                        Write-MyOutput ('HealthChecker report saved to {0}' -f $hcReport.FullName)
+                        Write-MyStep -Label 'HC report' -Value $hcReport.FullName -Status OK
                     }
                 } else {
-                    Write-MyOutput ('HealthChecker completed — report in {0}' -f $State['ReportsPath'])
+                    Write-MyStep -Label 'HealthChecker' -Value ('completed (reports in {0})' -f $State['ReportsPath']) -Status OK
                 }
                 # On Domain Controllers there are no local security groups — the SAM database is
                 # replaced by AD. HC's "Exchange Server Membership" check enumerates Win32_GroupUser
@@ -362,7 +402,7 @@
             return
         }
 
-        Write-MyOutput 'Running CSS-Exchange SetupAssist to diagnose setup failure'
+        Write-MyStep -Label 'SetupAssist' -Value 'running (diagnosing setup failure)' -Status Run
         $saPath = Join-Path $State['SourcesPath'] 'SetupAssist.ps1'
         $saUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/SetupAssist.ps1'
 
@@ -442,7 +482,7 @@
 
         if (Test-Path $slrPath) {
             try {
-                Write-MyOutput 'Running CSS-Exchange SetupLogReviewer to analyze setup logs'
+                Write-MyStep -Label 'SetupLogReviewer' -Value 'running (analyzing setup logs)' -Status Run
                 & $slrPath
             }
             catch {
@@ -476,7 +516,7 @@
                 Write-MyWarning ('Exchange Auth Certificate expires in {0} days on {1} (thumbprint {2}). Renew soon: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f $daysLeft, $cert.NotAfter.ToString('yyyy-MM-dd'), $thumbprint)
             }
             else {
-                Write-MyOutput ('Exchange Auth Certificate valid for {0} days (expires {1}, thumbprint {2})' -f $daysLeft, $cert.NotAfter.ToString('yyyy-MM-dd'), $thumbprint)
+                Write-MyStep -Label 'Auth Cert' -Value ('valid {0}d (expires {1})' -f $daysLeft, $cert.NotAfter.ToString('yyyy-MM-dd'))
             }
         }
         catch {
@@ -487,7 +527,7 @@
     function Test-DAGReplicationHealth {
         # F8: Validates mailbox database copy replication after DAG join.
         if (-not $State['DAGName']) { Write-MyVerbose 'No DAG configured, skipping replication health check'; return }
-        Write-MyOutput ('Checking DAG database copy replication health on {0}' -f $env:computername)
+        Write-MyVerbose ('Checking DAG database copy replication health on {0}' -f $env:computername)
         try {
             $copies = @(Get-MailboxDatabaseCopyStatus -Server $env:computername -ErrorAction Stop)
             if ($copies.Count -eq 0) { Write-MyVerbose 'No mailbox database copies found on this server'; return }
@@ -498,7 +538,7 @@
                 if ($ok) { Write-MyVerbose $msg } else { Write-MyWarning $msg; $warns++ }
             }
             if ($warns -eq 0) {
-                Write-MyOutput ('DAG replication health: {0} copy/copies OK' -f $copies.Count)
+                Write-MyStep -Label 'DAG replication' -Value ('{0} copy/copies OK' -f $copies.Count) -Status OK
             }
             else {
                 Write-MyWarning ('{0} database copy/copies not healthy — review replication status' -f $warns)
@@ -511,7 +551,7 @@
 
     function Test-VSSWriters {
         # F9: Checks all VSS writers are in a stable state. Unstable writers can break Exchange online backup.
-        Write-MyOutput 'Checking VSS writer health'
+        Write-MyVerbose 'Checking VSS writer health'
         try {
             $output = & vssadmin.exe list writers 2>&1
             $currentWriter = ''
@@ -540,7 +580,7 @@
         $svc = Get-Service MSExchangeMitigation -ErrorAction SilentlyContinue
         if (-not $svc) { Write-MyVerbose 'EEMS service not present (Exchange 2016 or 2019 pre-CU11)'; return }
         $statusLabel = if ($svc.Status -eq 'Running') { 'Running (OK)' } else { $svc.Status.ToString() }
-        Write-MyOutput ('Exchange Emergency Mitigation Service (EEMS): {0}' -f $statusLabel)
+        Write-MyStep -Label 'EEMS (Emergency Mitigation)' -Value $statusLabel
         if ($svc.Status -ne 'Running') {
             Write-MyWarning 'EEMS is not running — automatic CVE mitigations will not be applied'
         }
@@ -567,7 +607,7 @@
     function Get-ModernAuthReport {
         # F11: Verifies Modern Authentication (OAuth2) is enabled. Required for Outlook 2016+,
         # Microsoft Teams, mobile clients, and any Hybrid / Azure AD configuration.
-        Write-MyOutput 'Checking Modern Authentication (OAuth2) configuration'
+        Write-MyVerbose 'Checking Modern Authentication (OAuth2) configuration'
         try {
             $orgCfg = Get-OrganizationConfig -ErrorAction Stop
             if ($orgCfg.OAuth2ClientProfileEnabled) {
@@ -580,127 +620,5 @@
         catch {
             Write-MyVerbose ('Modern Auth report: {0}' -f $_.Exception.Message)
         }
-    }
-
-    function Get-RemoteServerData {
-        <#
-        .SYNOPSIS
-            Collects hardware/OS/pagefile/volume/NIC data from a remote Exchange server via CIM/WSMan.
-        .DESCRIPTION
-            Uses CIM over WSMan (WinRM TCP 5985/5986, Kerberos). NOT WMI/DCOM.
-            Returns a uniform hashtable; on failure sets Reachable = $false with Error text.
-            Timeout 30 s; always disposes CimSession in finally.
-            Pre-requisites on target: see tools\Enable-EXpressRemoteQuery.ps1 or docs\remote-query-setup.md.
-        #>
-        [CmdletBinding()]
-        param(
-            [Parameter(Mandatory)][string]$ComputerName,
-            [int]$TimeoutSec = 30
-        )
-
-        $result = @{
-            ComputerName = $ComputerName
-            Reachable    = $false
-            Error        = $null
-            OS           = $null
-            CPU          = $null
-            ComputerSys  = $null
-            PageFile     = $null
-            Volumes      = @()
-            NICs         = @()
-        }
-
-        $session = $null
-        try {
-            $opt = New-CimSessionOption -Protocol WSMan
-            $session = New-CimSession -ComputerName $ComputerName -SessionOption $opt `
-                                      -OperationTimeoutSec $TimeoutSec -ErrorAction Stop
-
-            $result.OS          = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem          -ErrorAction Stop
-            $result.CPU         = Get-CimInstance -CimSession $session -ClassName Win32_Processor                -ErrorAction Stop
-            $result.ComputerSys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem           -ErrorAction Stop
-            $result.PageFile    = Get-CimInstance -CimSession $session -ClassName Win32_PageFileSetting          -ErrorAction SilentlyContinue
-            $result.Volumes     = @(Get-CimInstance -CimSession $session -ClassName Win32_Volume -Filter 'DriveType=3' -ErrorAction SilentlyContinue)
-            $result.NICs        = @(Get-CimInstance -CimSession $session -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' -ErrorAction SilentlyContinue)
-            $result.Reachable   = $true
-        }
-        catch {
-            $result.Error = $_.Exception.Message
-            Write-MyVerbose ('Get-RemoteServerData {0}: {1}' -f $ComputerName, $_.Exception.Message)
-        }
-        finally {
-            if ($session) { Remove-CimSession -CimSession $session -ErrorAction SilentlyContinue }
-        }
-
-        return $result
-    }
-
-    function Invoke-RemoteQueryWithPrompt {
-        <#
-        .SYNOPSIS
-            Wraps Get-RemoteServerData with interactive retry/skip prompt on failure.
-        .DESCRIPTION
-            Copilot (interactive) mode: on failure, shows hint pointing to Enable-EXpressRemoteQuery.ps1
-            and offers [R]etry / [S]kip with a 10-minute auto-skip timeout (Write-Progress -Id 2).
-            Autopilot mode or non-interactive session: silent skip.
-        #>
-        [CmdletBinding()]
-        param(
-            [Parameter(Mandatory)][string]$ComputerName,
-            [int]$TimeoutSec = 600
-        )
-
-        $data = Get-RemoteServerData -ComputerName $ComputerName
-        if ($data.Reachable) { return $data }
-
-        $nonInteractive = $State['Autopilot'] -or -not [Environment]::UserInteractive
-        if ($nonInteractive) {
-            Write-MyVerbose ('Remote query skipped (non-interactive) for {0}: {1}' -f $ComputerName, $data.Error)
-            return $data
-        }
-
-        while (-not $data.Reachable) {
-            Write-Host ''
-            Write-MyWarning ('Remote query failed for {0}' -f $ComputerName)
-            Write-Host ('    Error : {0}' -f $data.Error) -ForegroundColor Yellow
-            Write-Host  '    Fix   : Run tools\Enable-EXpressRemoteQuery.ps1 on the target server,' -ForegroundColor Yellow
-            Write-Host  '            or apply GPO per docs\remote-query-setup.md' -ForegroundColor Yellow
-            Write-Host ''
-            Write-Host '    [R] Retry    [S] Skip    (auto-skip in 10:00)' -ForegroundColor Cyan
-
-            $choice = $null
-            try { $host.UI.RawUI.FlushInputBuffer() } catch { }
-            $deadline = [DateTime]::Now.AddSeconds($TimeoutSec)
-            while ([DateTime]::Now -lt $deadline -and -not $choice) {
-                $secsLeft = [int]($deadline - [DateTime]::Now).TotalSeconds
-                $mm = [int]($secsLeft / 60); $ss = $secsLeft % 60
-                Write-Progress -Id 2 -Activity ('Remote query: {0}' -f $ComputerName) `
-                    -Status ('Auto-skip in {0:D2}:{1:D2}  |  [R] Retry  |  [S] Skip' -f $mm, $ss) `
-                    -PercentComplete (($TimeoutSec - $secsLeft) * 100 / $TimeoutSec)
-                if ($host.UI.RawUI.KeyAvailable) {
-                    $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
-                    switch ($key.Character.ToString().ToUpper()) {
-                        'R' { $choice = 'Retry' }
-                        'S' { $choice = 'Skip'  }
-                    }
-                }
-                Start-Sleep -Milliseconds 100
-            }
-            Write-Progress -Id 2 -Activity ('Remote query: {0}' -f $ComputerName) -Completed
-
-            if (-not $choice) {
-                Write-MyOutput ('Auto-skip: {0}' -f $ComputerName)
-                return $data
-            }
-            if ($choice -eq 'Skip') {
-                Write-MyOutput ('Skipped remote query for {0}' -f $ComputerName)
-                return $data
-            }
-
-            Write-MyOutput ('Retrying remote query for {0}...' -f $ComputerName)
-            $data = Get-RemoteServerData -ComputerName $ComputerName
-        }
-
-        return $data
     }
 

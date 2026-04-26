@@ -12,29 +12,69 @@
             return
         }
 
-        # Interactive prompts whenever a real console is available.
-        # Autopilot does NOT suppress the prompt — if someone is at the keyboard they can still
-        # review each update. In a truly headless run [Environment]::UserInteractive is $false.
-        $isInteractive = [Environment]::UserInteractive
+        # Detect "automated" mode for prompt suppression. Autopilot is the right signal
+        # because the script always runs in a user session (UserInteractive is true even
+        # in Autopilot), so [Environment]::UserInteractive alone misses Autopilot runs.
+        # Headless invocations (no console at all) are caught by the UserInteractive=false
+        # branch as a belt-and-suspenders backup.
+        $isAutomated   = [bool]$State['Autopilot'] -or -not [Environment]::UserInteractive
+        $isInteractive = -not $isAutomated
 
-        Write-MyOutput 'Checking for pending Windows Updates (Security + Critical)'
+        Write-MyVerbose 'Checking for pending Windows Updates (Security + Critical)'
 
         # --- Detect PSWindowsUpdate module ---
+        # Priority: 1) already installed  2) pre-staged in SourcesPath (air-gap)
+        #           3) PSGallery (internet)  4) WUA COM API fallback
+        # Air-gap pre-staging: Save-Module -Name PSWindowsUpdate -Path <SourcesPath>
+        # This creates <SourcesPath>\PSWindowsUpdate\<version>\*.psd1 which is copied
+        # into the CurrentUser module path so background jobs can also import it by name.
         $useModule = $false
         if (Get-Module -ListAvailable -Name PSWindowsUpdate -ErrorAction SilentlyContinue) {
             $useModule = $true
+            Write-MyVerbose 'PSWindowsUpdate module already available'
         }
-        else {
-            Write-MyVerbose 'PSWindowsUpdate module not found, attempting to install from PSGallery'
+
+        if (-not $useModule) {
+            # Look for pre-staged module in SourcesPath first, then %TEMP%\EXpress-sources
+            # (the default output path of Get-EXpressDownloads.ps1).
+            $pswuStaged = $null
+            foreach ($searchBase in @($State['SourcesPath'], (Join-Path $env:TEMP 'EXpress-sources'))) {
+                if ($searchBase) {
+                    $candidate = Join-Path $searchBase 'PSWindowsUpdate'
+                    if (Test-Path $candidate) { $pswuStaged = $candidate; break }
+                }
+            }
+            if ($pswuStaged) {
+                Write-MyVerbose ('PSWindowsUpdate found pre-staged — installing to user module path: {0}' -f $pswuStaged)
+                try {
+                    # Find first user-scope entry in PSModulePath (locale-independent)
+                    $userModBase = $env:PSModulePath -split ';' |
+                        Where-Object { $_ -like "$env:USERPROFILE*" } |
+                        Select-Object -First 1
+                    if (-not $userModBase) {
+                        $userModBase = Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'
+                    }
+                    $null = New-Item -Path $userModBase -ItemType Directory -Force -ErrorAction SilentlyContinue
+                    Copy-Item -Path $pswuStaged -Destination $userModBase -Recurse -Force -ErrorAction Stop
+                    if (Get-Module -ListAvailable -Name PSWindowsUpdate -ErrorAction SilentlyContinue) {
+                        $useModule = $true
+                        Write-MyStep -Label 'PSWindowsUpdate' -Value 'installed from pre-staged sources' -Status OK
+                    }
+                } catch {
+                    Write-MyVerbose ('Could not install PSWindowsUpdate from pre-staged path: {0}' -f $_)
+                }
+            }
+        }
+
+        if (-not $useModule) {
+            Write-MyVerbose 'PSWindowsUpdate not available — attempting PSGallery install'
             try {
                 # Ensure NuGet provider present unattended — without this Install-Module
                 # prompts interactively even in non-interactive/Autopilot sessions.
-                # Install-PackageProvider may fail to reach the provider index URI but
-                # Install-Module -ForceBootstrap handles NuGet bootstrap itself without prompting.
                 Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
                 Install-Module -Name PSWindowsUpdate -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
                 $useModule = $true
-                Write-MyOutput 'PSWindowsUpdate module installed'
+                Write-MyVerbose 'PSWindowsUpdate module installed from PSGallery'
             }
             catch {
                 Write-MyWarning ('Could not install PSWindowsUpdate: {0}. Falling back to WUA COM API' -f $_.Exception.Message)
@@ -73,11 +113,11 @@
         }
 
         if ($candidates.Count -eq 0) {
-            Write-MyOutput 'No pending Windows security/critical updates found'
+            Write-MyStep -Label 'Windows Updates' -Value 'none pending' -Status OK
             return
         }
 
-        Write-MyOutput ('{0} update(s) found' -f $candidates.Count)
+        Write-MyStep -Label 'Windows Updates' -Value ('{0} pending' -f $candidates.Count)
 
         # --- Phase 2: Per-update prompt ---
         # Autopilot auto-approves only when AutoApproveWindowsUpdates is explicitly set in
@@ -96,7 +136,7 @@
             $label = '[{0}/{1}] {2} — {3}' -f ($idx + 1), $candidates.Count, $u.Title, $(if ($u.Severity) { $u.Severity } else { 'Unknown' })
 
             if ($autoApproveAll) {
-                Write-MyOutput ('Auto-approved: {0}' -f $label)
+                Write-MyStep -Label ('Update [{0}/{1}]' -f ($idx + 1), $candidates.Count) -Value ('{0} (auto-approved)' -f $u.Title) -Status OK
                 if ($u.KB) { $approvedKBs += $u.KB }
                 continue
             }
@@ -110,7 +150,7 @@
             if ($host.UI.RawUI -and $host.UI.RawUI.KeyAvailable -ne $null) {
                 # Flush any buffered keystrokes (e.g. from credential prompts or prior Read-Host
                 # calls) so a stale keystroke doesn't immediately resolve the prompt as 'N'.
-                try { $host.UI.RawUI.FlushInputBuffer() } catch { }
+                try { $host.UI.RawUI.FlushInputBuffer() } catch { } # intentional: RawUI unavailable in PS2Exe/redirected hosts
                 $sw = [System.Diagnostics.Stopwatch]::StartNew()
                 Write-Host ('  Install? [Y/N/S=skip remaining] (auto-No in {0}s) ' -f $WU_PROMPT_TIMEOUT_SEC) -NoNewline -ForegroundColor DarkCyan
                 while ($sw.Elapsed.TotalSeconds -lt $WU_PROMPT_TIMEOUT_SEC) {
@@ -137,19 +177,19 @@
                 if ($ans -eq '') { $ans = 'Y' }
             }
             switch ($ans) {
-                'S' { Write-MyOutput 'Skipping all remaining updates'; $idx = $candidates.Count; continue }
-                'N' { Write-MyOutput ('Skipping: {0}' -f $u.Title) }
-                default { if ($u.KB) { $approvedKBs += $u.KB }; Write-MyOutput ('Approved: {0}' -f $u.Title) }
+                'S' { Write-MyStep -Label 'Updates' -Value 'remaining skipped (S)' -Status Warn; $idx = $candidates.Count; continue }
+                'N' { Write-MyStep -Label ('Update [{0}/{1}]' -f ($idx + 1), $candidates.Count) -Value ('skipped: {0}' -f $u.Title) -Status Info }
+                default { if ($u.KB) { $approvedKBs += $u.KB }; Write-MyStep -Label ('Update [{0}/{1}]' -f ($idx + 1), $candidates.Count) -Value ('approved: {0}' -f $u.Title) -Status OK }
             }
         }
 
         if ($approvedKBs.Count -eq 0) {
-            Write-MyOutput 'No updates approved for installation — skipping Windows Update step'
+            Write-MyStep -Label 'Windows Updates' -Value 'none approved (skipping install)' -Status Info
             return
         }
 
         # --- Phase 3: Download + Install in background job with timeout ---
-        Write-MyOutput ('Installing {0} approved update(s) (timeout: {1}s) ...' -f $approvedKBs.Count, $WU_DOWNLOAD_TIMEOUT_SEC)
+        Write-MyStep -Label 'Windows Updates' -Value ('installing {0} approved (timeout {1}s)' -f $approvedKBs.Count, $WU_DOWNLOAD_TIMEOUT_SEC) -Status Run
 
         if ($useModule) {
             $wuJob = Start-Job -ScriptBlock {
@@ -234,19 +274,19 @@
         if ($useModule) {
             $installed    = @($jobOut | Where-Object { $_.Result -eq 'Installed' -and $_.KB -and ($approvedKBs -contains $_.KB) }).Count
             $rebootNeeded = ($jobOut | Where-Object { $_.RebootRequired }) -as [bool]
-            Write-MyOutput ('{0} update(s) installed' -f $installed)
+            Write-MyStep -Label 'Windows Updates' -Value ('{0} installed' -f $installed) -Status OK
         }
         else {
             $rebootNeeded = $jobOut.RebootRequired
-            Write-MyOutput ('{0} update(s) installed, WUA result code: {1}' -f $jobOut.Installed, $jobOut.ResultCode)
+            Write-MyStep -Label 'Windows Updates' -Value ('{0} installed (WUA rc {1})' -f $jobOut.Installed, $jobOut.ResultCode) -Status OK
         }
 
         if ($rebootNeeded) {
-            Write-MyWarning 'Windows Updates require a reboot'
+            Write-MyStep -Label 'Reboot' -Value 'required by Windows Updates' -Status Warn
             $State['RebootRequired'] = $true
         }
         else {
-            Write-MyOutput 'Windows Updates installed, no reboot required'
+            Write-MyStep -Label 'Reboot' -Value 'not required'
         }
     }
 
@@ -313,7 +353,7 @@
             $svcPath = (Get-CimInstance -Query 'SELECT * FROM win32_service WHERE name="MSExchangeServiceHost"' -ErrorAction Stop).PathName
             if ($svcPath) { return Get-DetectedFileVersion $svcPath.Trim('"') }
         }
-        catch { }
+        catch { Write-MyVerbose ('Get-InstalledExchangeBuild: CIM query failed: {0}' -f $_) }
         return $null
     }
 
@@ -382,21 +422,21 @@
         }
 
         if (-not $su) {
-            Write-MyOutput 'No known Exchange Security Update applicable for this build'
+            Write-MyStep -Label 'Exchange SU' -Value 'none applicable for this build' -Status Info
         }
         else {
             $targetVer    = try { [System.Version]$su.TargetVersion } catch { $null }
             $installedVer = if ($installedBuild) { try { [System.Version]$installedBuild } catch { $null } } else { $null }
 
             if ($installedVer -and $targetVer -and $installedVer -ge $targetVer) {
-                Write-MyOutput ('Exchange build {0} already at or above SU target {1} ({2}), skipping install' -f $installedBuild, $su.TargetVersion, $su.KB)
+                Write-MyStep -Label 'Exchange SU' -Value ('build {0} already at/above target {1} (skipped)' -f $installedBuild, $su.KB) -Status OK
             }
             else {
-                Write-MyOutput ('Exchange Security Update {0} available for build {1} -> {2}' -f $su.KB, $State['SetupVersion'], $su.TargetVersion)
+                Write-MyStep -Label 'Exchange SU' -Value ('{0} available ({1} -> {2})' -f $su.KB, $State['SetupVersion'], $su.TargetVersion) -Status Info
                 $suPath = Join-Path $State['SourcesPath'] $su.FileName
                 if (-not (Test-Path $suPath)) {
                     if ($su.URL) {
-                        Write-MyOutput ('Downloading {0}' -f $su.KB)
+                        Write-MyStep -Label 'Exchange SU' -Value ('downloading {0}' -f $su.KB) -Status Run
                         $null = Get-MyPackage -Package $su.KB -URL $su.URL -FileName $su.FileName -InstallPath $State['SourcesPath']
                     }
                     if (-not (Test-Path $suPath)) {
@@ -411,7 +451,7 @@
                             $suTotalSecs = 300
                             $suDeadline  = [DateTime]::Now.AddSeconds($suTotalSecs)
                             try {
-                                try { $host.UI.RawUI.FlushInputBuffer() } catch { }
+                                try { $host.UI.RawUI.FlushInputBuffer() } catch { } # intentional: RawUI unavailable in PS2Exe/redirected hosts
                                 while ([DateTime]::Now -lt $suDeadline) {
                                     $secsLeft = [int]($suDeadline - [DateTime]::Now).TotalSeconds
                                     Write-Progress -Id 2 -Activity ('Exchange SU {0}' -f $su.KB) `
@@ -426,12 +466,12 @@
                                 }
                                 Write-Progress -Id 2 -Activity ('Exchange SU {0}' -f $su.KB) -Completed
                             }
-                            catch { }
+                            catch { Write-MyVerbose ('SU placement countdown interrupted: {0}' -f $_) }
                         }
                     }
                 }
                 if (Test-Path $suPath) {
-                    Write-MyOutput ('Installing Exchange SU {0}' -f $su.KB)
+                    Write-MyStep -Label 'Exchange SU' -Value ('installing {0}' -f $su.KB) -Status Run
                     # B15: In Autopilot mode, pre-set RunOnce + save state before launching the
                     # installer. Exchange SU installers (.exe) may call ExitWindowsEx internally
                     # and reboot the machine before this script's phase-end logic runs, leaving
@@ -447,7 +487,7 @@
                     # Exit code 3010 = success + reboot required; handled below.
                     $rc = Invoke-Process -FilePath $State['SourcesPath'] -FileName $su.FileName -ArgumentList '/passive'
                     if ($rc -eq 0 -or $rc -eq 3010) {
-                        Write-MyOutput ('Exchange SU {0} installed successfully' -f $su.KB)
+                        Write-MyStep -Label 'Exchange SU' -Value ('{0} installed successfully' -f $su.KB) -Status OK
                         # Persist a per-KB installed flag immediately so phase-5 re-entry after
                         # the reboot skips the SU (build version check alone is unreliable when
                         # the service binary cache has not yet been flushed after the SU reboot).
@@ -487,7 +527,7 @@
                     Write-MyWarning ('Exchange build {0} is behind latest known SU {1} (per HealthChecker). Newer SU may require ESU enrollment — see https://learn.microsoft.com/en-us/exchange/new-features/build-numbers-and-release-dates for the latest update.' -f $currentBuild, $hcLatest)
                 }
                 else {
-                    Write-MyOutput ('Exchange build {0} is current per HealthChecker (latest known: {1})' -f $currentBuild, $hcLatest)
+                    Write-MyStep -Label 'Exchange build' -Value ('{0} (current per HealthChecker, latest {1})' -f $currentBuild, $hcLatest) -Status OK
                 }
             }
         }

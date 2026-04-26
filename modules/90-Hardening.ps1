@@ -1,48 +1,12 @@
 ﻿    function Cleanup {
-        Write-MyOutput "Cleaning up .."
+        Write-MyVerbose 'Cleaning up ..'
 
         if ( (Get-WindowsFeature -Name 'Bits').Installed) {
-            Write-MyOutput "Removing BITS feature"
+            Write-MyStep -Label 'BITS feature' -Value 'removing' -Status Run
             Remove-WindowsFeature Bits
         }
         Write-MyVerbose "Removing state file $Statefile"
         Remove-Item $Statefile
-    }
-
-    function Write-PhaseProgress {
-        # Lightweight wrapper: Write-Progress for phase-level and step-level feedback.
-        # Id 0 = overall install progress (Phase X of 6)
-        # Id 1 = current-phase step progress (used in Phase 5 only)
-        # PS2Exe does not render Write-Progress visually — fall back to Write-MyOutput for
-        # meaningful milestones so progress is still visible in the console window.
-        param(
-            [int]$Id = 0,
-            [string]$Activity,
-            [string]$Status,
-            [int]$PercentComplete = -1,
-            [switch]$Completed
-        )
-        if ($Completed) {
-            Write-Progress -Id $Id -Activity $Activity -Completed
-        }
-        elseif ($PercentComplete -ge 0) {
-            Write-Progress -Id $Id -Activity $Activity -Status $Status -PercentComplete $PercentComplete
-        }
-        else {
-            Write-Progress -Id $Id -Activity $Activity -Status $Status
-        }
-
-        # PS2Exe fallback: emit status as plain output so progress is not lost
-        if ($IsPS2Exe -and -not $Completed -and $Status) {
-            if ($Id -eq 0) {
-                # Phase-level: only log when status changes (major transitions)
-                Write-MyOutput ('[{0}] {1}' -f $Activity, $Status)
-            }
-            elseif ($Id -eq 1) {
-                # Step-level (Phase 5): log every step
-                Write-MyOutput ('  -> {0}' -f $Status)
-            }
-        }
     }
 
     function LockScreen {
@@ -76,7 +40,7 @@
                 Write-MyWarning "powercfg /setactive exited with code $($p.ExitCode)"
             }
             $CurrentPlan = Get-CimInstance -Namespace root/cimv2/power -ClassName Win32_PowerPlan | Where-Object { $_.IsActive }
-            Write-MyOutput "Power Plan active: $($CurrentPlan.ElementName)"
+            Write-MyStep -Label 'Power Plan' -Value $CurrentPlan.ElementName
         }
     }
 
@@ -95,7 +59,7 @@
                     Write-MyError "Problem disabling power management on $($NIC.Name) ($PNPDeviceID)"
                 }
                 else {
-                    Write-MyOutput "Disabled power management on $($NIC.Name) ($PNPDeviceID)"
+                    Write-MyVerbose ("Disabled power management on $($NIC.Name) ($PNPDeviceID)")
                 }
             }
             else {
@@ -131,7 +95,7 @@
                 Write-MyError "Problem reconfiguring pagefile: $($_.Exception.Message)"
             }
             $CPF = Get-CimInstance -ClassName Win32_PageFileSetting
-            Write-MyOutput "Pagefile set to manual, initial/maximum size: $($CPF.InitialSize)MB / $($CPF.MaximumSize)MB"
+            Write-MyStep -Label 'Pagefile' -Value ('{0}MB / {1}MB (manual)' -f $CPF.InitialSize, $CPF.MaximumSize) -Status OK
         }
         else {
             Write-MyVerbose 'Manually configured page file, skipping configuration'
@@ -144,7 +108,7 @@
             Write-MyVerbose 'RPC Timeout already set to 120 seconds'
         }
         else {
-            Write-MyOutput 'Setting RPC Timeout to 120 seconds'
+            Write-MyStep -Label 'RPC Timeout' -Value '120s' -Status OK
             Set-RegistryValue -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\RPC' -Name 'MinimumConnectionTimeout' -Value 120
         }
         $currentKA = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -ErrorAction SilentlyContinue).KeepAliveTime
@@ -152,13 +116,13 @@
             Write-MyVerbose 'Keep-Alive Timeout already set to 15 minutes'
         }
         else {
-            Write-MyOutput 'Setting Keep-Alive Timeout to 15 minutes'
+            Write-MyStep -Label 'Keep-Alive Timeout' -Value '15 min' -Status OK
             Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name 'KeepAliveTime' -Value 900000
         }
     }
 
     function Disable-SMBv1 {
-        Write-MyOutput 'Disabling SMBv1 protocol (security best practice)'
+        Write-MyStep -Label 'SMBv1' -Value 'disabled' -Status OK
         try {
             $feature = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -ErrorAction SilentlyContinue
             if ($feature -and $feature.State -eq 'Enabled') {
@@ -182,7 +146,7 @@
     }
 
     function Disable-WindowsSearchService {
-        Write-MyOutput 'Disabling Windows Search service (Exchange uses own content indexing)'
+        Write-MyStep -Label 'Windows Search' -Value 'disabled' -Status OK
         $svc = Get-Service WSearch -ErrorAction SilentlyContinue
         if ($svc) {
             if ($svc.Status -eq 'Running') {
@@ -197,7 +161,7 @@
     }
 
     function Disable-UnnecessaryServices {
-        Write-MyOutput 'Disabling unnecessary Windows services (security hardening)'
+        Write-MyStep -Label 'Unnecessary services' -Value 'disabled' -Status OK
         $services = @(
             @{ Name = 'Spooler';  Desc = 'Print Spooler (PrintNightmare attack surface, CVE-2021-34527)' }
             @{ Name = 'Fax';      Desc = 'Fax service (not required on Exchange)' }
@@ -223,20 +187,20 @@
 
     function Disable-ShutdownEventTracker {
         # Redundant with Event IDs 1074/6006/6008; dialog blocks unattended Autopilot reboots
-        Write-MyOutput 'Disabling Shutdown Event Tracker (redundant with event log; blocks unattended reboots)'
+        Write-MyStep -Label 'Shutdown Event Tracker' -Value 'disabled' -Status OK
         Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Reliability' -Name 'ShutdownReasonOn' -Value 0
         Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Reliability' -Name 'ShutdownReasonUI' -Value 0
     }
 
     function Disable-WDigestCredentialCaching {
         # Prevents cleartext credential storage in LSASS memory (Mimikatz mitigation)
-        Write-MyOutput 'Disabling WDigest credential caching (security hardening)'
+        Write-MyStep -Label 'WDigest cred caching' -Value 'disabled' -Status OK
         Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' -Name 'UseLogonCredential' -Value 0
     }
 
     function Disable-HTTP2 {
         # HTTP/2 causes known issues with Exchange MAPI/RPC connections
-        Write-MyOutput 'Disabling HTTP/2 protocol (Exchange compatibility)'
+        Write-MyStep -Label 'HTTP/2' -Value 'disabled' -Status OK
         Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\HTTP\Parameters' -Name 'EnableHttp2Tls' -Value 0
         Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\HTTP\Parameters' -Name 'EnableHttp2Cleartext' -Value 0
     }
@@ -244,7 +208,7 @@
     function Disable-TCPOffload {
         # Microsoft recommends disabling TCP offload features on Exchange servers.
         # chimney=disabled was removed from netsh in WS2019 — only apply on WS2016 (build < 17763).
-        Write-MyOutput 'Disabling TCP Task Offload and autotuning settings'
+        Write-MyStep -Label 'TCP offload + autotune' -Value 'disabled' -Status OK
         try {
             $osBuild = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name CurrentBuildNumber -ErrorAction SilentlyContinue).CurrentBuildNumber
             if ($osBuild -gt 0 -and $osBuild -lt 17763) {
@@ -263,7 +227,7 @@
 
     function Test-DiskAllocationUnitSize {
         # Exchange best practice: database and log volumes should use 64KB allocation units
-        Write-MyOutput 'Checking disk allocation unit sizes (64KB recommended for Exchange volumes)'
+        Write-MyVerbose 'Checking disk allocation unit sizes (64KB recommended for Exchange volumes)'
         Get-Volume | Where-Object { $_.DriveLetter -and $_.FileSystem -eq 'NTFS' } | ForEach-Object {
             $letter = $_.DriveLetter
             $auSize = $_.AllocationUnitSize
@@ -277,7 +241,7 @@
     }
 
     function Disable-UnnecessaryScheduledTasks {
-        Write-MyOutput 'Disabling unnecessary scheduled tasks (performance optimization)'
+        Write-MyStep -Label 'Unnecessary scheduled tasks' -Value 'disabled' -Status OK
         $tasksToDisable = @(
             '\Microsoft\Windows\Defrag\ScheduledDefrag'
         )
@@ -313,7 +277,7 @@
             Write-MyVerbose 'Server Manager at logon already disabled — skipping'
             return
         }
-        Write-MyOutput 'Disabling Server Manager at logon for all users'
+        Write-MyVerbose 'Disabling Server Manager at logon for all users'
 
         # Layer 1: Machine-wide policy (overrides HKCU for all users)
         $policyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Server\ServerManager'
@@ -347,7 +311,7 @@
 
     function Set-CRLCheckTimeout {
         # Prevents Exchange startup delays when CRL endpoints are unreachable
-        Write-MyOutput 'Configuring Certificate Revocation List check timeout (15 seconds)'
+        Write-MyStep -Label 'CRL check timeout' -Value '15s' -Status OK
         $regPath = 'HKLM:\SOFTWARE\Microsoft\Cryptography\OID\EncodingType 0\CertDllCreateCertificateChainEngine\Config'
         if (-not (Test-Path $regPath -ErrorAction SilentlyContinue)) {
             New-Item -Path $regPath -Force -ErrorAction SilentlyContinue | Out-Null
@@ -358,20 +322,20 @@
     function Disable-CredentialGuard {
         # HealthChecker flags Credential Guard as causing performance issues on Exchange servers.
         # On Windows Server 2025 it is enabled by default and must be explicitly disabled.
-        Write-MyOutput 'Disabling Credential Guard (Exchange performance best practice)'
+        Write-MyStep -Label 'Credential Guard' -Value 'disabled' -Status OK
         Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\LSA' -Name 'LsaCfgFlags' -Value 0
         Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' -Name 'EnableVirtualizationBasedSecurity' -Value 0
     }
 
     function Set-LmCompatibilityLevel {
         # HealthChecker recommends level 5: send NTLMv2 only, refuse LM and NTLM
-        Write-MyOutput 'Setting LAN Manager compatibility level to 5 (NTLMv2 only)'
+        Write-MyStep -Label 'LM compatibility' -Value 'level 5 (NTLMv2 only)' -Status OK
         Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LmCompatibilityLevel' -Value 5
     }
 
     function Enable-RSSOnAllNICs {
         # HealthChecker warns if RSS is disabled or queue count does not match physical core count
-        Write-MyOutput 'Enabling Receive Side Scaling (RSS) on all supported NICs'
+        Write-MyStep -Label 'RSS on NICs' -Value 'enabled' -Status OK
         $physicalCores = (Get-CimInstance -ClassName Win32_Processor -ErrorAction SilentlyContinue |
             Measure-Object -Property NumberOfCores -Sum).Sum
         if (-not $physicalCores -or $physicalCores -lt 1) { $physicalCores = 1 }
@@ -408,7 +372,7 @@
             Write-MyVerbose 'IPv4 over IPv6 preference already set (DisabledComponents = 0x20) (OK)'
         } else {
             Set-RegistryValue -Path $regPath -Name 'DisabledComponents' -Value 0x20 -PropertyType DWord
-            Write-MyOutput 'IPv4 over IPv6 preference set (DisabledComponents = 0x20) — effective after next reboot'
+            Write-MyStep -Label 'IPv4 over IPv6' -Value 'preferred (effective next reboot)' -Status OK
             # Do not flag RebootRequired: the value is re-read at boot and the install's
             # end-of-Phase-6 reboot (or the next natural reboot) activates it. Forcing a
             # mid-install reboot here would trigger the Phase 5→6 skip-logic unnecessarily.
@@ -419,7 +383,7 @@
         # Disables NetBIOS over TCP/IP on all NICs. Exchange does not require NetBIOS;
         # disabling it reduces attack surface (LLMNR/NBT-NS poisoning, credential capture).
         # SetTcpipNetbios(2) = Disable NetBIOS over TCP/IP
-        Write-MyOutput 'Disabling NetBIOS over TCP/IP on all NICs'
+        Write-MyStep -Label 'NetBIOS over TCP/IP' -Value 'disabled on all NICs' -Status OK
         try {
             $nics = Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled = True' -ErrorAction Stop
             $changed = 0
@@ -448,14 +412,14 @@
         # CIS L1 18.5.4.2: Disable Link-Local Multicast Name Resolution.
         # LLMNR broadcasts unresolved names to the local subnet; Responder-class tools
         # answer with spoofed records and capture NTLM hashes. Exchange relies on DNS.
-        Write-MyOutput 'Disabling LLMNR (Link-Local Multicast Name Resolution)'
+        Write-MyStep -Label 'LLMNR' -Value 'disabled' -Status OK
         Set-RegistryValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -Name 'EnableMulticast' -Value 0
     }
 
     function Disable-MDNS {
         # WS2022+ enables mDNS by default (port 5353 UDP). Same poisoning vector as LLMNR.
         # Registry value EnableMDNS under Dnscache\Parameters disables it globally.
-        Write-MyOutput 'Disabling mDNS (Multicast DNS)'
+        Write-MyStep -Label 'mDNS' -Value 'disabled' -Status OK
         Set-RegistryValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -Name 'EnableMDNS' -Value 0
     }
 
@@ -470,7 +434,7 @@
             Write-MyVerbose 'LSA Protection (RunAsPPL) already enabled'
             return
         }
-        Write-MyOutput 'Enabling LSA Protection (RunAsPPL) — effective after next reboot'
+        Write-MyStep -Label 'LSA Protection (RunAsPPL)' -Value 'enabled (effective next reboot)' -Status OK
         Set-RegistryValue -Path $regPath -Name 'RunAsPPL' -Value 1 -PropertyType DWord
         # Audit mode first (2) is not used here as Exchange servers are domain-joined production systems
         # and Exchange 2019 CU12+/SE are fully compatible with RunAsPPL = 1.
@@ -483,7 +447,7 @@
         # Microsoft recommendation for Exchange: raise to match logical processor count (min 10).
         # Edge Transport is not domain-joined — Netlogon optimization does not apply.
         if ($State['InstallEdge']) { Write-MyVerbose 'Set-MaxConcurrentAPI: skipped (Edge Transport)'; return }
-        Write-MyOutput 'Setting Netlogon MaxConcurrentApi for Kerberos authentication optimization'
+        Write-MyStep -Label 'MaxConcurrentApi' -Value 'set (Kerberos optimization)' -Status OK
         $logicalProcs = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue).NumberOfLogicalProcessors
         if (-not $logicalProcs -or $logicalProcs -lt 10) { $logicalProcs = 10 }
         $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters'
@@ -496,7 +460,7 @@
         # HealthChecker flags any non-zero value as harmful to Exchange Search performance
         # Edge Transport uses a different search stack — this registry path does not exist there.
         if ($State['InstallEdge']) { Write-MyVerbose 'Set-CtsProcessorAffinityPercentage: skipped (Edge Transport)'; return }
-        Write-MyOutput 'Setting CtsProcessorAffinityPercentage to 0 (Exchange Search best practice)'
+        Write-MyStep -Label 'CtsProcessorAffinity' -Value '0 (no pinning)' -Status OK
         $regPath = 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Search\SystemParameters'
         if (-not (Test-Path $regPath -ErrorAction SilentlyContinue)) {
             New-Item -Path $regPath -Force -ErrorAction SilentlyContinue | Out-Null
@@ -506,7 +470,7 @@
 
     function Enable-SerializedDataSigning {
         # HealthChecker validates this security feature (mitigates PowerShell serialization attacks)
-        Write-MyOutput 'Enabling Serialized Data Signing (security hardening)'
+        Write-MyStep -Label 'Serialized Data Signing' -Value 'enabled' -Status OK
         $regPath = 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Diagnostics'
         if (-not (Test-Path $regPath -ErrorAction SilentlyContinue)) {
             New-Item -Path $regPath -Force -ErrorAction SilentlyContinue | Out-Null
@@ -518,7 +482,7 @@
         # HealthChecker flags any non-zero memoryLimitMegabytes as a Search performance limiter
         # Edge Transport does not run Exchange Search / NodeRunner.
         if ($State['InstallEdge']) { Write-MyVerbose 'Set-NodeRunnerMemoryLimit: skipped (Edge Transport)'; return }
-        Write-MyOutput 'Setting NodeRunner memory limit to 0 (unlimited, Exchange Search best practice)'
+        Write-MyStep -Label 'NodeRunner mem limit' -Value '0 (unlimited)' -Status OK
         $exchangeInstallPath = (Get-ItemProperty -Path $EXCHANGEINSTALLKEY -Name MsiInstallPath -ErrorAction SilentlyContinue).MsiInstallPath
         if ($exchangeInstallPath) {
             $configFile = Join-Path $exchangeInstallPath 'Bin\Search\Ceres\Runtime\1.0\noderunner.exe.config'
@@ -547,7 +511,7 @@
 
     function Enable-MAPIFrontEndServerGC {
         # HealthChecker recommends Server GC for MAPI Front End App Pool on systems with 20+ GB RAM
-        Write-MyOutput 'Checking MAPI Front End App Pool GC mode'
+        Write-MyVerbose 'Checking MAPI Front End App Pool GC mode'
         $installedMem = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
         if ($installedMem -ge 20GB) {
             $exchangeInstallPath = (Get-ItemProperty -Path $EXCHANGEINSTALLKEY -Name MsiInstallPath -ErrorAction SilentlyContinue).MsiInstallPath
@@ -560,7 +524,7 @@
                         if ($gcNode -and $gcNode.enabled -ne 'true') {
                             $gcNode.enabled = 'true'
                             $xml.Save($configFile)
-                            Write-MyOutput 'Enabled Server GC for MAPI Front End App Pool (20+ GB RAM detected)'
+                            Write-MyStep -Label 'MAPI FE GC' -Value 'Server GC (20+ GB RAM)' -Status OK
                         }
                         else {
                             Write-MyVerbose 'Server GC already enabled or node not found'
@@ -609,7 +573,7 @@
 
     function Enable-ECC {
         # https://learn.microsoft.com/en-us/exchange/architecture/client-access/certificates?view=exchserver-2019#elliptic-curve-cryptography-certificates-support-in-exchange-server
-        Write-MyOutput 'Enabling Elliptic Curve Cryptography (ECC) certificate support'
+        Write-MyStep -Label 'ECC certificates' -Value 'enabled' -Status OK
 
         $RegKey = 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Diagnostics'
         $RegName = 'EnableEccCertificateSupport'
@@ -634,7 +598,7 @@
 
     function Enable-CBC {
         # https://support.microsoft.com/en-us/topic/enable-support-for-aes256-cbc-encrypted-content-in-exchange-server-august-2023-su-add63652-ee17-4428-8928-ddc45339f99e
-        Write-MyOutput 'Enabling AES256-CBC encryption mode support'
+        Write-MyStep -Label 'AES256-CBC' -Value 'enabled' -Status OK
 
         $Override = Get-SettingOverride | Where-Object { ($_.SectionName -eq "EnableEncryptionAlgorithmCBC") -and ($_.Parameters -eq "Enabled=True") }
         if ( $Override) {
@@ -654,7 +618,7 @@
         # https://learn.microsoft.com/en-us/exchange/antispam-and-antimalware/amsi-integration-with-exchange?view=exchserver-2019#enable-exchange-server-amsi-body-scanning
         # Edge Transport is not domain-joined and has no org connection; New-SettingOverride would fail.
         if ($State['InstallEdge']) { Write-MyVerbose 'Enable-AMSI: skipped (Edge Transport — no org connection)'; return }
-        Write-MyOutput 'Enabling AMSI body scanning for OWA, ECP, EWS and PowerShell'
+        Write-MyStep -Label 'AMSI scanning' -Value 'enabled (OWA/ECP/EWS/PS)' -Status OK
 
         $amsiOverride = Get-SettingOverride | Where-Object { $_.SectionName -eq 'AmsiRequestBodyScanning' }
         if ($amsiOverride) {
@@ -681,14 +645,21 @@
             Write-MyWarning ('IANA timezone mappings file not found ({0}). Calendar timezone issues may occur. Update Exchange to a newer CU to resolve.' -f $mappingFile)
         }
 
-        # Exchange 2019 CU14+ / SE: enable IANA timezone IDs for calendar items if supported
+        # Exchange 2019 CU14+ / SE: enable IANA timezone IDs for calendar items if supported.
+        # Skipped for existing orgs by default (one-way org-wide change that affects all existing
+        # calendar items). Override by setting IANATimezone=$true in the deploy config — explicit
+        # config is a deliberate admin choice and takes precedence over the default gate.
+        if ($State['ExistingOrg'] -and -not $State['IANATimezone']) {
+            Write-MyVerbose 'Enable-IanaTimeZoneMappings: UseIanaTimeZoneId skipped — existing Exchange org (set IANATimezone=$true in deploy config to apply deliberately)'
+        }
+        else {
         try {
             $orgConfig = Get-OrganizationConfig -ErrorAction Stop
             if ($orgConfig.PSObject.Properties['UseIanaTimeZoneId']) {
                 if (-not $orgConfig.UseIanaTimeZoneId) {
                     Register-ExecutedCommand -Category 'ExchangeTuning' -Command 'Set-OrganizationConfig -UseIanaTimeZoneId $true'
                     Set-OrganizationConfig -UseIanaTimeZoneId $true -ErrorAction Stop
-                    Write-MyOutput 'IANA timezone IDs enabled for calendar items (UseIanaTimeZoneId)'
+                    Write-MyStep -Label 'IANA timezone IDs' -Value 'enabled' -Status OK
                 }
                 else {
                     Write-MyVerbose 'IANA timezone IDs already enabled (UseIanaTimeZoneId)'
@@ -701,13 +672,14 @@
         catch {
             Write-MyVerbose ('Enable-IanaTimeZoneMappings: {0}' -f $_.Exception.Message)
         }
+        } # end else (ExistingOrg guard)
     }
 
     function Disable-SSLOffloading {
         # F13: SSL offloading at a reverse proxy prevents Extended Protection channel-binding from working.
         # Always set to $false — Exchange should terminate TLS itself, not receive plaintext from a proxy.
         if ($State['InstallEdge']) { return }
-        Write-MyOutput 'Configuring Outlook Anywhere SSL offloading (required for Extended Protection)'
+        Write-MyStep -Label 'OA SSL offload' -Value 'configured' -Status OK
         try {
             $oa = Get-OutlookAnywhere -Server $env:computername -ErrorAction SilentlyContinue
             if ($oa) {
@@ -741,7 +713,7 @@
         $isCU14OrNewer = $exSetupVer -ge [System.Version]$EX2019SETUPEXE_CU14
 
         if ($isCU14OrNewer) {
-            Write-MyOutput 'Exchange 2019 CU14+ / SE — Extended Protection enabled by setup; validating OWA'
+            Write-MyStep -Label 'Extended Protection' -Value 'enabled by setup (CU14+/SE), validating OWA' -Status Info
             try {
                 $owa = Get-OwaVirtualDirectory -Server $env:computername -ErrorAction SilentlyContinue
                 if ($owa) {
@@ -759,7 +731,7 @@
         }
 
         # Exchange 2016 / 2019 pre-CU14: configure via CSS-Exchange ExchangeExtendedProtectionManagement.ps1
-        Write-MyOutput 'Enabling Extended Protection via CSS-Exchange ExchangeExtendedProtectionManagement.ps1'
+        Write-MyStep -Label 'Extended Protection' -Value 'enabling via CSS-Exchange EEP script' -Status Run
         $epPath = Join-Path $State['SourcesPath'] 'ExchangeExtendedProtectionManagement.ps1'
         $epUrl  = 'https://github.com/microsoft/CSS-Exchange/releases/latest/download/ExchangeExtendedProtectionManagement.ps1'
         # Note: previously named ExchangeExtendedProtection.ps1 — renamed in CSS-Exchange 2024 releases
@@ -792,13 +764,13 @@
         # F17: Prevents Exchange Online connectivity failures caused by stale/missing root CA certificates.
         # Group Policy or hardening baselines sometimes disable Windows automatic root certificate updates,
         # which breaks connectivity to Exchange Online, Microsoft 365, and any modern PKI-dependent service.
-        Write-MyOutput 'Verifying automatic root certificate update (AuthRoot policy)'
+        Write-MyVerbose 'Verifying automatic root certificate update (AuthRoot policy)'
         $regPath = 'HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\AuthRoot'
         try {
             $val = (Get-ItemProperty -Path $regPath -Name DisableRootAutoUpdate -ErrorAction SilentlyContinue).DisableRootAutoUpdate
             if ($val -eq 1) {
                 Set-RegistryValue -Path $regPath -Name 'DisableRootAutoUpdate' -Value 0 -PropertyType DWord
-                Write-MyOutput 'Root certificate auto-update re-enabled (was disabled by policy — required for Exchange Online / M365 connectivity)'
+                Write-MyStep -Label 'Root cert auto-update' -Value 're-enabled (was blocked by policy)' -Status Warn
             }
             else {
                 Write-MyVerbose 'Root certificate auto-update: not disabled by policy (OK)'
@@ -814,7 +786,7 @@
         # HealthChecker flags an enabled MRS Proxy endpoint as unnecessary attack surface.
         # Re-enable with: Set-WebServicesVirtualDirectory -MRSProxyEnabled $true -Confirm:$false
         if (-not $State['InstallMailbox']) { return }
-        Write-MyOutput 'Disabling MRS Proxy on EWS virtual directory (enable manually for cross-forest migrations)'
+        Write-MyStep -Label 'MRS Proxy on EWS' -Value 'disabled' -Status OK
         try {
             Get-WebServicesVirtualDirectory -Server $env:computername -ErrorAction Stop |
                 Set-WebServicesVirtualDirectory -MRSProxyEnabled $false -Confirm:$false -ErrorAction Stop
@@ -829,7 +801,7 @@
         # F19: Requires MAPI encryption on all MAPI-over-RPC Outlook connections.
         # Prevents signing-only or cleartext MAPI sessions. ExchangeDsc / HealthChecker recommendation.
         if (-not $State['InstallMailbox']) { return }
-        Write-MyOutput 'Setting MAPI encryption as required on mailbox server'
+        Write-MyStep -Label 'MAPI encryption' -Value 'required' -Status OK
         try {
             Set-MailboxServer -Identity $env:computername -MAPIEncryptionRequired $true -Confirm:$false -ErrorAction Stop
             Write-MyVerbose 'MAPI encryption required (Set-MailboxServer -MAPIEncryptionRequired $true)'
@@ -917,7 +889,7 @@
             $SystemRoot = $Env:SystemRoot
             $SystemDrive = $Env:SystemDrive
 
-            Write-MyOutput 'Configuring Windows Defender folder exclusions'
+            Write-MyStep -Label 'Defender exclusions' -Value 'folders configured' -Status OK
             if ( $State['TargetPath']) {
                 $InstallFolder = $State['TargetPath']
             }
@@ -952,7 +924,7 @@
                 }
             }
 
-            Write-MyOutput 'Configuring Windows Defender exclusions: NodeRunner process'
+            Write-MyStep -Label 'Defender exclusions' -Value 'NodeRunner process added' -Status OK
             $Processes = @(
                 "$InstallFolder\Bin|ComplianceAuditService.exe,Microsoft.Exchange.Directory.TopologyService.exe,Microsoft.Exchange.EdgeSyncSvc.exe,Microsoft.Exchange.Notifications.Broker.exe,Microsoft.Exchange.ProtectedServiceHost.exe,Microsoft.Exchange.RPCClientAccess.Service.exe,Microsoft.Exchange.Search.Service.exe,Microsoft.Exchange.Store.Service.exe,Microsoft.Exchange.Store.Worker.exe,MSExchangeCompliance.exe,MSExchangeDagMgmt.exe,MSExchangeDelivery.exe,MSExchangeFrontendTransport.exe,MSExchangeMailboxAssistants.exe,MSExchangeMailboxReplication.exe,MSExchangeRepl.exe,MSExchangeSubmission.exe,MSExchangeThrottling.exe,OleConverter.exe,UmService.exe,UmWorkerProcess.exe,wsbexchange.exe,EdgeTransport.exe,Microsoft.Exchange.AntispamUpdateSvc.exe,Microsoft.Exchange.Diagnostics.Service.exe,Microsoft.Exchange.Servicehost.exe,MSExchangeHMHost.exe,MSExchangeHMWorker.exe,MSExchangeTransport.exe,MSExchangeTransportLogSearch.exe",
                 "$InstallFolder\FIP-FS\Bin|fms.exe,ScanEngineTest.exe,ScanningProcess.exe,UpdateService.exe",
@@ -1010,7 +982,7 @@
                 Write-MyVerbose 'Defender Tamper Protection already off — nothing to do'
                 return
             }
-            Write-MyOutput 'Attempting to disable Defender Tamper Protection (best-effort, registry)'
+            Write-MyStep -Label 'Defender Tamper Protection' -Value 'attempting disable (best-effort)' -Status Run
             $tpPath = 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Features'
             # Capture current value so we can restore it, even if not present
             $prev   = (Get-ItemProperty -Path $tpPath -Name 'TamperProtection' -ErrorAction SilentlyContinue).TamperProtection
@@ -1041,11 +1013,11 @@
             $prev   = $State['DefenderTPPrev']
             if ($prev -eq '__absent__') {
                 Remove-ItemProperty -Path $tpPath -Name 'TamperProtection' -ErrorAction SilentlyContinue
-                Write-MyOutput 'Tamper Protection registry value removed (original state)'
+                Write-MyStep -Label 'Tamper Protection' -Value 'registry value removed' -Status OK
             }
             elseif ($null -ne $prev) {
                 Set-RegistryValue -Path $tpPath -Name 'TamperProtection' -Value ([int]$prev)
-                Write-MyOutput ('Tamper Protection registry value restored to {0}' -f $prev)
+                Write-MyStep -Label 'Tamper Protection' -Value ('registry restored to {0}' -f $prev) -Status OK
             }
             $State.Remove('DefenderTPDisabledByEXpress') | Out-Null
             $State.Remove('DefenderTPPrev') | Out-Null
@@ -1074,7 +1046,7 @@
                 Write-MyVerbose 'Defender realtime monitoring already disabled — leaving as-is'
                 return
             }
-            Write-MyOutput 'Disabling Windows Defender realtime monitoring during Exchange install'
+            Write-MyStep -Label 'Defender realtime' -Value 'disabled (install duration)' -Status OK
             Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
             Start-Sleep -Seconds 1
             $post = Get-MpPreference -ErrorAction SilentlyContinue
@@ -1106,8 +1078,8 @@
                     Write-MyVerbose 'Defender realtime monitoring already enabled'
                 }
                 else {
-                    if ($Force) { Write-MyOutput 'Ensuring Windows Defender realtime monitoring is enabled (pre-report)' }
-                    else        { Write-MyOutput 'Re-enabling Windows Defender realtime monitoring' }
+                    if ($Force) { Write-MyStep -Label 'Defender realtime' -Value 'enabled (pre-report)' -Status OK }
+                    else        { Write-MyStep -Label 'Defender realtime' -Value 're-enabled' -Status OK }
                     Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop
                     Start-Sleep -Seconds 1
                     $post = Get-MpPreference -ErrorAction SilentlyContinue
@@ -1280,7 +1252,7 @@
         $Job = Start-Job -ScriptBlock $ScriptBlock -Name ('DisableMSExchangeAutodiscoverAppPoolJob-{0}' -f $env:COMPUTERNAME)
         Add-BackgroundJob $Job
 
-        Write-MyOutput ('Started background job to disable MSExchangeAutodiscoverAppPool (Job ID: {0})' -f $Job.Id)
+        Write-MyVerbose ('Started background job to disable MSExchangeAutodiscoverAppPool (Job ID: {0})' -f $Job.Id)
         return $Job
     }
 
@@ -1293,7 +1265,7 @@
             return $false
         }
 
-        Write-MyOutput 'Starting and enabling startup of MSExchangeAutodiscoverAppPool'
+        Write-MyStep -Label 'MSExchangeAutodiscoverAppPool' -Value 'enabled + started' -Status OK
         try {
             Start-WebAppPool -Name 'MSExchangeAutodiscoverAppPool' -ErrorAction Stop
         }

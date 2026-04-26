@@ -6,6 +6,75 @@ Full version history for EXpress. See [README.md](README.md) for overview and qu
 
 ---
 
+## v1.2 (2026-04-26) — feature release
+
+### Debug-mode overhaul
+- **Streaming Debug log** — when `-Debug` is on, a single superset log under `<InstallPath>\Debug\<HOST>_EXpress_Debug_<ts>.log` captures every line the install log gets plus DEBUG, VERBOSE, SUPPRESSED-ERROR diff scan, and CMD records. The install log itself stays clean (INFO/WARN/ERROR/EXE + VERBOSE-when-verbose).
+- **Per-phase snapshots** — `Write-DebugSnapshot` writes state XML and a system-info dump (OS, .NET release, disk free, pending-reboot flags, Exchange registry, Windows Features, MSExchange services, installed packages, Application EventLog tail, ExchangeSetup.log tail, IIS app pools, key state fields) to `\Debug\Phase{N}_{ts}_*.{xml,txt}` after each phase boundary.
+- **Visual indicator** — window title set to `[DEBUG MODE] EXpress vX.Y - <hostname>`, magenta startup banner explaining what debug mode does.
+- **Phase 4 halt (Copilot only)** — after Exchange setup completes in Copilot + Debug, the script saves state and exits cleanly so the operator can take a VM snapshot before re-running for Phase 5. ConfigFile runs continue without halting.
+
+### ConfigFile fully unattended
+- **Implicit `AutoApproveWindowsUpdates = $true`** — when running with `-ConfigFile`, Windows Updates are auto-approved unless the operator sets `AutoApproveWindowsUpdates = $false` explicitly. Copilot keeps the catalog default `$false`.
+- **`CertificatePassword` config key** — plain-text PFX password (with explicit SECURITY WARNING in the log, scrub-after-use guidance) so Autopilot does not break on the interactive PFX-password prompt. Symmetric to the existing `AdminUser`/`AdminPassword` mechanism.
+- **`AnonymousRelay = $true` without subnets** — automatically seeds RFC 5737 placeholders (`192.0.2.1/32` internal, `192.0.2.2/32` external) so connectors are created and visible in EAC for the admin to fill in real subnets, mirroring Copilot blank-answer behaviour.
+
+### ExistingOrg protection expanded
+The script auto-detects an existing Exchange org via early ADSI probe at Phase 0 and authoritative `Initialize-Exchange` flag at Phase 3. When detected, the **default** for the following eight org-wide AdvancedFeatures flips from `$true` to `$false` so a second-server install does not silently overwrite policy decisions made on the first server: `MaxMessageSize150MB`, `MessageExpiration7d`, `SafetyNet2d`, `HtmlNDR`, `ModernAuth`, `OWASessionTimeout6h`, `DisableTelemetry`, `MapiHttp`. Explicit values in config or cmdline always win.
+
+### Language: ISO code instead of boolean switch
+- New parameter `[ValidatePattern('^[A-Za-z]{2}$')][string]$Language = 'EN'` replaces the binary `[switch]$German` (which is kept as deprecated backwards-compat wrapper). Config key `Language = 'DE'` is the primary mechanism; legacy `German = $true` still maps to `Language='DE'`.
+- Currently translated: `'DE'` and `'EN'`. Codes like `'IT'`/`'FR'`/`'ES'` are accepted by the parameter but fall back to `EN` text until translations land.
+
+### Menu input validation
+- `Organization`: 1–64 chars, letters/digits/spaces/hyphens, must start/end with alphanumeric.
+- `LogRetentionDays`: numeric 1–3650.
+- `CertificatePath`: file must exist with `.pfx` extension (validated only when non-empty).
+- `MDBName`: no path separators or special characters, max 64 chars.
+
+### Sprint 1: empty catch blocks
+101 silent `catch { }` blocks across 11 modules now log via `Write-MyVerbose` so the swallowed error is at least visible in `-Verbose`/`-Debug`. No behaviour change otherwise.
+
+### Sprint 3: New-InstallationDocument refactoring
+Word document sections 4 (Organisation) and 9 (Anti-Spam/Agents) extracted into reusable functions in new module `73-DocHelpers.ps1`. Reduces the 1,497-LOC `New-InstallationDocument` and lets future Word/HTML refactoring share the same helpers.
+
+### CI / build
+- `merge-guard.yml`: PSScriptAnalyzer step (settings file `.github/PSScriptAnalyzerSettings.psd1`) and Pester JUnit-XML artefact uploaded for visibility in GitHub Actions UI.
+- `release.yml`: dedicated `test` job on windows-latest gates the bundle build.
+
+### Bugfixes
+- **DriverDate cast** — Word doc treated `Win32_PnPSignedDriver.DriverDate` as a deserialised DateTime; `.ToString('yyyy-MM-dd')` failed. Cast to `[datetime]` first with try/catch fallback.
+- **ByteQuantifiedSize null guard in Word doc** — `Get-TransportConfig` returns `MaxSendSize.Value = $null` when org limit is `Unlimited`. `New-InstallationDocument` and `New-InstallationReport` now null-guard the `.ToBytes()` call (already known pitfall in CLAUDE.md, was missing in the doc path).
+- **Word-doc generation failure log severity** — was `Write-MyWarning`, now `Write-MyError` (two locations in `99-Main.ps1`); also feeds the new non-fatal-error counter.
+- **End-of-script non-fatal error summary** — counts `Write-MyWarning` + `Write-MyError` calls and prints a summary line with log path before exit.
+- **Deploy-example overhaul** — credentials block (AdminUser/AdminPassword + CertificatePath/CertificatePassword) moved to the top with a prominent SECURITY warning. Org-wide settings commented out with their own warning block. Per-option one-line descriptions added throughout. Duplicate `CertificatePath` entry and Copilot-only `SkipWindowsUpdates` removed.
+
+### Demo / tooling
+- `tools/New-DemoState.ps1` generates a `<HOST>_EXpress_State.xml` resuming from Phase 5 — useful for testing post-config without redoing Exchange setup each time.
+
+### IMAP4 / POP3 namespaces
+- `Set-VirtualDirectoryURLs` now configures IMAP4 and POP3 external/internal hostnames via `Set-ImapSettings` / `Set-PopSettings` using the namespace from the deploy config, matching the behaviour of all other service namespaces.
+
+### PSWindowsUpdate air-gap support
+- **4-tier detection** — `Install-PendingWindowsUpdates` now looks for PSWindowsUpdate in order: (1) already installed in module path, (2) pre-staged under `<SourcesPath>\PSWindowsUpdate`, (3) pre-staged under `%TEMP%\EXpress-sources\PSWindowsUpdate`, (4) live PSGallery install. Tiers 2 and 3 copy the versioned module folder into the user PSModulePath so it is available to background jobs.
+- **`Get-EXpressDownloads.ps1`** now pre-stages the PSWindowsUpdate module via `Save-Module` into the same output folder as the other prerequisites. Default `OutputPath` changed from `.\sources\` to `%TEMP%\EXpress-sources` — the script no longer requires a checked-out repo copy to run usefully.
+
+---
+
+## v1.2.1 (2026-04-27) — bugfix release
+
+- **Parser error in DNS template rows** — `76-InstallDoc.ps1` used `if` as an inline expression inside `@(...)` array literals (e.g. `@('MX', $d, if ($mxVal) {...})`). PowerShell 5.1 does not permit `if` as a sub-expression in this position — it throws `CommandNotFoundException: if` at runtime. Fixed by pre-assigning each conditional value to a variable (`$mxRow`, `$spfRow`, `$dkimRow`, `$dmarcRow`) before the `Add()` call.
+- **ExistingOrg probe re-executed after Phase 3** — the ADSI probe catch block left `$State['ExistingOrg']` as `$null` (the "never probed" sentinel) on failure. On Autopilot resume after Phase 3 created the Exchange organisation, the guard `$null -eq $State['ExistingOrg']` was `$true`, the probe ran again, found the org, set `ExistingOrg = $true`, and blocked org-wide settings. Fixed: catch block now sets `$State['ExistingOrg'] = $false`.
+- **Test-Feature precedence: explicit config blocked by Condition** — `Test-Feature` evaluated the catalog `Condition` block before checking `$State['AdvancedFeatures']`. Explicit values set via config file or command-line were silently overridden when the Condition returned `$false` (e.g. `ExistingOrg=$true` prevented `ModernAuth=$true` from applying on a second server). Precedence is now: explicit config → Condition gate → catalog default.
+- **Enable-IanaTimeZoneMappings ignored explicit config** — the function's internal `if ($State['ExistingOrg'])` guard skipped IANA mapping unconditionally on existing orgs, ignoring `$State['IANATimezone']` set by the config file. Guard changed to `if ($State['ExistingOrg'] -and -not $State['IANATimezone'])` so explicit opt-in is always respected.
+- **HTML report: Exchange certificates section empty** — `Get-ExchangeCertificate -Server $env:COMPUTERNAME` fails via implicit remoting in some configurations. Report now falls back to `Get-ExchangeCertificate` without `-Server` when the first call returns no results.
+- **HTML report: Extended Protection duplicate row** — the security section showed both a standalone "Extended Protection (OWA)" single row and the full per-VDir EP table. The single row was redundant and removed; the per-VDir table already covers all services including OWA.
+- **HTML report: HSTS displayed as "0/2" when no certificate configured** — the HSTS check was unconditional; when no PFX was imported, HSTS configuration is N/A (EXpress only sets the header when a custom certificate is present). The section now shows a `N/A` badge when `CertificatePath` is not set.
+- **HTML report: PowerShell VDir URL missing** — the Virtual Directory URLs section omitted PowerShell VDir (`/PowerShell`). Added `Get-PowerShellVirtualDirectory` to the vdir loop.
+- **Log output: URL Rewrite Module 2.1 missing OK step** — `Install-MyPackage` logs internally at Verbose level only. An explicit `Write-MyStep -Label 'URL Rewrite Module 2.1' -Value 'installed'/'already installed' -Status OK` is now emitted after the call so the step appears in the install log.
+
+---
+
 ## v1.1.8 (2026-04-24) — bugfix / enhancement release
 
 - **Word Installation Document: phantom certificates** — Certificates with `NotAfter = DateTime.MinValue` (year 0001) leaked through into the Word doc certificate table as in the HTML report. Filtered at source in `Get-ServerReportData` (Thumbprint empty or `NotAfter ≤ 1970-01-01`) and belt-and-suspenders in `New-InstallationDocument`.

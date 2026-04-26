@@ -140,7 +140,7 @@
 
             $Job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $Name, $ConfigNC, $AUTODISCOVER_SCP_FILTER, $AUTODISCOVER_SCP_MAX_RETRIES -Name ('Clear-AutodiscoverSCP-{0}' -f $Name)
             Add-BackgroundJob $Job
-            Write-MyOutput ('Started background job to clear AutodiscoverServiceConnectionPoint for {0} (Job ID: {1})' -f $Name, $Job.Id)
+            Write-MyVerbose ('Started background job to clear AutodiscoverServiceConnectionPoint for {0} (Job ID: {1})' -f $Name, $Job.Id)
             return $Job
         }
         else {
@@ -332,7 +332,7 @@
                 # 401 Unauthorized = IIS is up and the Exchange endpoint exists — credentials not needed to confirm readiness
                 if ($_.Exception.Response -and ([int]$_.Exception.Response.StatusCode) -eq 401) { $ready = $true }
             }
-            catch { }
+            catch { Write-MyVerbose ('IIS health probe error (transient, retrying): {0}' -f $_) }
         } while (-not $ready -and $elapsed -lt $maxWait)
 
         if (-not $ready) {

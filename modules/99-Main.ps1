@@ -56,7 +56,8 @@
 
     # --- Logging bootstrap (must run BEFORE any Write-MyOutput/Write-MyVerbose so pre-menu
     #     messages land in the single log file).
-    $script:lastErrorCount = $Error.Count
+    $script:lastErrorCount     = $Error.Count
+    $script:nonFatalErrorCount = 0
     # Capture fresh-vs-resume BEFORE we populate $State; otherwise the later `if ($script:isFreshStart)`
     # check would mis-classify a fresh start as a resume once LogVerbose/LogDebug/TranscriptFile
     # have been seeded.
@@ -77,32 +78,40 @@
     if (-not $State['TranscriptFile']) {
         $State['TranscriptFile'] = Join-Path $earlyReports ('{0}_EXpress_Install_{1}.log' -f $env:computerName, (Get-Date -Format 'yyyyMMdd-HHmmss'))
     }
-    if ($State['LogVerbose'] -or $State['LogDebug']) {
-        $tier = if ($State['LogDebug']) { 'DEBUG' } else { 'VERBOSE' }
-        try {
-            $hdr = @(
-                '',
-                '==================================================================',
-                ('  {0} session start: {1}' -f $tier, (Get-Date -Format u)),
-                ('  PID {0}  User {1}\{2}  PS {3}  Host {4}' -f $PID, $env:USERDOMAIN, $env:USERNAME, $PSVersionTable.PSVersion, $Host.Name),
-                ('  Invocation: {0}' -f ($MyInvocation.Line -replace '\s+', ' ').Trim()),
-                '=================================================================='
-            ) -join [Environment]::NewLine
-            [System.IO.File]::AppendAllText($State['TranscriptFile'], ($hdr + "`r`n"), [System.Text.UTF8Encoding]::new($false))
-        } catch {
-            Write-Warning ('Could not write log header: {0}' -f $_.Exception.Message)
+    # Debug snapshots folder (state.xml + system.txt per phase). The streaming debug
+    # log itself merges into the install log when -Debug is on (Write-ToTranscript
+    # adds DEBUG/CMD/SUPPRESSED-ERROR levels) — no separate streaming log file.
+    if ($State['LogDebug']) {
+        $debugDir = Join-Path $InstallPath 'Debug'
+        if (-not (Test-Path $debugDir)) {
+            try { New-Item -Path $debugDir -ItemType Directory -Force -ErrorAction Stop | Out-Null }
+            catch { Write-Warning ('Could not create Debug folder: {0}' -f $_.Exception.Message) }
         }
+    }
+    # Debug-mode session header (one line) at the top of the install log.
+    if ($State['LogDebug'] -and $State['TranscriptFile'] -and $script:isFreshStart) {
+        try {
+            $hdrLine = ('--- DEBUG session start: PID {0} User {1}\{2} PS {3} Host {4} | {5} ---' -f $PID, $env:USERDOMAIN, $env:USERNAME, $PSVersionTable.PSVersion, $Host.Name, ($MyInvocation.Line -replace '\s+', ' ').Trim())
+            [System.IO.File]::AppendAllText($State['TranscriptFile'], ($hdrLine + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+        } catch { Write-Warning ('Could not write debug header: {0}' -f $_.Exception.Message) }
     }
 
     # Now everything is in place: start normal logging (console + file).
     if ($State.Count -gt 0 -and -not $ParameterString -and -not $script:isFreshStart) {
         $ParameterString = '[resuming from phase {0}]' -f $State['InstallPhase']
     }
+    Show-EXpressBanner -Version $ScriptVersion
     Write-MyOutput  "Script $ScriptFullName v$ScriptVersion called using $ParameterString"
+    # Visible debug-mode indicator: only the window title here — full magenta banner
+    # is rendered later (after config load) so the halt-line reflects the final
+    # Autopilot value (cmdline + config merged).
+    if ($State['LogDebug']) {
+        try { $Host.UI.RawUI.WindowTitle = ('[DEBUG MODE] EXpress v{0} - {1}' -f $ScriptVersion, $env:COMPUTERNAME) } catch { Write-Verbose "WindowTitle set failed: $_" }
+    }
     # ParameterSetName is the internal binding set name — always "Autopilot" as default even
     # in Copilot launches. Keep for forensics but at DEBUG tier so it doesn't confuse normal logs.
     Write-MyDebug   "ParameterSet used for binding: $($PsCmdlet.ParameterSetName)"
-    Write-MyOutput  ('Running on OS build {0}' -f $FullOSVersion)
+    Write-MyStep -Label 'OS build' -Value $FullOSVersion
     if ($State['LogVerbose'] -or $State['LogDebug']) {
         $tierLabel = if ($State['LogDebug']) { 'DEBUG' } else { 'VERBOSE' }
         Write-MyOutput ('Log tier: {0} - file: {1}' -f $tierLabel, $State['TranscriptFile'])
@@ -161,7 +170,7 @@
                     $useAuto = (Read-Host 'Use this configuration file? [Y=yes / N=show menu]').Trim().ToUpper()
                     if ($useAuto -eq 'Y') {
                         $ConfigFile = $autoConfigPath
-                        Write-MyOutput ("Auto-detected configuration loaded: {0}" -f $ConfigFile)
+                        Write-MyStep -Label 'Auto-detected config' -Value $ConfigFile
                     }
                 }
             }
@@ -201,7 +210,9 @@
             # Toggle U "Generate Installation Document" → invert to NoWordDoc.
             # Mode 7 always generates the doc regardless of the toggle.
             $NoWordDoc           = [switch](-not ([bool]$menuResult['GenerateDoc'] -or $mode -eq 7))
-            $German              = [switch]([bool]$menuResult['German'])
+            # Menu emits binary German toggle (DE/EN). Map to $Language code so the rest
+            # of the script reads only $Language going forward.
+            if ([bool]$menuResult['German']) { $Language = 'DE' } else { $Language = 'EN' }
             $CustomerDocument    = [switch]([bool]$menuResult['CustomerDocument'])
             $NoSetup             = [switch]($false)
             $InstallRecipientManagement = [switch]($mode -eq 3)
@@ -252,7 +263,7 @@
         elseif ($ConfigFile) {
             # Headless mode: load all parameters from a .psd1 config file.
             # The menu is automatically skipped when -ConfigFile is specified.
-            Write-MyOutput "Loading configuration from $ConfigFile"
+            Write-MyVerbose "Loading configuration from $ConfigFile"
             $cfg = Import-PowerShellDataFile -Path $ConfigFile -ErrorAction Stop
 
             # Helper: read a value from the config, or keep the current parameter value
@@ -315,11 +326,26 @@
             $ExternalRelaySubnets = Get-CfgValue 'ExternalRelaySubnets' $ExternalRelaySubnets
             $NoWordDoc            = [switch](Get-CfgValue 'NoWordDoc'        ([bool]$NoWordDoc))
             $CustomerDocument     = [switch](Get-CfgValue 'CustomerDocument' ([bool]$CustomerDocument))
-            # Config-file back-compat: legacy 'Language=DE' still maps to $German; 'German=true' also accepted.
+            # Language resolution. Precedence (highest first):
+            #   1. -Language cmdline (other than default 'EN')
+            #   2. -German cmdline switch (deprecated)
+            #   3. config 'Language' key (e.g. 'DE', 'EN', 'IT', 'FR' …)
+            #   4. config 'German' key (deprecated boolean)
+            #   5. default 'EN'
             $cfgLang   = Get-CfgValue 'Language' $null
             $cfgGerman = Get-CfgValue 'German'   $null
-            if ($cfgGerman -ne $null) { $German = [switch][bool]$cfgGerman }
-            elseif ($cfgLang)         { $German = [switch]($cfgLang -imatch '^DE$') }
+            if ($PSBoundParameters.ContainsKey('Language')) {
+                # explicit cmdline -Language wins
+            }
+            elseif ($German) {
+                $Language = 'DE'
+            }
+            elseif ($cfgLang) {
+                $Language = $cfgLang.ToUpperInvariant()
+            }
+            elseif ($cfgGerman -ne $null -and [bool]$cfgGerman) {
+                $Language = 'DE'
+            }
             $DocumentScope        = Get-CfgValue 'DocumentScope'  $DocumentScope
             $IncludeServers       = @((Get-CfgValue 'IncludeServers' ($IncludeServers -join ',')) -split ',' | Where-Object { $_ })
             $TemplatePath         = Get-CfgValue 'TemplatePath'   $TemplatePath
@@ -351,7 +377,27 @@
                 Write-MyWarning 'DELETE OR SCRUB the config file IMMEDIATELY after install completes.'
                 Write-MyWarning 'Do not archive, commit to version control, copy to a share, or email.'
                 Write-MyWarning 'EXpress state file persists credentials as DPAPI (user+machine bound),'
-                Write-MyWarning 'but the config file itself remains a plain-text artefact on disk.'
+                Write-MyWarning 'AUTO-SCRUB: this script will rewrite the config and clear AdminPassword'
+                Write-MyWarning 'after credentials are validated (typically the first preflight pass).'
+                Write-MyWarning '################################################################'
+                Write-MyWarning ''
+            }
+
+            # -- Plain-text PFX password (UNATTENDED ONLY) ---------------------------------
+            # CertificatePath + CertificatePassword in the config file lets Autopilot run
+            # without the interactive PFX-password prompt. Same security model as
+            # AdminPassword above: plain text on disk, must be scrubbed after install.
+            $cfgCertPw = Get-CfgValue 'CertificatePassword' $null
+            if ($CertificatePath -and $cfgCertPw) {
+                $script:CertificatePasswordFromConfig = $cfgCertPw
+                Write-MyWarning ''
+                Write-MyWarning '################################################################'
+                Write-MyWarning '##  SECURITY WARNING: PLAIN-TEXT PFX PASSWORD IN CONFIG FILE  ##'
+                Write-MyWarning '################################################################'
+                Write-MyWarning ('Config file: {0}' -f $ConfigFile)
+                Write-MyWarning 'contains a plain-text CertificatePassword for the PFX import.'
+                Write-MyWarning 'Acceptable ONLY for short-lived, unattended installation runs.'
+                Write-MyWarning 'DELETE OR SCRUB the config file IMMEDIATELY after install completes.'
                 Write-MyWarning '################################################################'
                 Write-MyWarning ''
             }
@@ -379,7 +425,8 @@
 
             # Recalculate state file path with potentially overridden InstallPath
             $StateFile = "$InstallPath\$($env:computerName)_EXpress_State.xml"
-            Write-MyOutput "Configuration loaded: mode=$(if ($InstallEdge){'Edge'}elseif($Recover){'Recovery'}else{'Mailbox'}), source=$SourcePath, org=$Organization"
+            $cfgMode = if ($InstallEdge) { 'Edge' } elseif ($Recover) { 'Recovery' } else { 'Mailbox' }
+            Write-MyStep -Label 'Configuration' -Value ('{0}, source={1}, org={2}' -f $cfgMode, $SourcePath, $Organization)
         }
         elseif ( $($PsCmdlet.ParameterSetName) -eq "Autopilot") {
             Write-Error "Running in Autopilot mode but no state file present"
@@ -401,13 +448,36 @@
         # Register-AuthCertificateRenewal. Not populated in standard deployments.
         $State["MEACAutomationUser"] = if ($MEACAutomationCredential) { $MEACAutomationCredential.UserName } else { $null }
         $State["MEACAutomationPW"]   = if ($MEACAutomationCredential) { ($MEACAutomationCredential.Password | ConvertFrom-SecureString) } else { $null }
+        # Friendly source-path check. Skipped for management-tools-only / NoSetup runs that
+        # don't need a setup tree, and for parameter sets where SourcePath isn't required.
+        if ($SourcePath -and -not $InstallRecipientManagement -and -not $InstallManagementTools) {
+            $sourceOk = $false
+            if (Test-Path -Path $SourcePath -PathType Container) { $sourceOk = $true }
+            elseif (Get-DiskImage -ImagePath $SourcePath -ErrorAction SilentlyContinue) { $sourceOk = $true }
+            if (-not $sourceOk) {
+                # Clean console output — Write-MyError would emit a full PS error block per line.
+                $msg = @(
+                    ''
+                    ('Exchange source not found: {0}' -f $SourcePath)
+                    'Provide a folder containing setup.exe, or a .iso file path that the system can mount.'
+                    'Tip: place the install media under sources\ next to EXpress.ps1, or set SourcePath in your config file.'
+                    ''
+                )
+                foreach ($line in $msg) {
+                    Write-Host $line -ForegroundColor Red
+                    if ($line) { Write-ToTranscript 'ERROR' $line }
+                }
+                $script:nonFatalErrorCount++
+                exit $ERR_SOURCEPATHINVALID
+            }
+        }
         if ( Get-DiskImage -ImagePath $SourcePath -ErrorAction SilentlyContinue) {
             $State['SourceImage'] = $SourcePath
             # Unblock ISO before mounting: on WS2022+ Windows propagates MOTW from the ISO container
             # to all files executed from it. Zone.Identifier ADS on the ISO itself must be removed first
             # because files inside UDF (ISO9660) cannot carry ADS and cannot be unblocked after mounting.
             if ( Get-Item -Path $SourcePath -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue) {
-                Write-MyOutput "ISO source has Zone.Identifier — unblocking before mount to prevent MOTW propagation"
+                Write-MyVerbose 'ISO source has Zone.Identifier — unblocking before mount to prevent MOTW propagation'
                 Unblock-File -Path $SourcePath
             }
             $State["SourcePath"] = Resolve-SourcePath -SourceImage $SourcePath
@@ -429,6 +499,22 @@
         $State["ConfigFile"] = if ($ConfigFile) {
             try { (Resolve-Path -Path $ConfigFile -ErrorAction Stop).Path } catch { [string]$ConfigFile }
         } else { $null }
+        # Magenta DEBUG banner — rendered here (post config-load) so the halt-line is accurate.
+        if ($State['LogDebug']) {
+            $haltLine = if ($State['Autopilot']) {
+                '   - Autopilot: NO halt after Phase 4 (runs through)        '
+            } else {
+                '   - Copilot: HALTS after Phase 4 for VM snapshot opportunity'
+            }
+            Write-Host ''
+            Write-Host '  ============================================================' -ForegroundColor Magenta
+            Write-Host '   *** DEBUG MODE ACTIVE ***                                  ' -ForegroundColor Magenta -BackgroundColor Black
+            Write-Host '   - Install log carries DEBUG / SUPPRESSED-ERROR / CMD lines ' -ForegroundColor Magenta
+            Write-Host '   - Per-phase snapshots (state + system info) in .\Debug\    ' -ForegroundColor Magenta
+            Write-Host $haltLine -ForegroundColor Magenta
+            Write-Host '  ============================================================' -ForegroundColor Magenta
+            Write-Host ''
+        }
         $State["IncludeFixes"] = $IncludeFixes
         $State["NoSetup"] = $NoSetup
         $State["Recover"] = $Recover
@@ -436,6 +522,32 @@
         $State["Install481"] = $False
         $State["VCRedist2012"] = $False
         $State["VCRedist2013"] = $False
+
+        # Probe whether the Exchange org already exists in this forest (Phase 3 sets this
+        # authoritatively later, but we need it now so the Advanced Menu shows correct defaults).
+        # Uses $null-eq guard (not -not) so a $false result from a prior run is not re-probed:
+        #   $null   = never checked yet → probe runs
+        #   $false  = checked, org was new at that time → skip (prevents false-positive after Phase 3 creates the org)
+        #   $true   = checked, org already existed → skip
+        # Safe to run on non-domain-joined machines — catch swallows any ADSI failure.
+        if ($null -eq $State['ExistingOrg'] -and $State['OrganizationName'] -and -not $State['InstallEdge']) {
+            try {
+                $cnc      = ([ADSI]'LDAP://RootDSE').configurationNamingContext
+                $orgEntry = [ADSI]"LDAP://CN=$($State['OrganizationName']),CN=Microsoft Exchange,CN=Services,$cnc"
+                if ($orgEntry.Name) {
+                    $State['ExistingOrg'] = $true
+                    Write-MyDebug ("ExistingOrg: Exchange organization '{0}' already present in this forest" -f $State['OrganizationName'])
+                } else {
+                    $State['ExistingOrg'] = $false
+                    Write-MyDebug ("ExistingOrg: Exchange organization '{0}' not found — treating as new org" -f $State['OrganizationName'])
+                }
+            } catch {
+                # Probe failed — treat as new org ($false) so this block does NOT re-run on
+                # the next Autopilot resume where the org may already exist (created by Phase 3).
+                $State['ExistingOrg'] = $false
+                Write-MyDebug ('ExistingOrg probe failed — assuming new org: {0}' -f $_)
+            }
+        }
 
         # -- Advanced Configuration catalog ---------------------------------------
         # Merge explicitly cmdline-bound switches into $State['AdvancedFeatures']
@@ -448,6 +560,44 @@
                 $v = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue
                 $State['AdvancedFeatures'][$name] = [bool]$v
             }
+        }
+        # For existing orgs: opt out of org-wide overrides whose defaults could silently
+        # conflict with existing admin choices. Admin can still enable them explicitly via
+        # config or the Advanced Menu — these only flip the *default* from $true to $false.
+        # All eight settings hit Set-OrganizationConfig or Set-TransportConfig, which is
+        # org-wide (affects every server in the org).
+        if ($State['ExistingOrg']) {
+            $orgWideOptOut = @(
+                'MaxMessageSize150MB',  # Set-TransportConfig MaxSendSize/MaxReceiveSize
+                'MessageExpiration7d',  # Set-TransportConfig MessageExpirationTimeout
+                'SafetyNet2d',          # Set-TransportConfig SafetyNetHoldTime
+                'HtmlNDR',              # Set-TransportConfig ExternalDsnDefaultLanguage / format
+                'ModernAuth',           # Set-OrganizationConfig OAuth2ClientProfileEnabled
+                'OWASessionTimeout6h',  # Set-OrganizationConfig OAuth lifetime
+                'DisableTelemetry',     # Set-OrganizationConfig CustomerFeedbackEnabled
+                'MapiHttp'              # Set-OrganizationConfig MapiHttpEnabled
+            )
+            foreach ($feat in $orgWideOptOut) {
+                if (-not $State['AdvancedFeatures'].ContainsKey($feat)) {
+                    $State['AdvancedFeatures'][$feat] = $false
+                }
+            }
+        }
+        # ConfigFile-driven runs are meant to be fully unattended: imply auto-approve
+        # for Windows Updates unless the operator explicitly set $false in the config.
+        # Copilot interactive runs keep the catalog default ($false → ask in Advanced Menu).
+        if ($State['ConfigDriven'] -and -not $State['AdvancedFeatures'].ContainsKey('AutoApproveWindowsUpdates')) {
+            $State['AdvancedFeatures']['AutoApproveWindowsUpdates'] = $true
+        }
+        # AnonymousRelay = $true (config/cmdline) without subnets → seed Copilot-style
+        # RFC 5737 placeholders so the catalog Condition passes and connectors are created.
+        # Mirror of Copilot menu behaviour: both fields get a placeholder when blank,
+        # so the admin sees both connectors in EAC and edits the subnets manually.
+        if ([bool]$State['AdvancedFeatures']['AnonymousRelay']) {
+            if (-not $RelaySubnets         -or @($RelaySubnets        ).Count -eq 0) { $RelaySubnets         = @('192.0.2.1/32') }
+            if (-not $ExternalRelaySubnets -or @($ExternalRelaySubnets).Count -eq 0) { $ExternalRelaySubnets = @('192.0.2.2/32') }
+            $State['RelaySubnets']         = $RelaySubnets
+            $State['ExternalRelaySubnets'] = $ExternalRelaySubnets
         }
         # Project every catalog entry to its flat $State[Name] so the rest of the
         # script (Phase 5 hardening, reports, HealthChecker gates …) keeps reading
@@ -497,20 +647,30 @@
         $State["NoWordDoc"]           = [bool]$NoWordDoc
         $State["CustomerDocument"]    = [bool]$CustomerDocument
         # English is the default; -German is the only opt-in for German output.
-        # $State['Language'] stays as the internal flag ('EN'|'DE') to avoid touching
-        # the L helper in New-InstallationDocument that reads it.
-        $State["Language"]            = if ($German) { 'DE' } else { 'EN' }
+        # $State['Language'] is a 2-letter code ('DE','EN','IT',...). The L helper in
+        # New-InstallationDocument currently treats anything other than 'DE' as English
+        # (i.e. unsupported codes fall back to EN until translations land).
+        $State["Language"]            = $Language.ToUpperInvariant()
         $State["DocumentScope"]       = if ($DocumentScope) { $DocumentScope } else { 'All' }
         $State["IncludeServers"]      = if ($IncludeServers) { $IncludeServers -join ',' } else { '' }
         $State["TemplatePath"]        = $TemplatePath
 
-        # Prompt for PFX password at startup if certificate path specified
+        # PFX password handling. Three paths:
+        #   1. Config supplied plain-text CertificatePassword → use it (security warning was logged earlier).
+        #   2. CertificatePath set, no config password → prompt interactively (Copilot or Autopilot first run).
+        #   3. No CertificatePath → no-op.
         if ($CertificatePath) {
-            Write-MyOutput 'Certificate import requested, prompting for PFX password'
-            $pfxPwd = Read-Host -Prompt 'Enter PFX password' -AsSecureString
-            # ConvertFrom-SecureString without -Key uses DPAPI (user+machine bound).
-            # Safe here: PFX import happens in Phase 5 on the same machine/user.
-            $State["CertificatePassword"] = ($pfxPwd | ConvertFrom-SecureString)
+            if ($script:CertificatePasswordFromConfig) {
+                $sec = ConvertTo-SecureString -String $script:CertificatePasswordFromConfig -AsPlainText -Force
+                $State["CertificatePassword"] = ($sec | ConvertFrom-SecureString)
+                Write-MyStep -Label 'PFX password' -Value 'sourced from config (no prompt)'
+            } else {
+                Write-MyOutput 'Certificate import requested, prompting for PFX password'
+                $pfxPwd = Read-Host -Prompt 'Enter PFX password' -AsSecureString
+                # ConvertFrom-SecureString without -Key uses DPAPI (user+machine bound).
+                # Safe here: PFX import happens in Phase 5 on the same machine/user.
+                $State["CertificatePassword"] = ($pfxPwd | ConvertFrom-SecureString)
+            }
         }
 
         # Store Server Manager state
@@ -569,7 +729,7 @@
     }
 
     $runMode = if ($State['ConfigDriven']) { 'Autopilot (fully automated)' } else { 'Copilot (interactive)' }
-    Write-MyOutput ('Mode: {0}' -f $runMode)
+    Write-MyStep -Label 'Mode' -Value $runMode
     if ($State['ConfigDriven']) {
         # Resolve and log the configuration file actually used (absolute path + metadata)
         $cfgResolved = if ($ConfigFile) { $ConfigFile } else { $State['ConfigFile'] }
@@ -577,7 +737,7 @@
             try {
                 $cfgItem = Get-Item -Path $cfgResolved -ErrorAction Stop
                 $State['ConfigFile'] = $cfgItem.FullName
-                Write-MyOutput ('Configuration: {0}' -f $cfgItem.FullName)
+                Write-MyStep -Label 'Configuration' -Value $cfgItem.FullName
                 Write-MyVerbose ('Configuration details: size={0} bytes, modified={1:u}' -f $cfgItem.Length, $cfgItem.LastWriteTimeUtc)
             } catch {
                 Write-MyWarning ('Configuration file cannot be resolved: {0} ({1})' -f $cfgResolved, $_.Exception.Message)
@@ -599,10 +759,10 @@
 
     # Generate Pre-Flight Report (only on first phase or PreflightOnly mode)
     if ($State['InstallPhase'] -le 1 -or $State['PreflightOnly']) {
-        New-Item -Path $State['InstallPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+        if (-not (Test-Path $State['InstallPath'])) { New-Item -Path $State['InstallPath'] -ItemType Directory -Force | Out-Null }
         $preflightFailures = New-PreflightReport
         if ($State['PreflightOnly']) {
-            Write-MyOutput 'PreflightOnly mode - exiting after report generation'
+            Write-MyStep -Label 'PreflightOnly mode' -Value 'exiting after report' -Status Info
             if ($preflightFailures -gt 0) {
                 Write-MyWarning ('{0} preflight check(s) failed - review the report' -f $preflightFailures)
             }
@@ -625,7 +785,7 @@
     # Always disable autologon allowing you to "fix" things and reboot intermediately
     Disable-AutoLogon
 
-    Write-MyOutput "Checking for pending reboot .."
+    Write-MyVerbose 'Checking for pending reboot ..'
     if ( Test-RebootPending ) {
         $State["InstallPhase"]--
         if ( $State["Autopilot"]) {
@@ -650,7 +810,7 @@
             if ($isClientOS) {
                 try {
                     Checkpoint-Computer -Description ('Exchange Install Phase {0}' -f $State['InstallPhase']) -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
-                    Write-MyOutput ('System Restore checkpoint created for Phase {0}' -f $State['InstallPhase'])
+                    Write-MyStep -Label 'Restore checkpoint' -Value ('Phase {0} created' -f $State['InstallPhase'])
                 }
                 catch {
                     Write-MyWarning ('Could not create System Restore checkpoint: {0}' -f $_.Exception.Message)
@@ -719,7 +879,7 @@
                     Import-ExchangeModule
                     # Ensure Defender realtime is on before we snapshot server state into the report.
                     Enable-DefenderRealtimeMonitoring -Force
-                    try { New-InstallationDocument } catch { Write-MyWarning ('Word document failed: {0}' -f $_.Exception.Message) }
+                    try { New-InstallationDocument } catch { Write-MyError ('Word document failed: {0}' -f $_.Exception.Message) }
                     Write-MyOutput 'Installation document generation complete.'
                 }
                 default {
@@ -751,7 +911,7 @@
                     }
 
                     # Access Namespace — Accepted Domain + Email Address Policy (F26)
-                    if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and $State['NewExchangeOrg']) {
+                    if ($State['AccessNamespaceMail'] -and $State['Namespace']) {
                         Enable-AccessNamespaceMailConfig
                     }
 
@@ -781,32 +941,50 @@
             $continueInProcess = $false
         switch ($State["InstallPhase"]) {
             1 {
-
+                Write-MyPhase -Number 1 -Total $MAX_PHASE -Title 'Windows Features + Updates'
                 if ( [System.Version]$FullOSVersion -ge [System.Version]$WS2016_MAJOR) {
 
-                    Write-MyOutput ('Exchange setup detected: {0}' -f (Get-SetupTextVersion $State['SetupVersion']))
-                    Write-MyOutput ('Operating System detected: {0}' -f (Get-OSVersionText $FullOSVersion))
+                    Write-MyStep -Label 'Exchange Setup' -Value (Get-SetupTextVersion $State['SetupVersion'])
+                    Write-MyStep -Label 'Operating System' -Value (Get-OSVersionText $FullOSVersion)
 
                     if ( $State["NoNet481"]) {
-                        Write-MyOutput "NoNet481 specified, will not install .NET Framework 4.8.1"
+                        Write-MyStep -Label '.NET Framework 4.8.1' -Value 'skipped (-NoNet481)' -Status Info
                         $State["Install481"] = $False
                     }
                     else {
                         if ([System.Version]$FullOSVersion -lt [System.Version]$WS2022_PREFULL ) {
-                            Write-MyOutput ".NET Framework 4.8 required for this OS — will install if not present"
                             $State["Install481"] = $False
+                            if ((Get-NETVersion) -ge $NETVERSION_48) {
+                                Write-MyStep -Label '.NET Framework 4.8' -Value 'already installed' -Status OK
+                            } else {
+                                Write-MyVerbose '.NET Framework 4.8 not yet installed — will install in Phase 2'
+                            }
                         }
                         else {
-                            Write-MyOutput ".NET Framework 4.8.1 required for this OS — will install if not present"
                             $State["Install481"] = $True
+                            if ((Get-NETVersion) -ge $NETVERSION_481) {
+                                Write-MyStep -Label '.NET Framework 4.8.1' -Value 'already installed' -Status OK
+                            } else {
+                                Write-MyVerbose '.NET Framework 4.8.1 not yet installed — will install in Phase 2'
+                            }
                         }
                     }
 
-                    Write-MyOutput "Will install Visual C++ 2012 Runtime"
-                    $State["VCRedist2012"] = $True
+                    if (Get-VCRuntime -version '11.0') {
+                        Write-MyStep -Label 'Visual C++ 2012 Runtime' -Value 'already installed' -Status OK
+                        $State["VCRedist2012"] = $False
+                    } else {
+                        Write-MyVerbose 'Visual C++ 2012 Runtime not detected — will install in Phase 2'
+                        $State["VCRedist2012"] = $True
+                    }
 
-                    Write-MyOutput "Will install Visual C++ 2013 Runtime"
-                    $State["VCRedist2013"] = $True
+                    if (Get-VCRuntime -version '12.0' -MinBuild '12.0.40664') {
+                        Write-MyStep -Label 'Visual C++ 2013 Runtime' -Value 'already installed' -Status OK
+                        $State["VCRedist2013"] = $False
+                    } else {
+                        Write-MyVerbose 'Visual C++ 2013 Runtime not detected or outdated — will install in Phase 2'
+                        $State["VCRedist2013"] = $True
+                    }
 
                 }
                 else {
@@ -818,7 +996,7 @@
                 Disable-IEESC
                 Disable-ServerManagerAtLogon
                 Disable-DefenderRealtimeMonitoring
-                Write-MyOutput "Installing Operating System prerequisites"
+                Write-MyVerbose 'Installing Operating System prerequisites'
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Installing Windows Features' -PercentComplete 10
                 Install-WindowsFeatures $MajorOSVersion
 
@@ -835,9 +1013,10 @@
             }
 
             2 {
+                Write-MyPhase -Number 2 -Total $MAX_PHASE -Title 'Prerequisites (.NET / VC++ / URL Rewrite)'
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Prerequisites' -PercentComplete 0
-                Write-MyOutput "Installing BITS module"
+                Write-MyVerbose 'Installing BITS module'
                 Import-Module BITSTransfer
 
                 # Check .NET FrameWork 4.8.1 needs to be installed
@@ -849,11 +1028,11 @@
                         Install-MyPackage "-" "Microsoft .NET Framework 4.8.1" "NDP481-x86-x64-AllOS-ENU.exe" "https://download.microsoft.com/download/4/b/2/cd00d4ed-ebdd-49ee-8a33-eabc3d1030e3/NDP481-x86-x64-AllOS-ENU.exe" ("/q", "/norestart")
                     }
                     else {
-                        Write-MyOutput ".NET Framework 4.8.1 or later detected"
+                        Write-MyStep -Label '.NET Framework 4.8.1' -Value 'already installed'
                     }
                 }
                 else {
-                    Write-MyOutput ('Keeping current .NET Framework ({0})' -f (Get-NETVersion))
+                    Write-MyStep -Label '.NET Framework' -Value ('{0} (kept)' -f (Get-NETVersion))
                     Set-NETFrameworkInstallBlock '4.8.1' '-' '481'
                 }
 
@@ -876,48 +1055,62 @@
                 # Check if need to install VC++ Runtimes
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: Visual C++ Runtimes' -PercentComplete 50
                 # VC++ 2012 (v11.0): required for Exchange 2016 CU23, Exchange 2019, SE and Edge Transport role (flagged by HealthChecker)
-                if ( -not (Get-VCRuntime -version '11.0') -and $State["VCRedist2012"] ) {
-                    Install-MyPackage "" "Visual C++ 2012 Redistributable" "vcredist_x64_2012.exe" "https://download.microsoft.com/download/1/6/B/16B06F60-3B20-4FF2-B699-5E9B7962F9AE/VSU_4/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
-                    if ( -not (Get-VCRuntime -version '11.0')) {
-                        Write-MyError 'Visual C++ 2012 Redistributable installation could not be verified — Exchange Setup will fail. Check the installer manually.'
-                        exit $ERR_PROBLEMPACKAGESETUP
+                if ( -not (Get-VCRuntime -version '11.0') ) {
+                    if ($State["VCRedist2012"]) {
+                        Install-MyPackage "" "Visual C++ 2012 Redistributable" "vcredist_x64_2012.exe" "https://download.microsoft.com/download/1/6/B/16B06F60-3B20-4FF2-B699-5E9B7962F9AE/VSU_4/vcredist_x64.exe" ("/install", "/quiet", "/norestart")
+                        if ( -not (Get-VCRuntime -version '11.0')) {
+                            Write-MyError 'Visual C++ 2012 Redistributable installation could not be verified — Exchange Setup will fail. Check the installer manually.'
+                            exit $ERR_PROBLEMPACKAGESETUP
+                        }
+                        Write-MyStep -Label 'Visual C++ 2012 Runtime' -Value 'installed' -Status OK
                     }
+                } elseif ($State["VCRedist2012"] -ne $false) {
+                    Write-MyStep -Label 'Visual C++ 2012 Runtime' -Value 'already installed' -Status OK
                 }
 
                 # VC++ 2013 (v12.0): required for Exchange 2016 CU23, 2019 and SE; minimum 12.0.40664 (KB4538461)
-                if ( -not (Get-VCRuntime -version '12.0' -MinBuild '12.0.40664') -and $State["VCRedist2013"] ) {
-                    # VC++ 2013 x64 12.0.40664.0 — High-DPI aware build (aka.ms/highdpimfc2013x64enu)
-                    # This is the version HC checks for; the older GUID CDN URL delivers 12.0.40660.
-                    Install-MyPackage "" "Visual C++ 2013 Redistributable" "vcredist_x64_2013.exe" "https://aka.ms/highdpimfc2013x64enu" ("/install", "/quiet", "/norestart")
-                    if ( -not (Get-VCRuntime -version '12.0')) {
-                        Write-MyError 'Visual C++ 2013 Redistributable installation could not be verified — Exchange Setup will fail. Check the installer manually.'
-                        exit $ERR_PROBLEMPACKAGESETUP
+                if ( -not (Get-VCRuntime -version '12.0' -MinBuild '12.0.40664') ) {
+                    if ($State["VCRedist2013"]) {
+                        # VC++ 2013 x64 12.0.40664.0 — High-DPI aware build (aka.ms/highdpimfc2013x64enu)
+                        # This is the version HC checks for; the older GUID CDN URL delivers 12.0.40660.
+                        Install-MyPackage "" "Visual C++ 2013 Redistributable" "vcredist_x64_2013.exe" "https://aka.ms/highdpimfc2013x64enu" ("/install", "/quiet", "/norestart")
+                        if ( -not (Get-VCRuntime -version '12.0')) {
+                            Write-MyError 'Visual C++ 2013 Redistributable installation could not be verified — Exchange Setup will fail. Check the installer manually.'
+                            exit $ERR_PROBLEMPACKAGESETUP
+                        }
+                        Write-MyStep -Label 'Visual C++ 2013 Runtime' -Value 'installed' -Status OK
                     }
+                } elseif ($State["VCRedist2013"] -ne $false) {
+                    Write-MyStep -Label 'Visual C++ 2013 Runtime' -Value 'already installed' -Status OK
                 }
 
                 # URL Rewrite module
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 2 of 6: URL Rewrite Module' -PercentComplete 80
+                $urlRwBefore = Test-MyPackage '{9BCA2118-F753-4A1E-BCF3-5A820729965C}'
                 Install-MyPackage "{9BCA2118-F753-4A1E-BCF3-5A820729965C}" "URL Rewrite Module 2.1" "rewrite_amd64_en-US.msi" "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi" ("/quiet", "/norestart")
+                $urlRwVal = if ($urlRwBefore) { 'already installed' } else { 'installed' }
+                Write-MyStep -Label 'URL Rewrite Module 2.1' -Value $urlRwVal -Status OK
                 Write-MyVerbose ('Phase 2 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
 
             }
 
             3 {
+                Write-MyPhase -Number 3 -Total $MAX_PHASE -Title 'AD Preparation + UCMA'
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: Prerequisites (continued)' -PercentComplete 0
                 if ( !($State['InstallEdge'])) {
-                    Write-MyOutput "Installing Exchange prerequisites (continued)"
+                    Write-MyVerbose 'Installing Exchange prerequisites (continued)'
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 3 of 6: UCMA Runtime' -PercentComplete 20
                     if ( [System.Version]$FullOSVersion -ge [System.Version]$WS2019_PREFULL -and (Test-ServerCore) ) {
-                        Install-MyPackage "{41D635FE-4F9D-47F7-8230-9B29D6D42D31}" "Unified Communications Managed API 4.0 Runtime (Core)" "Setup.exe" (Join-Path -Path $State['SourcePath'] -ChildPath 'UcmaRedist\Setup.exe') ("/passive", "/norestart") -NoDownload
+                        Install-MyPackage "{41D635FE-4F9D-47F7-8230-9B29D6D42D31}" "Unified Communications Managed API 4.0 Runtime (Core)" "Setup.exe" (Join-Path -Path $State['SourcePath'] -ChildPath 'UcmaRedist\Setup.exe') ("/quiet", "/norestart") -NoDownload
                     }
                     else {
-                        Install-MyPackage "{41D635FE-4F9D-47F7-8230-9B29D6D42D31}" "Unified Communications Managed API 4.0 Runtime" "UcmaRuntimeSetup.exe" "https://download.microsoft.com/download/2/C/4/2C47A5C1-A1F3-4843-B9FE-84C0032C61EC/UcmaRuntimeSetup.exe" ("/passive", "/norestart")
+                        Install-MyPackage "{41D635FE-4F9D-47F7-8230-9B29D6D42D31}" "Unified Communications Managed API 4.0 Runtime" "UcmaRuntimeSetup.exe" "https://download.microsoft.com/download/2/C/4/2C47A5C1-A1F3-4843-B9FE-84C0032C61EC/UcmaRuntimeSetup.exe" ("/quiet", "/norestart")
                     }
                 }
                 else {
-                    Write-MyOutput 'Setting Primary DNS Suffix'
+                    Write-MyStep -Label 'Primary DNS Suffix' -Value 'set' -Status OK
                     Set-EdgeDNSSuffix -DNSSuffix $State['EdgeDNSSuffix']
                 }
                 if ($State["OrganizationName"]) {
@@ -932,8 +1125,8 @@
             }
 
             4 {
+                Write-MyPhase -Number 4 -Total $MAX_PHASE -Title 'Exchange Setup'
                 $phSw = [Diagnostics.Stopwatch]::StartNew()
-                Write-MyOutput "Installing Exchange"
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 6: Running Exchange Setup (this may take 30-60 min)' -PercentComplete 0
 
                 switch ( $State["SCP"]) {
@@ -957,11 +1150,11 @@
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 4 of 6: Configuring transport services' -PercentComplete 95
 
                 if ( Get-Service MSExchangeTransport -ErrorAction SilentlyContinue) {
-                    Write-MyOutput "Configuring MSExchangeTransport startup to Manual"
+                    Write-MyStep -Label 'MSExchangeTransport' -Value 'startup Manual' -Status OK
                     Set-Service MSExchangeTransport -StartupType Manual
                 }
                 if ( Get-Service MSExchangeFrontEndTransport -ErrorAction SilentlyContinue) {
-                    Write-MyOutput "Configuring MSExchangeFrontEndTransport startup to Manual"
+                    Write-MyStep -Label 'MSExchangeFrontEndTransport' -Value 'startup Manual' -Status OK
                     Set-Service MSExchangeFrontEndTransport -StartupType Manual
                 }
                 # Dismount ISO after Exchange setup — no longer needed for phases 5+
@@ -974,7 +1167,7 @@
             }
 
             5 {
-                Write-MyOutput "Post-configuring"
+                Write-MyPhase -Number 5 -Total $MAX_PHASE -Title 'Hardening / Security Update / VDir URLs'
                 $p5Steps = @(
                     'Windows Defender exclusions', 'Power plan', 'NIC power management', 'Page file',
                     'TCP settings', 'SMBv1', 'Windows Search', 'WDigest', 'HTTP/2', 'TCP offload',
@@ -1123,7 +1316,7 @@
                 $w3svcPidBeforeSU = (Get-CimInstance Win32_Service -Filter "Name='W3SVC'" -ErrorAction SilentlyContinue).ProcessId
                 Step-P5 'Exchange Security Updates'
                 if ( $State["IncludeFixes"]) {
-                    Write-MyOutput "Installing additional recommended hotfixes and security updates for Exchange"
+                    Write-MyVerbose 'Installing additional recommended hotfixes and security updates for Exchange'
 
                     $ImagePathVersion = Get-DetectedFileVersion ( (Get-CimInstance -Query 'SELECT * FROM win32_service WHERE name="MSExchangeServiceHost"').PathName.Trim('"') )
                     Write-MyVerbose ('Installed Exchange MSExchangeIS version {0}' -f $ImagePathVersion)
@@ -1172,9 +1365,9 @@
                         Write-MyVerbose 'Server reboot pending after Phase 5 — IIS will restart with the reboot, skipping explicit W3SVC restart'
                     }
                     else {
-                        Write-MyOutput 'Restarting W3SVC and WAS to activate ECC/CBC/AMSI SettingOverride changes (may take up to ~60s)'
+                        Write-MyStep -Label 'W3SVC + WAS' -Value 'restarting (~60s) for SettingOverrides' -Status Run
                         Restart-Service -Name W3SVC, WAS -Force -WarningAction SilentlyContinue
-                        Write-MyOutput 'W3SVC and WAS restarted'
+                        Write-MyStep -Label 'W3SVC + WAS' -Value 'restarted' -Status OK
                     }
                     $script:p5NeedsIisRestart = $false
                 }
@@ -1184,14 +1377,15 @@
             }
 
             6 {
+                Write-MyPhase -Number 6 -Total $MAX_PHASE -Title 'Connectors / DAG / Reports'
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Finalizing' -PercentComplete 0
                 Enable-DefenderRealtimeMonitoring
                 if ( Get-Service MSExchangeTransport -ErrorAction SilentlyContinue) {
-                    Write-MyOutput "Configuring MSExchangeTransport startup to Automatic"
+                    Write-MyStep -Label 'MSExchangeTransport' -Value 'startup Automatic' -Status OK
                     Set-Service MSExchangeTransport -StartupType Automatic
                 }
                 if ( Get-Service MSExchangeFrontEndTransport -ErrorAction SilentlyContinue) {
-                    Write-MyOutput "Configuring MSExchangeFrontEndTransport startup to Automatic"
+                    Write-MyStep -Label 'MSExchangeFrontEndTransport' -Value 'startup Automatic' -Status OK
                     Set-Service MSExchangeFrontEndTransport -StartupType Automatic
                     Start-Service MSExchangeFrontEndTransport -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
                 }
@@ -1273,7 +1467,8 @@
                             $script:hcFailed++
                         }
                     }
-                    Write-MyOutput ('Health Monitor summary: {0} passed, {1} failed out of 8 endpoints' -f $hcPassed, $hcFailed)
+                    $hcStatus = if ($hcFailed -gt 0) { 'Warn' } else { 'OK' }
+                    Write-MyStep -Label 'Health Monitor' -Value ('{0} passed / {1} failed (8 endpoints)' -f $hcPassed, $hcFailed) -Status $hcStatus
                     if ($hcFailed -gt 0) {
                         Write-MyWarning ('{0} health endpoint(s) failed - review above warnings' -f $hcFailed)
                     }
@@ -1312,7 +1507,7 @@
                 }
 
                 # Access Namespace — Accepted Domain + Email Address Policy (F26)
-                if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and $State['NewExchangeOrg'] -and -not $State['InstallEdge']) {
+                if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Access namespace mail config' -PercentComplete 79
                     Enable-AccessNamespaceMailConfig
                 }
@@ -1358,17 +1553,17 @@
                         Enable-DefenderRealtimeMonitoring -Force
                         try { New-InstallationDocument } catch {
                             $derr = $_
-                            Write-MyWarning ('Word document failed: ' + $derr.Exception.Message)
+                            Write-MyError ('Word document failed: ' + $derr.Exception.Message)
                             $dln = if ($derr.InvocationInfo) { $derr.InvocationInfo.ScriptLineNumber } else { '?' }
                             $dli = if ($derr.InvocationInfo) { ($derr.InvocationInfo.Line -replace '\s+', ' ').Trim() } else { '' }
-                            Write-MyWarning ('  at line ' + $dln + ': ' + $dli)
+                            Write-MyError ('  at line ' + $dln + ': ' + $dli)
                             if ($derr.ScriptStackTrace) { Write-MyVerbose ('  stack: ' + $derr.ScriptStackTrace) }
                         }
                     }
                 }
 
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
-                Write-MyOutput "Setup finished - We're good to go."
+                Write-MySection 'Setup finished — we are good to go'
             }
 
             default {
@@ -1377,11 +1572,14 @@
             }
         }
 
+        # Debug snapshot: capture state, log, and system info after each phase
+        Write-DebugSnapshot
+
             # Skip reboot between Phase 2 and 3 if Windows doesn't signal a pending
             # reboot. Persist the advance immediately so a crash in Phase 3 doesn't
             # re-run Phase 2.
             if ( $State["Autopilot"] -and $State["InstallPhase"] -eq 2 -and -not (Test-RebootPending) ) {
-                Write-MyOutput 'Phase 2 complete — no reboot pending, continuing directly with Phase 3 ..'
+                Write-MyStep -Label 'Phase 2' -Value 'complete (no reboot needed)' -Status OK
                 $State["LastSuccessfulPhase"] = 2
                 $State["InstallPhase"] = 3
                 Save-State $State
@@ -1392,7 +1590,7 @@
             # (exit code 3010) or Windows reports a pending reboot from any other source.
             # Phase 5 otherwise only changes registry/IIS settings that don't require reboot.
             if ( $State["Autopilot"] -and $State["InstallPhase"] -eq 5 -and -not $State['RebootRequired'] -and -not (Test-RebootPending) ) {
-                Write-MyOutput 'Phase 5 complete — no SU reboot and no pending reboot, continuing directly with Phase 6 ..'
+                Write-MyStep -Label 'Phase 5' -Value 'complete (no reboot needed)' -Status OK
                 $State["LastSuccessfulPhase"] = 5
                 $State["InstallPhase"] = 6
                 Save-State $State
@@ -1407,6 +1605,25 @@
     if ( $State['SourceImage']) {
         Dismount-DiskImage -ImagePath $State['SourceImage'] | Out-Null
         Write-MyVerbose ('Dismounted ISO: {0}' -f $State['SourceImage'])
+    }
+
+    # Debug mode (Copilot only): halt after Phase 4 so the user can take a VM snapshot
+    # before Phase 5 (hardening / SU / VDir URLs). State already advanced to phase 5;
+    # next launch resumes from there. No reboot, no RunOnce, just stop.
+    # Autopilot runs (cmdline -Autopilot or ConfigFile-driven) continue uninterrupted
+    # even with -Debug.
+    if ($State['LogDebug'] -and $State['LastSuccessfulPhase'] -eq 4 -and -not $State['Autopilot']) {
+        Write-Host ''
+        Write-Host '  ============================================================' -ForegroundColor Magenta
+        Write-Host '   DEBUG MODE: Phase 4 complete - HALT for snapshot           ' -ForegroundColor Magenta -BackgroundColor Black
+        Write-Host '  ------------------------------------------------------------' -ForegroundColor Magenta
+        Write-Host '   Take a VM snapshot now, then re-run the script to' -ForegroundColor Magenta
+        Write-Host '   continue with Phase 5 (security hardening + VDir URLs).' -ForegroundColor Magenta
+        Write-Host ('   State file: {0}' -f $StateFile) -ForegroundColor Magenta
+        Write-Host '  ============================================================' -ForegroundColor Magenta
+        Write-Host ''
+        Write-MyOutput 'DEBUG MODE: halted after Phase 4 for snapshot. Re-run to continue.'
+        exit $ERR_OK
     }
 
     if ( $State["Autopilot"]) {
@@ -1426,6 +1643,15 @@
         }
         Write-Progress -Id 2 -Activity 'Reboot' -Completed
         Restart-Computer -Force
+    }
+
+    # Non-fatal-error summary: console (yellow) only. The individual WARNING/ERROR
+    # lines that fed the counter are already in the install log; no need to repeat
+    # the aggregate there.
+    if ($script:nonFatalErrorCount -gt 0) {
+        Write-Host ''
+        Write-Host ('WARNING: {0} non-fatal error(s)/warning(s) occurred during this run.' -f $script:nonFatalErrorCount) -ForegroundColor Yellow
+        Write-Host ('         Review install log for details: {0}' -f $State['TranscriptFile']) -ForegroundColor Yellow
     }
 
     exit $ERR_OK

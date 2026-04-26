@@ -36,7 +36,7 @@
                     Get-MailboxDatabaseCopyStatus -Server ($dag.Servers | Select-Object -First 1) -ErrorAction SilentlyContinue | ForEach-Object {
                         $copies[$_.DatabaseName] = $copies[$_.DatabaseName] + @($_)
                     }
-                } catch { }
+                } catch { Write-MyVerbose ('Get-MailboxDatabaseCopyStatus failed for DAG {0}: {1}' -f $dag.Name, $_) }
                 [pscustomobject]@{
                     DAG             = $dag
                     DatabaseCopies  = $copies
@@ -67,7 +67,7 @@
                 try {
                     $mem = @(Get-RoleGroupMember -Identity $rg.Name -ErrorAction Stop |
                              Select-Object @{n='Name';e={$_.Name}}, @{n='Type';e={$_.RecipientType}})
-                } catch { }
+                } catch { Write-MyVerbose ('Get-RoleGroupMember failed for {0}: {1}' -f $rg.Name, $_) }
                 $org.RoleGroups += [pscustomobject]@{
                     Name        = $rg.Name
                     Description = $rg.Description
@@ -75,7 +75,7 @@
                     ManagedBy   = @($rg.ManagedBy | ForEach-Object { $_.ToString() })
                 }
             }
-        } catch { }
+        } catch { Write-MyVerbose ('Get-RoleGroup enumeration failed: {0}' -f $_) }
 
         # Admin Audit Log Config (org-wide; controls which cmdlets/parameters are recorded in the admin audit log)
         try { $org.AdminAuditLog = Get-AdminAuditLogConfig -ErrorAction Stop } catch { $org.AdminAuditLog = $null }
@@ -101,14 +101,14 @@
             # CSS-Exchange MEAC task is named "Daily Auth Certificate Check" (Register-AuthCertificateRenewalTask.ps1 default)
             $knownNames = @('Daily Auth Certificate Check','MonitorExchangeAuthCertificate','Exchange Log Cleanup','EXpressLogCleanup')
             foreach ($tn in $knownNames) {
-                try { Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue | ForEach-Object { $foundTasks[$_.TaskName] = $_ } } catch { }
+                try { Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue | ForEach-Object { $foundTasks[$_.TaskName] = $_ } } catch { Write-MyVerbose ('Get-ScheduledTask lookup for {0} failed: {1}' -f $tn, $_) }
             }
             # Broad pattern search — catches variants across CSS-Exchange releases
             try {
                 Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
                     $_.TaskName -match 'Daily Auth Certificate|MonitorExchangeAuth|ExchangeLogClean|EXpressLog'
                 } | ForEach-Object { $foundTasks[$_.TaskName] = $_ }
-            } catch { }
+            } catch { Write-MyVerbose ('Get-ScheduledTask pattern search failed: {0}' -f $_) }
             foreach ($task in $foundTasks.Values) {
                 $info = try { Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath $task.TaskPath -ErrorAction SilentlyContinue } catch { $null }
                 $org.ScheduledTasks += [pscustomobject]@{
@@ -121,7 +121,7 @@
                     Actions   = @($task.Actions | ForEach-Object { if ($_.Execute) { "$($_.Execute) $($_.Arguments)".Trim() } })
                 }
             }
-        } catch { }
+        } catch { Write-MyVerbose ('Scheduled task enumeration failed: {0}' -f $_) }
 
         return $org
     }
@@ -154,12 +154,25 @@
         $srv.ImapSettings = $null
         $srv.PopSettings  = $null
         if ($ServerName -ieq $env:COMPUTERNAME) {
-            try { $srv.ImapSettings = Get-ImapSettings -Server $ServerName -ErrorAction Stop } catch { }
-            try { $srv.PopSettings  = Get-PopSettings  -Server $ServerName -ErrorAction Stop } catch { }
+            try { $srv.ImapSettings = Get-ImapSettings -Server $ServerName -ErrorAction Stop } catch { Write-MyVerbose ('Get-ImapSettings failed for {0}: {1}' -f $ServerName, $_) }
+            try { $srv.PopSettings  = Get-PopSettings  -Server $ServerName -ErrorAction Stop } catch { Write-MyVerbose ('Get-PopSettings failed for {0}: {1}' -f $ServerName, $_) }
         }
 
-        # Certificates — filter phantom entries (DateTime.MinValue from Get-ExchangeCertificate)
-        try { $srv.Certificates = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }) } catch { $srv.Certificates = @() }
+        # Certificates — filter phantom entries (DateTime.MinValue from Get-ExchangeCertificate).
+        # -Server can fail after IIS restarts (implicit-remoting session state); fall back to no -Server
+        # for the local server (same result, more resilient).
+        $certFilter = { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }
+        try {
+            $srv.Certificates = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object $certFilter)
+        } catch {
+            Write-MyVerbose ('Get-ExchangeCertificate -Server {0} failed: {1}' -f $ServerName, $_)
+            if ($ServerName -ieq $env:COMPUTERNAME) {
+                try { $srv.Certificates = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
+                catch { Write-MyVerbose ('Get-ExchangeCertificate (local) failed: {0}' -f $_); $srv.Certificates = @() }
+            } else {
+                $srv.Certificates = @()
+            }
+        }
 
         # Transport agents (only present on servers with Hub Transport)
         try { $srv.TransportAgents = @(Get-TransportAgent -ErrorAction Stop) } catch { $srv.TransportAgents = @() }
@@ -179,7 +192,7 @@
                     ExclusionExtension = @($mp.ExclusionExtension)
                     RealTimeEnabled    = -not $mp.DisableRealtimeMonitoring
                 }
-            } catch { }
+            } catch { Write-MyVerbose ('Get-MpPreference failed for {0}: {1}' -f $ServerName, $_) }
         }
 
         # IIS log configuration (local only — remote IIS queries require WinRM/PSSession, out of scope)
@@ -199,7 +212,7 @@
                     Sites = $sites
                     ExchangeLogPath = Join-Path (Split-Path $env:ExchangeInstallPath -Parent) 'Logging'
                 }
-            } catch { }
+            } catch { Write-MyVerbose ('IIS log configuration query failed for {0}: {1}' -f $ServerName, $_) }
         }
 
         # Hardware/OS data — direct CIM for local server, CIM/WSMan + prompt for remote
@@ -269,6 +282,128 @@
         $data.Local.PageFile    = Get-CimInstance Win32_PageFileSetting         -ErrorAction SilentlyContinue
         $data.Local.Volumes     = @(Get-CimInstance Win32_Volume -Filter 'DriveType=3' -ErrorAction SilentlyContinue)
         $data.Local.NICs        = @(Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' -ErrorAction SilentlyContinue)
+
+        return $data
+    }
+
+    function Get-RemoteServerData {
+        <#
+        .SYNOPSIS
+            Collects hardware/OS/pagefile/volume/NIC data from a remote Exchange server via CIM/WSMan.
+        .DESCRIPTION
+            Uses CIM over WSMan (WinRM TCP 5985/5986, Kerberos). NOT WMI/DCOM.
+            Returns a uniform hashtable; on failure sets Reachable = $false with Error text.
+            Timeout 30 s; always disposes CimSession in finally.
+            Pre-requisites on target: see tools\Enable-EXpressRemoteQuery.ps1 or docs\remote-query-setup.md.
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$ComputerName,
+            [int]$TimeoutSec = 30
+        )
+
+        $result = @{
+            ComputerName = $ComputerName
+            Reachable    = $false
+            Error        = $null
+            OS           = $null
+            CPU          = $null
+            ComputerSys  = $null
+            PageFile     = $null
+            Volumes      = @()
+            NICs         = @()
+        }
+
+        $session = $null
+        try {
+            $opt = New-CimSessionOption -Protocol WSMan
+            $session = New-CimSession -ComputerName $ComputerName -SessionOption $opt `
+                                      -OperationTimeoutSec $TimeoutSec -ErrorAction Stop
+
+            $result.OS          = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem          -ErrorAction Stop
+            $result.CPU         = Get-CimInstance -CimSession $session -ClassName Win32_Processor                -ErrorAction Stop
+            $result.ComputerSys = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem           -ErrorAction Stop
+            $result.PageFile    = Get-CimInstance -CimSession $session -ClassName Win32_PageFileSetting          -ErrorAction SilentlyContinue
+            $result.Volumes     = @(Get-CimInstance -CimSession $session -ClassName Win32_Volume -Filter 'DriveType=3' -ErrorAction SilentlyContinue)
+            $result.NICs        = @(Get-CimInstance -CimSession $session -ClassName Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=TRUE' -ErrorAction SilentlyContinue)
+            $result.Reachable   = $true
+        }
+        catch {
+            $result.Error = $_.Exception.Message
+            Write-MyVerbose ('Get-RemoteServerData {0}: {1}' -f $ComputerName, $_.Exception.Message)
+        }
+        finally {
+            if ($session) { Remove-CimSession -CimSession $session -ErrorAction SilentlyContinue }
+        }
+
+        return $result
+    }
+
+    function Invoke-RemoteQueryWithPrompt {
+        <#
+        .SYNOPSIS
+            Wraps Get-RemoteServerData with interactive retry/skip prompt on failure.
+        .DESCRIPTION
+            Copilot (interactive) mode: on failure, shows hint pointing to Enable-EXpressRemoteQuery.ps1
+            and offers [R]etry / [S]kip with a 10-minute auto-skip timeout (Write-Progress -Id 2).
+            Autopilot mode or non-interactive session: silent skip.
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$ComputerName,
+            [int]$TimeoutSec = 600
+        )
+
+        $data = Get-RemoteServerData -ComputerName $ComputerName
+        if ($data.Reachable) { return $data }
+
+        $nonInteractive = $State['Autopilot'] -or -not [Environment]::UserInteractive
+        if ($nonInteractive) {
+            Write-MyVerbose ('Remote query skipped (non-interactive) for {0}: {1}' -f $ComputerName, $data.Error)
+            return $data
+        }
+
+        while (-not $data.Reachable) {
+            Write-Host ''
+            Write-MyWarning ('Remote query failed for {0}' -f $ComputerName)
+            Write-Host ('    Error : {0}' -f $data.Error) -ForegroundColor Yellow
+            Write-Host  '    Fix   : Run tools\Enable-EXpressRemoteQuery.ps1 on the target server,' -ForegroundColor Yellow
+            Write-Host  '            or apply GPO per docs\remote-query-setup.md' -ForegroundColor Yellow
+            Write-Host ''
+            Write-Host '    [R] Retry    [S] Skip    (auto-skip in 10:00)' -ForegroundColor Cyan
+
+            $choice = $null
+            try { $host.UI.RawUI.FlushInputBuffer() } catch { } # intentional: RawUI unavailable in PS2Exe/redirected hosts
+            $deadline = [DateTime]::Now.AddSeconds($TimeoutSec)
+            while ([DateTime]::Now -lt $deadline -and -not $choice) {
+                $secsLeft = [int]($deadline - [DateTime]::Now).TotalSeconds
+                $mm = [int]($secsLeft / 60); $ss = $secsLeft % 60
+                Write-Progress -Id 2 -Activity ('Remote query: {0}' -f $ComputerName) `
+                    -Status ('Auto-skip in {0:D2}:{1:D2}  |  [R] Retry  |  [S] Skip' -f $mm, $ss) `
+                    -PercentComplete (($TimeoutSec - $secsLeft) * 100 / $TimeoutSec)
+                if ($host.UI.RawUI.KeyAvailable) {
+                    $key = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                    switch ($key.Character.ToString().ToUpper()) {
+                        'R' { $choice = 'Retry' }
+                        'S' { $choice = 'Skip'  }
+                    }
+                }
+                Start-Sleep -Milliseconds 100
+            }
+            Write-Progress -Id 2 -Activity ('Remote query: {0}' -f $ComputerName) -Completed
+
+            if (-not $choice) {
+                Write-MyOutput ('Auto-skip: {0}' -f $ComputerName)
+                return $data
+            }
+            if ($choice -eq 'Skip') {
+                Write-MyOutput ('Skipped remote query for {0}' -f $ComputerName)
+                return $data
+            }
+
+            Write-MyOutput ('Retrying remote query for {0}...' -f $ComputerName)
+            $data = Get-RemoteServerData -ComputerName $ComputerName
+        }
 
         return $data
     }

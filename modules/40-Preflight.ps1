@@ -1,5 +1,5 @@
 ﻿    function Install-WindowsFeatures( $MajorOSVersion) {
-        Write-MyOutput 'Configuring Windows Features'
+        Write-MyVerbose 'Configuring Windows Features'
 
         if ( $State['InstallEdge']) {
             $Feats = [array]'ADLDS'
@@ -34,16 +34,18 @@
         # Get-WindowsFeature on all features at once is much faster than per-feature calls,
         # and skipping Install-WindowsFeature entirely avoids the slow "collecting data" phase
         # when all features are already present.
-        Write-MyOutput ('Checking {0} required Windows features ...' -f $Feats.Count)
+        Write-MyVerbose ('Checking {0} required Windows features ...' -f $Feats.Count)
         $allFeatureState = Get-WindowsFeature -Name $Feats -ErrorAction SilentlyContinue
         $missing = @($allFeatureState | Where-Object { -not $_.Installed } | ForEach-Object { $_.Name })
 
         if ($missing.Count -eq 0) {
-            Write-MyOutput 'All required Windows features already installed — skipping feature installation'
+            Write-MyStep -Label 'Windows Features' -Value ('all {0} already installed' -f $Feats.Count)
         }
         else {
-            Write-MyOutput ('Installing {0} missing Windows feature(s): {1}' -f $missing.Count, ($missing -join ', '))
+            Write-MyStep -Label 'Windows Features' -Value ('installing {0} missing of {1}' -f $missing.Count, $Feats.Count) -Status Run
+            Write-MyVerbose ('Missing features: {0}' -f ($missing -join ', '))
             Install-WindowsFeature $missing | Out-Null
+            Write-MyStep -Label 'Windows Features' -Value 'installed successfully' -Status OK
         }
 
         foreach ( $Feat in $Feats) {
@@ -55,7 +57,7 @@
 
         'NET-WCF-MSMQ-Activation45', 'MSMQ' | ForEach-Object {
             if ( (Get-WindowsFeature -Name $_).Installed) {
-                Write-MyOutput ('Removing obsolete feature {0}' -f $_)
+                Write-MyStep -Label 'Feature' -Value ('removing obsolete: {0}' -f $_) -Status Run
                 Remove-WindowsFeature -Name $_
             }
         }
@@ -104,12 +106,12 @@
         param ( [String]$PackageID, [string]$Package, [String]$FileName, [String]$OnlineURL, [array]$Arguments, [switch]$NoDownload, [switch]$ContinueOnError)
 
         if ( $PackageID) {
-            Write-MyOutput "Processing $Package ($PackageID)"
+            Write-MyVerbose "Processing $Package ($PackageID)"
             $PresenceKey = Test-MyPackage $PackageID
         }
         else {
             # Just install, don't detect
-            Write-MyOutput "Processing $Package"
+            Write-MyVerbose "Processing $Package"
             $PresenceKey = $false
         }
         # All downloads land in <InstallPath>\sources\; falls back to InstallPath if
@@ -127,7 +129,7 @@
                     if ( !( Get-MyPackage $Package $OnlineURL $PackageFile $RunFrom)) {
                         if ($ContinueOnError) { Write-MyWarning "Could not download $Package — skipping"; return } else { Write-MyError "Problem downloading/accessing $Package"; exit $ERR_PROBLEMPACKAGEDL }
                     }
-                    Write-MyOutput "Extracting Hotfix Package $Package"
+                    Write-MyStep -Label $Package -Value 'extracting hotfix' -Status Run
                     Invoke-Extract $RunFrom $PackageFile
 
                     if ( !( Get-MyPackage $Package $OnlineURL $PackageFile $RunFrom)) {
@@ -145,7 +147,7 @@
                 }
             }
 
-            Write-MyOutput "Installing $Package from $RunFrom"
+            Write-MyStep -Label $Package -Value ('installing from {0}' -f $RunFrom) -Status Run
             $rval = Invoke-Process $RunFrom $FileName $Arguments
 
             if ( $PackageID) {
@@ -210,7 +212,7 @@
         param ( [String]$Version, [String]$KB, [string]$Key)
         $RegKey = 'HKLM:\Software\Microsoft\NET Framework Setup\NDP\WU'
         $RegName = ('BlockNetFramework{0}' -f $Key)
-        Write-MyOutput ('Set installation blockade for .NET Framework {0} ({1})' -f $Version, $KB)
+        Write-MyStep -Label '.NET install blockade' -Value ('set for {0} ({1})' -f $Version, $KB) -Status OK
         Set-RegistryValue -Path $RegKey -Name $RegName -Value 1
         if (-not (Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue)) {
             Write-MyError "Unable to set registry entry $RegKey\$RegName"
@@ -222,7 +224,7 @@
         $RegKey = 'HKLM:\Software\Microsoft\NET Framework Setup\NDP\WU'
         $RegName = ('BlockNetFramework{0}' -f $Key)
         if ( Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue) {
-            Write-MyOutput ('Remove installation blockade for .NET Framework {0} ({1})' -f $Version, $KB)
+            Write-MyStep -Label '.NET install blockade' -Value ('removed for {0} ({1})' -f $Version, $KB) -Status OK
             Remove-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue | Out-Null
         }
         if ( Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue) {
@@ -233,15 +235,15 @@
     function Test-Preflight {
         # Informational checks only on first run (phase 0/1); on resume these were already validated
         if ($State['InstallPhase'] -le 1) {
-            Write-MyOutput 'Performing preflight checks'
+            Write-MySection 'Preflight Checks'
 
             $Computer = Get-LocalFQDNHostname
             if ( $Computer) {
-                Write-MyOutput "Computer name is $Computer"
+                Write-MyStep -Label 'Computer name' -Value $Computer
             }
 
-            Write-MyOutput 'Checking temporary installation folder'
-            New-Item -Path $State['InstallPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+            Write-MyVerbose 'Checking temporary installation folder'
+            if (-not (Test-Path $State['InstallPath'])) { New-Item -Path $State['InstallPath'] -ItemType Directory -Force | Out-Null }
             if ( !( Test-Path $State['InstallPath'])) {
                 Write-MyError "Can't create temporary folder $($State['InstallPath'])"
                 exit $ERR_CANTCREATETEMPFOLDER
@@ -252,7 +254,7 @@
             # ExchangeExtendedProtection, MEAC, etc.) land here. Pre-staging is automatic —
             # when a file is already present the download is skipped (air-gapped / proxy scenarios).
             $State['SourcesPath'] = Join-Path $State['InstallPath'] 'sources'
-            New-Item -Path $State['SourcesPath'] -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+            if (-not (Test-Path $State['SourcesPath'])) { New-Item -Path $State['SourcesPath'] -ItemType Directory -Force | Out-Null }
             if ( !( Test-Path $State['SourcesPath'])) {
                 Write-MyError "Can't create downloads folder $($State['SourcesPath'])"
                 exit $ERR_CANTCREATETEMPFOLDER
@@ -260,17 +262,17 @@
             Write-MyVerbose ('Downloads cache: {0}' -f $State['SourcesPath'])
 
             if ( [System.Version]$MajorOSVersion -ge [System.Version]$WS2016_MAJOR ) {
-                Write-MyOutput "Operating System is $($MajorOSVersion).$($MinorOSVersion)"
+                Write-MyStep -Label 'Operating System' -Value ('{0}.{1}' -f $MajorOSVersion, $MinorOSVersion)
             }
             else {
                 Write-MyError 'Supported operating systems: Windows Server 2016 (Exchange 2016 CU23), Windows Server 2019/2022/2025 (Exchange 2019 CU15+ or Exchange Server SE)'
                 exit $ERR_UNEXPECTEDOS
             }
-            Write-MyOutput ('Server core mode: {0}' -f (Test-ServerCore))
+            Write-MyStep -Label 'Server Core' -Value ([string](Test-ServerCore)) -Status Info
 
             $NetVersion = Get-NETVersion
             $NetVersionText = Get-NetVersionText $NetVersion
-            Write-MyOutput ".NET Framework is $NetVersion ($NetVersionText)"
+            Write-MyStep -Label '.NET Framework' -Value ('{0} ({1})' -f $NetVersionText, $NetVersion)
 
             # Warn about parameters that are ignored for the selected install mode
             if ($State['InstallEdge']) {
@@ -308,7 +310,7 @@
             }
         }
         else {
-            Write-MyOutput 'Script running in elevated mode'
+            Write-MyStep -Label 'Elevation' -Value 'Administrator'
         }
 
         # Credential validation only needed while Exchange setup is running (phases 0-4)
@@ -328,9 +330,9 @@
             }
             else {
                 # Credentials already in state (command line, config file, or Autopilot resume)
-                Write-MyOutput 'Checking provided credentials'
+                Write-MyVerbose 'Checking provided credentials'
                 if (Test-Credentials) {
-                    Write-MyOutput 'Credentials valid'
+                    Write-MyStep -Label 'Credentials' -Value 'Valid'
                 }
                 elseif ([Environment]::UserInteractive -and -not $credentialsFromCommandLine) {
                     # Stored credentials invalid (e.g. password changed since last phase) — retry interactively
@@ -345,13 +347,19 @@
                 }
             }
 
+            # Credentials are now validated and persisted DPAPI-encrypted in state.
+            # Plain-text password copies in the config file are no longer needed —
+            # scrub them so the file is safe to leave on disk between phases/reboots.
+            if ($State['ConfigFile']) {
+                Remove-CredentialsFromConfig -Path $State['ConfigFile']
+            }
         }
 
         # Checks below are only relevant before/during setup (phases 0-4); skip after Exchange is installed
         if ($State['InstallPhase'] -le 4) {
 
         if ( $State["SkipRolesCheck"] -or $State['InstallEdge']) {
-            Write-MyOutput 'SkipRolesCheck: Skipping validation of Schema & Enterprise Administrators membership'
+            Write-MyStep -Label 'AD admin checks' -Value 'skipped (-SkipRolesCheck)' -Status Info
         }
         else {
             if (! ( Test-SchemaAdmin)) {
@@ -359,7 +367,7 @@
                 exit $ERR_RUNNINGNONSCHEMAADMIN
             }
             else {
-                Write-MyOutput 'User is member of Schema Administrators'
+                Write-MyStep -Label 'AD: Schema Admins' -Value 'Member'
             }
 
             if (! ( Test-EnterpriseAdmin)) {
@@ -367,13 +375,13 @@
                 exit $ERR_RUNNINGNONENTERPRISEADMIN
             }
             else {
-                Write-MyOutput 'User is member of Enterprise Administrators'
+                Write-MyStep -Label 'AD: Enterprise Admins' -Value 'Member'
             }
         }
         if (!$State['InstallEdge']) {
             $ADSite = Get-ADSite
             if ( $ADSite) {
-                Write-MyOutput "Computer is located in AD site $ADSite"
+                Write-MyStep -Label 'AD Site' -Value $ADSite
             }
             else {
                 Write-MyError 'Could not determine Active Directory site'
@@ -388,11 +396,11 @@
                         exit $ERR_ORGANIZATIONNAMEMISMATCH
                     }
                 }
-                Write-MyOutput "Exchange Organization is: $ExOrg"
+                Write-MyStep -Label 'Exchange Organisation' -Value ('{0} (existing)' -f $ExOrg)
             }
             else {
                 if ( $State['OrganizationName']) {
-                    Write-MyOutput "Exchange Organization will be: $($State['OrganizationName'])"
+                    Write-MyStep -Label 'Exchange Organisation' -Value ('{0} (new)' -f $State['OrganizationName'])
                 }
                 else {
                     Write-MyError 'OrganizationName not specified and no Exchange Organization discovered'
@@ -400,14 +408,14 @@
                 }
             }
         }
-        Write-MyOutput 'Checking if we can access Exchange setup ..'
+        Write-MyVerbose 'Checking if we can access Exchange setup ..'
 
         if (! (Test-Path (Join-Path $State['SourcePath'] "setup.exe"))) {
             Write-MyError "Can't find Exchange setup at $($State['SourcePath'])"
             exit $ERR_MISSINGEXCHANGESETUP
         }
         else {
-            Write-MyOutput "Exchange setup located at $(Join-Path $($State['SourcePath']) "setup.exe")"
+            Write-MyStep -Label 'Exchange Setup' -Value (Join-Path $State['SourcePath'] 'setup.exe')
         }
 
         # Unblock files to prevent .NET assembly sandboxing errors (Zone.Identifier from downloaded files).
@@ -422,14 +430,14 @@
             if ($blockedFiles) {
                 Write-MyWarning ('{0} blocked file(s) detected in source path, unblocking ..' -f $blockedFiles.Count)
                 $blockedFiles | Unblock-File
-                Write-MyOutput 'Source files unblocked successfully'
+                Write-MyStep -Label 'Source files' -Value 'unblocked' -Status OK
             }
         }
 
         $State['ExSetupVersion'] = Get-DetectedFileVersion "$($State['SourcePath'])\Setup\ServerRoles\Common\ExSetup.exe"
         $SetupVersion = $State['ExSetupVersion']
         $State['SetupVersionText'] = Get-SetupTextVersion $SetupVersion
-        Write-MyOutput ('ExSetup version: {0}' -f $State['SetupVersionText'])
+        Write-MyStep -Label 'Setup Version' -Value $State['SetupVersionText']
         if ( $SetupVersion) {
             $Num = $SetupVersion.split('.') | ForEach-Object { [string]([int]$_)
             }
@@ -496,10 +504,10 @@
         }
 
         if ( $State['NoSetup'] -or $State['Recover'] -or $State['Upgrade']) {
-            Write-MyOutput 'Not checking roles (NoSetup, Recover or Upgrade mode)'
+            Write-MyVerbose 'Not checking roles (NoSetup, Recover or Upgrade mode)'
         }
         else {
-            Write-MyOutput 'Checking roles to install'
+            Write-MyVerbose 'Checking roles to install'
             if ( !( $State['InstallMailbox']) -and !($State['InstallEdge']) ) {
                 Write-MyError 'No roles specified to install'
                 exit $ERR_UNKNOWNROLESSPECIFIED
@@ -511,7 +519,7 @@
         if ( $State["MajorSetupVersion"] -eq $EX2019_MAJOR ) {
             if ( $State['DiagnosticData']) {
                 $State['IAcceptSwitch'] = '/IAcceptExchangeServerLicenseTerms_DiagnosticDataON'
-                Write-MyOutput 'Will deploy Exchange with Data Collection enabled'
+                Write-MyStep -Label 'Diagnostic Data' -Value 'enabled' -Status Info
             }
             else {
                 $State['IAcceptSwitch'] = '/IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
@@ -524,11 +532,11 @@
         if ( !($State['InstallEdge'])) {
             if ( ( Test-ExistingExchangeServer $env:computerName) -and ($State["InstallPhase"] -eq 1)) {
                 if ( $State['Recover']) {
-                    Write-MyOutput 'Recovery mode specified, Exchange server object found'
+                    Write-MyStep -Label 'Recovery mode' -Value 'Exchange server object found' -Status OK
                 }
                 else {
                     if ( Test-Path $EXCHANGEINSTALLKEY) {
-                        Write-MyOutput 'Existing Exchange server object found in Active Directory, and installation seems present - switching to Upgrade mode'
+                        Write-MyStep -Label 'Existing install' -Value 'detected — switching to Upgrade mode' -Status Info
                         $State['Upgrade'] = $true
                     }
                     else {
@@ -538,13 +546,13 @@
                 }
             }
 
-            Write-MyOutput 'Checking domain membership status ..'
+            Write-MyVerbose 'Checking domain membership status ..'
             if (! ( Get-CimInstance Win32_ComputerSystem).PartOfDomain) {
                 Write-MyError 'System is not domain-joined'
                 exit $ERR_NOTDOMAINJOINED
             }
         }
-        Write-MyOutput 'Checking NIC configuration ..'
+        Write-MyVerbose 'Checking NIC configuration ..'
         if (! (Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True and DHCPEnabled=False')) {
             $AzureHosted = Get-Service | Where-Object { $_.Name -ieq 'Windows Azure Guest Agent' -or $_.Name -ieq 'Windows Azure Network Agent' -or $_.Name -ieq 'Windows Azure Telemetry Service' }
             if ( $AzureHosted) {
@@ -552,7 +560,7 @@
                 exit $ERR_NOFIXEDIPADDRESS
             }
             else {
-                Write-MyOutput 'Ignoring absence of static IP address assignment(s) as Azure service(s) are present.'
+                Write-MyStep -Label 'Static IP check' -Value 'skipped (Azure detected)' -Status Info
             }
         }
         else {
@@ -560,7 +568,7 @@
         }
         if ( $State['TargetPath']) {
             $Location = Split-Path $State['TargetPath'] -Qualifier
-            Write-MyOutput 'Checking installation path ..'
+            Write-MyVerbose 'Checking installation path ..'
             if ( !(Test-Path $Location)) {
                 Write-MyError "MDB log location unavailable: ($Location)"
                 exit $ERR_MDBDBLOGPATH
@@ -568,7 +576,7 @@
         }
         if ( $State['InstallMDBLogPath']) {
             $Location = Split-Path $State['InstallMDBLogPath'] -Qualifier
-            Write-MyOutput 'Checking MDB log path ..'
+            Write-MyVerbose 'Checking MDB log path ..'
             if ( !(Test-Path $Location)) {
                 Write-MyError "MDB log location unavailable: ($Location)"
                 exit $ERR_MDBDBLOGPATH
@@ -576,14 +584,14 @@
         }
         if ( $State['InstallMDBDBPath']) {
             $Location = Split-Path $State['InstallMDBDBPath'] -Qualifier
-            Write-MyOutput 'Checking MDB database path ..'
+            Write-MyVerbose 'Checking MDB database path ..'
             if ( !(Test-Path $Location)) {
                 Write-MyError "MDB database location unavailable: ($Location)"
                 exit $ERR_MDBDBLOGPATH
             }
         }
         if ( !($State['InstallEdge'])) {
-            Write-MyOutput 'Checking Exchange Forest Schema Version'
+            Write-MyVerbose 'Checking Exchange Forest Schema Version'
             if ( $State['MajorSetupVersion'] -ge $EX2019_MAJOR) {
                 $minFFL = $EX2019_MINFORESTLEVEL
                 $minDFL = $EX2019_MINDOMAINLEVEL
@@ -594,10 +602,10 @@
             }
             $EFL = Get-ExchangeForestLevel
             if ( $EFL) {
-                Write-MyOutput "Exchange Forest Schema Version is $EFL"
+                Write-MyStep -Label 'Exchange Forest Schema' -Value $EFL
             }
             else {
-                Write-MyOutput 'Active Directory is not prepared'
+                Write-MyStep -Label 'Exchange Forest Schema' -Value 'AD not prepared (will run PrepareAD)' -Status Info
             }
             if ( $State['InstallPhase'] -ge 4) {
                 if ( $null -eq $EFL -or $EFL -lt $minFFL) {
@@ -613,10 +621,10 @@
                 }
             }
 
-            Write-MyOutput 'Checking Exchange Domain Version'
+            Write-MyVerbose 'Checking Exchange Domain Version'
             $EDV = Get-ExchangeDomainLevel
             if ( $EDV) {
-                Write-MyOutput "Exchange Domain Version is $EDV"
+                Write-MyStep -Label 'Exchange Domain Version' -Value $EDV
             }
             if ( $State['InstallPhase'] -ge 4) {
                 if ( $null -eq $EDV -or $EDV -lt $minDFL) {
@@ -638,16 +646,16 @@
                 }
             }
 
-            Write-MyOutput 'Checking domain mode'
+            Write-MyVerbose 'Checking domain mode'
             if ( Test-DomainNativeMode -eq $DOMAIN_MIXEDMODE) {
                 Write-MyError 'Domain is in mixed mode, native mode is required'
                 exit $ERR_ADMIXEDMODE
             }
             else {
-                Write-MyOutput 'Domain is in native mode'
+                Write-MyStep -Label 'Domain mode' -Value 'native'
             }
 
-            Write-MyOutput 'Checking Forest Functional Level'
+            Write-MyVerbose 'Checking Forest Functional Level'
             $FFL = Get-ForestFunctionalLevel
             if ( $MajorSetupVersion -eq $EX2019_MAJOR) {
                 if ( $FFL -lt $FOREST_LEVEL2012R2) {
@@ -655,7 +663,7 @@
                     exit $ERR_ADFORESTLEVEL
                 }
                 else {
-                    Write-MyOutput ('Forest Functional Level is {0} ({1})' -f $FFL, (Get-FFLText $FFL))
+                    Write-MyStep -Label 'Forest Functional Level' -Value ('{0} ({1})' -f (Get-FFLText $FFL), $FFL)
                 }
             }
             else {
@@ -664,7 +672,7 @@
                     exit $ERR_ADFORESTLEVEL
                 }
                 else {
-                    Write-MyOutput ('Forest Functional Level is OK ({0})' -f $FFL)
+                    Write-MyStep -Label 'Forest Functional Level' -Value ('OK ({0})' -f $FFL)
                 }
             }
         }
@@ -678,7 +686,7 @@
     }
 
     function New-PreflightReport {
-        Write-MyOutput 'Generating Pre-Flight Validation Report'
+        Write-MyStep -Label 'Pre-Flight Report' -Value 'generating' -Status Run
         $results = @()
 
         # OS Version
@@ -791,7 +799,7 @@ $($htmlRows -join "`n")
 </body></html>
 "@
         $html | Out-File $reportPath -Encoding utf8
-        Write-MyOutput ('Pre-Flight Report saved to {0}' -f $reportPath)
+        Write-MyStep -Label 'Pre-Flight Report' -Value $reportPath -Status OK
         return $failCount
     }
 

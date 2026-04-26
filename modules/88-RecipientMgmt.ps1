@@ -8,15 +8,15 @@
     function Install-RecipientManagementPrereqs {
         # Phase 1 of Recipient Management install: OS detection and prerequisite installation
         if (Test-IsClientOS) {
-            Write-MyOutput 'Client OS detected, installing RSAT Active Directory tools via Add-WindowsCapability'
+            Write-MyVerbose 'Client OS detected, installing RSAT Active Directory tools via Add-WindowsCapability'
             try {
                 $cap = Get-WindowsCapability -Online -Name 'Rsat.ActiveDirectory.DS-LDS.Tools*' -ErrorAction Stop
                 if ($cap.State -ne 'Installed') {
                     Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
-                    Write-MyOutput 'RSAT ADDS tools installed'
+                    Write-MyStep -Label 'RSAT ADDS tools' -Value 'installed' -Status OK
                 }
                 else {
-                    Write-MyOutput 'RSAT ADDS tools already installed'
+                    Write-MyStep -Label 'RSAT ADDS tools' -Value 'already installed' -Status OK
                 }
             }
             catch {
@@ -25,14 +25,14 @@
             }
         }
         else {
-            Write-MyOutput 'Server OS detected, installing RSAT-ADDS via Install-WindowsFeature'
+            Write-MyVerbose 'Server OS detected, installing RSAT-ADDS via Install-WindowsFeature'
             try {
                 if (-not (Get-WindowsFeature -Name 'RSAT-ADDS').Installed) {
                     Install-WindowsFeature -Name 'RSAT-ADDS' -ErrorAction Stop | Out-Null
-                    Write-MyOutput 'RSAT-ADDS installed'
+                    Write-MyStep -Label 'RSAT-ADDS' -Value 'installed' -Status OK
                 }
                 else {
-                    Write-MyOutput 'RSAT-ADDS already installed'
+                    Write-MyStep -Label 'RSAT-ADDS' -Value 'already installed' -Status OK
                 }
             }
             catch {
@@ -55,13 +55,13 @@
             exit $ERR_UNEXPTECTEDPHASE
         }
 
-        Write-MyOutput 'Running Exchange setup.exe /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        Write-MyStep -Label 'Exchange Mgmt Tools setup' -Value '/roles:ManagementTools' -Status Run
         $rc = Invoke-Process -FilePath $State['SourcePath'] -FileName 'setup.exe' -ArgumentList '/mode:install /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
         if ($rc -ne 0) {
             Write-MyError ('Exchange setup returned exit code {0}' -f $rc)
             exit $ERR_UNEXPTECTEDPHASE
         }
-        Write-MyOutput 'Exchange Management Tools setup completed'
+        Write-MyStep -Label 'Exchange Mgmt Tools setup' -Value 'completed' -Status OK
 
         # Run CSS-Exchange Add-PermissionForEMT.ps1 if available (pre-stage in sources\).
         # This script was removed from CSS-Exchange releases; only runs if the file is pre-staged.
@@ -69,7 +69,7 @@
         $emtUrl = $null   # no longer available from CSS-Exchange releases
         if (Test-Path $emtScript) {
             try {
-                Write-MyOutput 'Running Add-PermissionForEMT.ps1'
+                Write-MyStep -Label 'EMT permissions' -Value 'running Add-PermissionForEMT.ps1' -Status Run
                 & $emtScript
             }
             catch {
@@ -90,7 +90,7 @@
             $shortcut.IconLocation = '%SystemRoot%\System32\dsa.msc, 0'
             $shortcut.Description = 'Exchange Recipient Management PowerShell'
             $shortcut.Save()
-            Write-MyOutput ('Desktop shortcut created: {0}' -f $shortcutPath)
+            Write-MyStep -Label 'Desktop shortcut' -Value $shortcutPath -Status OK
         }
         catch {
             Write-MyWarning ('Could not create desktop shortcut: {0}' -f $_.Exception.Message)
@@ -99,14 +99,14 @@
 
     function Invoke-RecipientManagementADCleanup {
         # Optional AD cleanup after Recipient Management upgrade install
-        Write-MyOutput 'RecipientMgmtCleanup requested - reviewing legacy Exchange permissions'
+        Write-MyStep -Label 'RecipientMgmtCleanup' -Value 'reviewing legacy Exchange permissions' -Status Run
         Write-MyWarning 'AD cleanup is a manual safety gate. Review the following and run required Set-ADPermission commands manually if desired.'
-        Write-MyOutput 'Reference: https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/post-installation-tasks'
+        Write-MyVerbose 'Reference: https://learn.microsoft.com/en-us/exchange/plan-and-deploy/post-installation-tasks/post-installation-tasks'
     }
 
     function Install-ManagementToolsPrereqs {
         # Phase 1 of Management Tools install: Windows prerequisites
-        Write-MyOutput 'Installing Windows prerequisites for Exchange Management Tools'
+        Write-MyStep -Label 'Windows prerequisites' -Value 'installing for Exchange Mgmt Tools' -Status Run
         if (Test-IsClientOS) {
             Write-MyError 'Exchange Management Tools setup requires a Windows Server OS. Use -InstallRecipientManagement for client OS installs.'
             exit $ERR_UNEXPECTEDOS
@@ -116,7 +116,7 @@
             if (-not (Get-WindowsFeature -Name $f -ErrorAction SilentlyContinue).Installed) {
                 try {
                     Install-WindowsFeature -Name $f -ErrorAction Stop | Out-Null
-                    Write-MyOutput ('Installed Windows feature: {0}' -f $f)
+                    Write-MyStep -Label 'Windows feature' -Value ('{0} installed' -f $f) -Status OK
                 }
                 catch {
                     Write-MyWarning ('Could not install {0}: {1}' -f $f, $_.Exception.Message)
@@ -127,7 +127,7 @@
 
     function Install-ManagementToolsRuntimePrereqs {
         # Phase 2 of Management Tools install: runtime prerequisites (VC++, URL Rewrite)
-        Write-MyOutput 'Installing runtime prerequisites for Exchange Management Tools'
+        Write-MyStep -Label 'Runtime prerequisites' -Value 'installing for Exchange Mgmt Tools' -Status Run
         # Management Tools only needs the baseline runtimes, not the full Exchange server stack.
         # Reuse existing VC++ helper functions where applicable (Install-MyPackage with the same IDs).
         Write-MyVerbose 'VC++ and URL Rewrite prerequisites are pulled in by setup.exe /roles:ManagementTools on demand'
@@ -140,12 +140,12 @@
             Write-MyError ('Exchange setup.exe not found at {0}' -f $setupExe)
             exit $ERR_UNEXPTECTEDPHASE
         }
-        Write-MyOutput 'Running Exchange setup.exe /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
+        Write-MyStep -Label 'Exchange Mgmt Tools setup' -Value '/roles:ManagementTools' -Status Run
         $rc = Invoke-Process -FilePath $State['SourcePath'] -FileName 'setup.exe' -ArgumentList '/mode:install /roles:ManagementTools /IAcceptExchangeServerLicenseTerms_DiagnosticDataOFF'
         if ($rc -ne 0) {
             Write-MyError ('Exchange setup returned exit code {0}' -f $rc)
             exit $ERR_UNEXPTECTEDPHASE
         }
-        Write-MyOutput 'Exchange Management Tools installed successfully'
+        Write-MyStep -Label 'Exchange Mgmt Tools' -Value 'installed successfully' -Status OK
     }
 
