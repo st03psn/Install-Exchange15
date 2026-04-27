@@ -357,14 +357,17 @@
         # Extended Protection — per-VDir breakdown (Frontend only; Back End EP=None by design)
         if (-not $State['InstallEdge']) {
             try {
+                # Do NOT use -ADPropertiesOnly: on Exchange CU14+/SE, EP is set by setup directly in IIS
+                # and the AD-cached ExtendedProtectionTokenChecking attribute may be empty/stale.
+                # Read live IIS values instead (no -ADPropertiesOnly) to get the actual current state.
                 $epCmdlets = @(
-                    @{ Name='OWA';         Get={ @(Get-OwaVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='ECP';         Get={ @(Get-EcpVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='EWS';         Get={ @(Get-WebServicesVirtualDirectory  -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='OAB';         Get={ @(Get-OabVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='ActiveSync';  Get={ @(Get-ActiveSyncVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='MAPI';        Get={ @(Get-MapiVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='PowerShell';  Get={ @(Get-PowerShellVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='OWA';         Get={ @(Get-OwaVirtualDirectory          -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='ECP';         Get={ @(Get-EcpVirtualDirectory          -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='EWS';         Get={ @(Get-WebServicesVirtualDirectory  -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='OAB';         Get={ @(Get-OabVirtualDirectory          -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='ActiveSync';  Get={ @(Get-ActiveSyncVirtualDirectory   -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='MAPI';        Get={ @(Get-MapiVirtualDirectory         -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='PowerShell';  Get={ @(Get-PowerShellVirtualDirectory   -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
                 )
                 $epVdirRows = [System.Collections.Generic.List[string]]::new()
                 foreach ($ep in $epCmdlets) {

@@ -326,6 +326,7 @@
             $LogRetentionDays     = Get-CfgValue 'LogRetentionDays' 30
             $RelaySubnets         = Get-CfgValue 'RelaySubnets'         $RelaySubnets
             $ExternalRelaySubnets = Get-CfgValue 'ExternalRelaySubnets' $ExternalRelaySubnets
+            $LicenseKey           = Get-CfgValue 'LicenseKey'           $LicenseKey
             $NoWordDoc            = [switch](Get-CfgValue 'NoWordDoc'        ([bool]$NoWordDoc))
             $CustomerDocument     = [switch](Get-CfgValue 'CustomerDocument' ([bool]$CustomerDocument))
             # Language resolution. Precedence (highest first):
@@ -680,6 +681,24 @@
                 # ConvertFrom-SecureString without -Key uses DPAPI (user+machine bound).
                 # Safe here: PFX import happens in Phase 5 on the same machine/user.
                 $State["CertificatePassword"] = ($pfxPwd | ConvertFrom-SecureString)
+            }
+        }
+
+        # License key — collected once in Phase 0, activated in Phase 6 after Exchange setup.
+        # Key is never re-prompted after a reboot resume (state survives the Autopilot chain).
+        if (-not $State['LicenseKey']) {
+            if ($LicenseKey) {
+                # Provided via cmdline or config file
+                $State['LicenseKey'] = $LicenseKey
+                Write-MyStep -Label 'License key' -Value 'provided (will activate in Phase 6)' -Status OK
+            }
+            elseif (-not [bool]$Autopilot -and -not [bool]$InstallEdge -and
+                    -not [bool]$InstallManagementTools -and -not [bool]$InstallRecipientManagement) {
+                # Copilot interactive mode: offer the prompt with 5-minute auto-skip
+                $State['LicenseKey'] = Invoke-LicenseKeyPrompt
+            }
+            else {
+                $State['LicenseKey'] = $null
             }
         }
 
@@ -1530,6 +1549,12 @@
                 if (-not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: RBAC report' -PercentComplete 78
                     Get-RBACReport
+                }
+
+                # Exchange product key activation (Trial → Standard/Enterprise)
+                if (-not $State['InstallEdge']) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: License activation' -PercentComplete 79
+                    Set-ExchangeLicense
                 }
 
                 # Run CSS-Exchange HealthChecker

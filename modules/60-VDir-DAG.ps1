@@ -169,15 +169,21 @@
         }
         catch { Write-MyWarning ('MAPI URL: {0}' -f $_.Exception.Message); $errors++ }
 
-        try {
-            Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
-                -InternalAuthenticationMethods NTLM,Negotiate,OAuth `
-                -ExternalAuthenticationMethods NTLM,Negotiate,OAuth `
-                -ErrorAction Stop -WarningAction SilentlyContinue
-            Write-MyVerbose 'MAPI authentication methods configured'
-            Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-MapiVirtualDirectory -Identity '$server\mapi (Default Web Site)' -InternalAuthenticationMethods NTLM,Negotiate,OAuth -ExternalAuthenticationMethods NTLM,Negotiate,OAuth")
+        # InternalAuthenticationMethods was removed from Set-MapiVirtualDirectory in Exchange SE RTM.
+        # Skip the attempt entirely on SE to avoid the misleading ParameterBindingException in the log.
+        if ($State['ExSetupVersion'] -and ([System.Version]$State['ExSetupVersion'] -lt [System.Version]$EXSESETUPEXE_RTM)) {
+            try {
+                Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
+                    -InternalAuthenticationMethods NTLM,Negotiate,OAuth `
+                    -ExternalAuthenticationMethods NTLM,Negotiate,OAuth `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'MAPI authentication methods configured'
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-MapiVirtualDirectory -Identity '$server\mapi (Default Web Site)' -InternalAuthenticationMethods NTLM,Negotiate,OAuth -ExternalAuthenticationMethods NTLM,Negotiate,OAuth")
+            }
+            catch { Write-MyVerbose ('MAPI auth methods not supported on this build: {0}' -f $_.Exception.Message) }
+        } else {
+            Write-MyVerbose 'MAPI auth methods: skipped — InternalAuthenticationMethods removed in Exchange SE RTM'
         }
-        catch { Write-MyVerbose ('MAPI auth methods not supported on this build: {0}' -f $_.Exception.Message) }
 
         # PowerShell — ExternalUrl only; InternalUrl stays http (Exchange internal services use http by default)
         try {
@@ -508,15 +514,22 @@
                 Write-MyWarning ('Exchange Auth Certificate (thumbprint {0}) not found on this server' -f $thumbprint)
                 return
             }
-            $daysLeft = ($cert.NotAfter - (Get-Date)).Days
+            # Exchange Auth Certificate (self-signed virtual cert) may return DateTime.MinValue for NotAfter.
+            # Guard before arithmetic and .ToString() to avoid "cannot call method on null-valued expression".
+            $notAfter = $cert.NotAfter
+            if (-not $notAfter -or $notAfter -le [datetime]'1970-01-01') {
+                Write-MyWarning ('Exchange Auth Certificate (thumbprint {0}) has no valid expiry date — verify with Get-AuthConfig / Get-ExchangeCertificate' -f $thumbprint)
+                return
+            }
+            $daysLeft = ($notAfter - (Get-Date)).Days
             if ($daysLeft -le 0) {
-                Write-MyWarning ('Exchange Auth Certificate EXPIRED {0} day(s) ago (expires {1}, thumbprint {2}). Renew: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f [Math]::Abs($daysLeft), $cert.NotAfter.ToString('yyyy-MM-dd'), $thumbprint)
+                Write-MyWarning ('Exchange Auth Certificate EXPIRED {0} day(s) ago (expires {1}, thumbprint {2}). Renew: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f [Math]::Abs($daysLeft), $notAfter.ToString('yyyy-MM-dd'), $thumbprint)
             }
             elseif ($daysLeft -le 60) {
-                Write-MyWarning ('Exchange Auth Certificate expires in {0} days on {1} (thumbprint {2}). Renew soon: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f $daysLeft, $cert.NotAfter.ToString('yyyy-MM-dd'), $thumbprint)
+                Write-MyWarning ('Exchange Auth Certificate expires in {0} days on {1} (thumbprint {2}). Renew soon: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f $daysLeft, $notAfter.ToString('yyyy-MM-dd'), $thumbprint)
             }
             else {
-                Write-MyStep -Label 'Auth Cert' -Value ('valid {0}d (expires {1})' -f $daysLeft, $cert.NotAfter.ToString('yyyy-MM-dd'))
+                Write-MyStep -Label 'Auth Cert' -Value ('valid {0}d (expires {1})' -f $daysLeft, $notAfter.ToString('yyyy-MM-dd'))
             }
         }
         catch {
@@ -611,7 +624,7 @@
         try {
             $orgCfg = Get-OrganizationConfig -ErrorAction Stop
             if ($orgCfg.OAuth2ClientProfileEnabled) {
-                Write-MyVerbose 'Modern Authentication (OAuth2): Enabled (OK)'
+                Write-MyStep -Label 'Modern Authentication' -Value 'enabled' -Status OK
             }
             else {
                 Write-MyWarning 'Modern Authentication (OAuth2) is DISABLED — required for Outlook 2016+, Teams, mobile clients, and Hybrid. Enable: Set-OrganizationConfig -OAuth2ClientProfileEnabled $true'

@@ -723,7 +723,8 @@
             $defRows.Add(@((L 'Pfad-Ausnahmen' 'Path exclusions'), (SafeVal (($exr.ExclusionPath | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
             $defRows.Add(@((L 'Prozess-Ausnahmen' 'Process exclusions'), (SafeVal (($exr.ExclusionProcess | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
             $defRows.Add(@((L 'Dateityp-Ausnahmen' 'Extension exclusions'), (SafeVal (($exr.ExclusionExtension | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
-            $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $defRows.ToArray()))
+            # ColWidths: narrow label 2500, wide value (paths up to 121 chars) 6760 — total 9260 twips
+            $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $defRows.ToArray() -ColWidths @(2500, 6760)))
         }
 
         # 8.6 IIS- und Exchange-Logs
@@ -829,7 +830,8 @@
             ,@((L 'Verlust des File Share Witness (FSW)' 'Loss of File Share Witness (FSW)'), (L 'DAG kann noch lesen; Alternate FSW übernimmt automatisch (wenn konfiguriert). Manuell: Set-DatabaseAvailabilityGroup -AlternateWitnessServer' 'DAG can still read; Alternate FSW takes over automatically (if configured). Manually: Set-DatabaseAvailabilityGroup -AlternateWitnessServer'))
             ,@((L 'Active-Directory-Ausfall' 'Active Directory failure'), (L 'Exchange kann ohne AD nicht starten (Ausnahme: Edge Transport). AD-Wiederherstellung hat Vorrang.' 'Exchange cannot start without AD (exception: Edge Transport). AD recovery takes priority.'))
         )
-        $null = $parts.Add((New-WdTable -Headers @((L 'Szenario' 'Scenario'), (L 'Vorgehensweise' 'Procedure')) -Rows $drRows))
+        # ColWidths: short scenario name 2500, long procedure text (up to 139 chars) 6760 — total 9260 twips
+        $null = $parts.Add((New-WdTable -Headers @((L 'Szenario' 'Scenario'), (L 'Vorgehensweise' 'Procedure')) -Rows $drRows -ColWidths @(2500, 6760)))
 
         # 10.4 Backup-Nachweis und Testzyklus
         $null = $parts.Add((New-WdHeading (L '10.4 Backup-Nachweis und Testzyklus' '10.4 Backup Evidence and Test Cycle') 2))

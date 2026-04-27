@@ -314,6 +314,60 @@
         return $true
     }
 
+    function Invoke-LicenseKeyPrompt {
+        # Prompts for an Exchange Server product key in Copilot mode with 5-minute auto-skip.
+        # Autopilot / non-interactive: returns $null immediately without prompting.
+        # Returns the validated key string (XXXXX-XXXXX-...), or $null to continue as Trial.
+        if ($State['Autopilot'] -or -not [Environment]::UserInteractive) { return $null }
+
+        $timeoutSec = 300
+        $keyPattern = '^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$'
+
+        Write-Host ''
+        Write-Host '  Exchange Server product key (optional)' -ForegroundColor Cyan
+        Write-Host '  Activates Standard or Enterprise edition. Leave blank to continue as Trial (180-day evaluation).' -ForegroundColor DarkGray
+        Write-Host ("  Format: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX  —  auto-skip in {0} min, or press Enter to skip now." -f ($timeoutSec / 60)) -ForegroundColor DarkGray
+
+        $keyInput = $null
+        if ($IsPS2Exe) {
+            # PS2Exe / compiled mode: no RawUI available — fall back to plain Read-Host
+            $keyInput = Read-Host '  License key'
+        }
+        else {
+            $deadline = (Get-Date).AddSeconds($timeoutSec)
+            while ((Get-Date) -lt $deadline) {
+                if ($host.UI.RawUI.KeyAvailable) {
+                    $k = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                    Write-Progress -Id 2 -Activity 'License key' -Completed
+                    # Enter (13) or Escape (27) with nothing typed → skip
+                    if ($k.VirtualKeyCode -eq 27) { break }
+                    if ($k.VirtualKeyCode -eq 13) { break }
+                    # Any other key → collect the rest of the line with Read-Host
+                    $keyInput = Read-Host '  License key'
+                    break
+                }
+                Start-Sleep -Milliseconds 200
+                $remaining = [int]([Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
+                Write-Progress -Id 2 -Activity 'License key' `
+                    -Status ('Auto-skip in {0}s — type key or press Enter to skip' -f $remaining) `
+                    -SecondsRemaining $remaining
+            }
+            Write-Progress -Id 2 -Activity 'License key' -Completed
+        }
+
+        if (-not $keyInput) {
+            Write-MyStep -Label 'License key' -Value 'skipped (Trial)' -Status Info
+            return $null
+        }
+        $keyInput = $keyInput.Trim().ToUpperInvariant()
+        if ($keyInput -match $keyPattern) {
+            Write-MyStep -Label 'License key' -Value 'provided (activates in Phase 6)' -Status OK
+            return $keyInput
+        }
+        Write-MyWarning ('Invalid product key format — expected XXXXX-XXXXX-XXXXX-XXXXX-XXXXX. Continuing as Trial.')
+        return $null
+    }
+
     function Test-Feature {
         # Returns $true when an Advanced feature is enabled.
         # Precedence: explicit $State['AdvancedFeatures'][Name] > Condition-gated default.

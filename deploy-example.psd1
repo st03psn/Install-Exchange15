@@ -296,6 +296,17 @@
     # ExternalRelaySubnets = @('10.0.1.100')
 
     # -------------------------------------------------------------------------
+    # License key (optional)
+    # -------------------------------------------------------------------------
+    # Exchange Server Standard or Enterprise product key.
+    # Format: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX (25 characters, uppercase letters and digits).
+    # Activated at the end of Phase 6, before the installation report is generated.
+    # Leave commented out to run as Trial (180-day evaluation). The key can also be
+    # entered interactively in Copilot mode (5-minute auto-skip prompt), or passed
+    # via -LicenseKey on the command line.
+    # LicenseKey = 'XXXXX-XXXXX-XXXXX-XXXXX-XXXXX'
+
+    # -------------------------------------------------------------------------
     # Log cleanup
     # -------------------------------------------------------------------------
     # Daily scheduled task (02:00, SYSTEM) to delete logs older than N days.

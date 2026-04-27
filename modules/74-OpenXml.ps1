@@ -44,9 +44,24 @@
         # long content in 6+ columns each cell wraps aggressively at 11pt default. 8pt
         # gives ~40% more horizontal characters per line and lifts most wrap to a single
         # break instead of cascading wraps on every column.
-        param([string[]]$Headers, [object[]]$Rows, [switch]$Compact)
+        #
+        # -ColWidths: optional array of column widths in twips (1/1440 inch = 1/20 pt).
+        # When provided, the table switches from auto-layout to fixed-width layout and
+        # each column/cell gets an explicit <w:tcW>. Useful when one column has long content
+        # that would otherwise get too narrow (e.g. Defender paths, RBAC descriptions).
+        # Standard usable page width: ~9260 twips (A4/Letter with standard margins).
+        # Example: -ColWidths @(2800, 6460) for a 30%/70% two-column split.
+        param([string[]]$Headers, [object[]]$Rows, [switch]$Compact, [int[]]$ColWidths)
         $sb = [System.Text.StringBuilder]::new()
-        $null = $sb.Append('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>')
+        if ($ColWidths -and $ColWidths.Count -gt 0) {
+            $totalW = ($ColWidths | Measure-Object -Sum).Sum
+            $null = $sb.Append(('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="{0}" w:type="dxa"/></w:tblPr>' -f $totalW))
+            $gridCols = ($ColWidths | ForEach-Object { '<w:gridCol w:w="{0}"/>' -f $_ }) -join ''
+            $null = $sb.Append(('<w:tblGrid>{0}</w:tblGrid>' -f $gridCols))
+        } else {
+            $null = $sb.Append('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>')
+            $ColWidths = $null
+        }
         $colCount = if ($Headers) { $Headers.Count } else { 0 }
         # Font-size half-points: 22 = 11pt (default), 16 = 8pt (compact).
         $szHalfPt  = if ($Compact) { 16 } else { 22 }
@@ -54,9 +69,12 @@
         $headerRPr = if ($Compact) { '<w:rPr><w:b/><w:color w:val="FFFFFF"/><w:sz w:val="{0}"/></w:rPr>' -f $szHalfPt } else { '<w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr>' }
         if ($Headers) {
             $null = $sb.Append('<w:tr><w:trPr><w:tblHeader/></w:trPr>')
+            $hIdx = 0
             foreach ($h in $Headers) {
-                $null = $sb.Append('<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="2F5496"/></w:tcPr>')
+                $hTcW = if ($ColWidths -and $hIdx -lt $ColWidths.Count) { '<w:tcW w:w="{0}" w:type="dxa"/>' -f $ColWidths[$hIdx] } else { '' }
+                $null = $sb.Append(('<w:tc><w:tcPr>{0}<w:shd w:val="clear" w:color="auto" w:fill="2F5496"/></w:tcPr>' -f $hTcW))
                 $null = $sb.Append(('<w:p><w:r>{0}<w:t xml:space="preserve">{1}</w:t></w:r></w:p></w:tc>' -f $headerRPr, (Invoke-XmlEscape $h)))
+                $hIdx++
             }
             $null = $sb.Append('</w:tr>')
         }
@@ -87,8 +105,10 @@
             # some Word versions flag as invalid and refuse to render past that point.
             $cells = @($row)
             $null = $sb.Append('<w:tr>')
+            $cIdx = 0
             foreach ($cell in $cells) {
                 $cellStr = [string]$cell
+                $cTcW = if ($ColWidths -and $cIdx -lt $ColWidths.Count) { '<w:tcW w:w="{0}" w:type="dxa"/>' -f $ColWidths[$cIdx] } else { '' }
                 if ($cellStr -match "`n") {
                     # Multi-line cell: split at newlines, render each line as a separate run
                     # with <w:br/> between them. Font shrunk to 9pt (18 half-pt) so long paths
@@ -98,15 +118,17 @@
                     $brRun = '<w:r>{0}<w:br/></w:r>' -f $mlRPr
                     $lines = $cellStr -split "`n"
                     $runs  = ($lines | ForEach-Object { '<w:r>{0}<w:t xml:space="preserve">{1}</w:t></w:r>' -f $mlRPr, (Invoke-XmlEscape $_) }) -join $brRun
-                    $null  = $sb.Append(('<w:tc><w:p>{0}</w:p></w:tc>' -f $runs))
+                    $null  = $sb.Append(('<w:tc><w:tcPr>{0}</w:tcPr><w:p>{1}</w:p></w:tc>' -f $cTcW, $runs))
                 }
                 else {
-                    $null = $sb.Append(('<w:tc><w:p><w:r>{0}<w:t xml:space="preserve">{1}</w:t></w:r></w:p></w:tc>' -f $cellRPr, (Invoke-XmlEscape $cellStr)))
+                    $null = $sb.Append(('<w:tc><w:tcPr>{0}</w:tcPr><w:p><w:r>{1}<w:t xml:space="preserve">{2}</w:t></w:r></w:p></w:tc>' -f $cTcW, $cellRPr, (Invoke-XmlEscape $cellStr)))
                 }
+                $cIdx++
             }
             # Pad short rows to header width so cell counts match the first/header row.
             for ($pad = $cells.Count; $pad -lt $colCount; $pad++) {
-                $null = $sb.Append(('<w:tc><w:p><w:r>{0}<w:t xml:space="preserve"></w:t></w:r></w:p></w:tc>' -f $cellRPr))
+                $padTcW = if ($ColWidths -and $pad -lt $ColWidths.Count) { '<w:tcW w:w="{0}" w:type="dxa"/>' -f $ColWidths[$pad] } else { '' }
+                $null = $sb.Append(('<w:tc><w:tcPr>{0}</w:tcPr><w:p><w:r>{1}<w:t xml:space="preserve"></w:t></w:r></w:p></w:tc>' -f $padTcW, $cellRPr))
             }
             $null = $sb.Append('</w:tr>')
         }

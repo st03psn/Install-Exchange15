@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.2.2
+    Version:     1.3.0
     Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -89,6 +89,14 @@
 
     ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
+    1.3.0   License key activation: -LicenseKey param, ConfigFile LicenseKey key, Copilot
+            prompt (5-min auto-skip); Set-ExchangeLicense activates Standard/Enterprise in
+            Phase 6. Bugfixes: Add-ADPermission retry with backoff (P2); Default Frontend
+            ProtocolLoggingLevel Verbose; RC4 registry path guards fixed; MAPI VDir skips
+            InternalAuthenticationMethods on Exchange SE RTM; auth cert NotAfter null guard;
+            EP HTML report uses live IIS values (no -ADPropertiesOnly); New-WdTable -ColWidths
+            parameter; explicit column widths for RBAC, retention tags, Defender paths, DR
+            scenarios Word tables.
     1.2.2   ConfigFile implies Autopilot (no explicit key needed); AnonymousRelay=$false now
             suppresses connector creation (gate was subnets-only); ConfigFile missing Namespace
             aborts with error instead of silent skip; LogRetentionDays defaults to 30 in
@@ -673,6 +681,14 @@
     (SID S-1-5-7 — language-independent). Use with extreme care — restrict
     to trusted senders (scanner/printer IPs).
 
+    .PARAMETER LicenseKey
+    Exchange Server product key (format: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX).
+    Activates Standard or Enterprise edition at the end of Phase 6, before
+    the installation report is generated. Omit to run as Trial (180-day
+    evaluation). In Copilot mode the key can also be entered interactively
+    with a 5-minute auto-skip prompt. Can also be set via ConfigFile:
+    LicenseKey = 'XXXXX-XXXXX-XXXXX-XXXXX-XXXXX'.
+
     .PARAMETER StandaloneOptimize
     Standalone mode: runs post-install optimizations (VDir URLs, anonymous
     relay connectors, certificate import, DAG join, log cleanup task, RBAC
@@ -1061,6 +1077,10 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
     [string[]]$ExternalRelaySubnets,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    [ValidatePattern('^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$')]
+    [string]$LicenseKey,
     [parameter( Mandatory = $true, ParameterSetName = 'O')]
     [switch]$StandaloneOptimize,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
@@ -1149,7 +1169,7 @@ process {
     # variable to build the Autopilot RunOnce command correctly.
     $EXpressEntryScript = $MyInvocation.MyCommand.Path
 
-    $ScriptVersion = '1.2.2'
+    $ScriptVersion = '1.3.0'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -4526,9 +4546,26 @@ Write-Log 'Exchange log cleanup finished'
                         $connObj = Get-ReceiveConnector -Identity "$server\$extName" -ErrorAction SilentlyContinue
                     }
                 }
-                Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Get-ReceiveConnector '$server\$extName' | Add-ADPermission -User '$anonLogon' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'")
-                $connObj | Add-ADPermission -User $anonLogon `
-                    -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+                Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Add-ADPermission -Identity '$server\$extName' -User '$anonLogon' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'")
+                # Add-ADPermission can fail immediately after New-ReceiveConnector because Exchange AD objects
+                # may not yet be visible to the current DC. Retry up to 5 times with increasing backoff.
+                $adpErr = $null
+                for ($adpRetry = 1; $adpRetry -le 5; $adpRetry++) {
+                    try {
+                        Add-ADPermission -Identity "$server\$extName" -User $anonLogon `
+                            -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+                        $adpErr = $null
+                        break
+                    }
+                    catch {
+                        $adpErr = $_
+                        if ($adpRetry -lt 5) {
+                            Write-MyVerbose ('Add-ADPermission attempt {0}/5 failed — retrying in {1}s ({2})' -f $adpRetry, ($adpRetry * 5), $_.Exception.Message)
+                            Start-Sleep -Seconds ($adpRetry * 5)
+                        }
+                    }
+                }
+                if ($adpErr) { throw $adpErr }
                 Write-MyStep -Label 'External relay' -Value ('created ({0})' -f $anonLogon) -Status OK
             }
             catch {
@@ -4550,11 +4587,17 @@ Write-Log 'Exchange log cleanup finished'
                 $rc = Get-ReceiveConnector -Identity "$server\$defaultName" -ErrorAction SilentlyContinue
                 if ($rc -and ($rc.PermissionGroups -match 'AnonymousUsers')) {
                     $pgList  = ($rc.PermissionGroups.ToString() -split ',\s*') | Where-Object { $_.Trim() -ne 'AnonymousUsers' }
-                    Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Set-ReceiveConnector -Identity '$server\$defaultName' -PermissionGroups '$($pgList -join ',')'  # AnonymousUsers removed")
-                    Set-ReceiveConnector -Identity "$server\$defaultName" -PermissionGroups ($pgList -join ',') -ErrorAction Stop
-                    Write-MyStep -Label 'AnonymousUsers' -Value ('removed from {0}' -f $defaultName) -Status OK
+                    Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Set-ReceiveConnector -Identity '$server\$defaultName' -PermissionGroups '$($pgList -join ',')' -ProtocolLoggingLevel Verbose  # AnonymousUsers removed, logging enabled")
+                    Set-ReceiveConnector -Identity "$server\$defaultName" -PermissionGroups ($pgList -join ',') -ProtocolLoggingLevel Verbose -ErrorAction Stop
+                    Write-MyStep -Label 'Default Frontend' -Value ('AnonymousUsers removed, logging enabled') -Status OK
                 }
                 else {
+                    # AnonymousUsers already absent — still ensure protocol logging is enabled
+                    if ($rc -and $rc.ProtocolLoggingLevel -ne 'Verbose') {
+                        Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Set-ReceiveConnector -Identity '$server\$defaultName' -ProtocolLoggingLevel Verbose")
+                        Set-ReceiveConnector -Identity "$server\$defaultName" -ProtocolLoggingLevel Verbose -ErrorAction SilentlyContinue
+                        Write-MyVerbose ('Protocol logging enabled on "{0}"' -f $defaultName)
+                    }
                     Write-MyVerbose ('AnonymousUsers already absent from "{0}"' -f $defaultName)
                 }
             }
@@ -4654,6 +4697,37 @@ Write-Log 'Exchange log cleanup finished'
         }
         catch {
             Write-MyWarning ('Email Address Policy configuration failed: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Set-ExchangeLicense {
+        # Activates an Exchange Server product key stored in $State['LicenseKey'].
+        # Converts Trial (evaluation) to Standard or Enterprise edition.
+        # Safe to re-run: Set-ExchangeServer -ProductKey is idempotent.
+        # Key is never written to the command registry or logs (redacted).
+        $key = $State['LicenseKey']
+        if (-not $key) {
+            Write-MyStep -Label 'Exchange license' -Value 'Trial (no key provided)' -Status Info
+            return
+        }
+        $server = $env:COMPUTERNAME
+        try {
+            Write-MyVerbose ('Activating Exchange product key on {0}' -f $server)
+            Set-ExchangeServer -Identity $server -ProductKey $key -ErrorAction Stop
+            Register-ExecutedCommand -Category 'Configuration' -Command ("Set-ExchangeServer -Identity '$server' -ProductKey <redacted>")
+            # Brief pause so AD replication can reflect the edition change
+            Start-Sleep -Seconds 5
+            $srv = Get-ExchangeServer -Identity $server -ErrorAction SilentlyContinue
+            $edition = if ($srv -and $srv.Edition) { $srv.Edition.ToString() } else { '(unknown)' }
+            if ($edition -match 'Trial|Evaluation') {
+                Write-MyWarning ('Exchange license: edition still shows "{0}" after key activation — key may be invalid or an IIS/Transport restart is needed' -f $edition)
+            }
+            else {
+                Write-MyStep -Label 'Exchange license' -Value ('activated — {0} edition' -f $edition) -Status OK
+            }
+        }
+        catch {
+            Write-MyWarning ('Exchange product key activation failed: {0}' -f $_.Exception.Message)
         }
     }
 
@@ -4951,15 +5025,21 @@ Write-Log 'Exchange log cleanup finished'
         }
         catch { Write-MyWarning ('MAPI URL: {0}' -f $_.Exception.Message); $errors++ }
 
-        try {
-            Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
-                -InternalAuthenticationMethods NTLM,Negotiate,OAuth `
-                -ExternalAuthenticationMethods NTLM,Negotiate,OAuth `
-                -ErrorAction Stop -WarningAction SilentlyContinue
-            Write-MyVerbose 'MAPI authentication methods configured'
-            Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-MapiVirtualDirectory -Identity '$server\mapi (Default Web Site)' -InternalAuthenticationMethods NTLM,Negotiate,OAuth -ExternalAuthenticationMethods NTLM,Negotiate,OAuth")
+        # InternalAuthenticationMethods was removed from Set-MapiVirtualDirectory in Exchange SE RTM.
+        # Skip the attempt entirely on SE to avoid the misleading ParameterBindingException in the log.
+        if ($State['ExSetupVersion'] -and ([System.Version]$State['ExSetupVersion'] -lt [System.Version]$EXSESETUPEXE_RTM)) {
+            try {
+                Set-MapiVirtualDirectory -Identity "$server\mapi (Default Web Site)" `
+                    -InternalAuthenticationMethods NTLM,Negotiate,OAuth `
+                    -ExternalAuthenticationMethods NTLM,Negotiate,OAuth `
+                    -ErrorAction Stop -WarningAction SilentlyContinue
+                Write-MyVerbose 'MAPI authentication methods configured'
+                Register-ExecutedCommand -Category 'VirtualDirectories' -Command ("Set-MapiVirtualDirectory -Identity '$server\mapi (Default Web Site)' -InternalAuthenticationMethods NTLM,Negotiate,OAuth -ExternalAuthenticationMethods NTLM,Negotiate,OAuth")
+            }
+            catch { Write-MyVerbose ('MAPI auth methods not supported on this build: {0}' -f $_.Exception.Message) }
+        } else {
+            Write-MyVerbose 'MAPI auth methods: skipped — InternalAuthenticationMethods removed in Exchange SE RTM'
         }
-        catch { Write-MyVerbose ('MAPI auth methods not supported on this build: {0}' -f $_.Exception.Message) }
 
         # PowerShell — ExternalUrl only; InternalUrl stays http (Exchange internal services use http by default)
         try {
@@ -5290,15 +5370,22 @@ Write-Log 'Exchange log cleanup finished'
                 Write-MyWarning ('Exchange Auth Certificate (thumbprint {0}) not found on this server' -f $thumbprint)
                 return
             }
-            $daysLeft = ($cert.NotAfter - (Get-Date)).Days
+            # Exchange Auth Certificate (self-signed virtual cert) may return DateTime.MinValue for NotAfter.
+            # Guard before arithmetic and .ToString() to avoid "cannot call method on null-valued expression".
+            $notAfter = $cert.NotAfter
+            if (-not $notAfter -or $notAfter -le [datetime]'1970-01-01') {
+                Write-MyWarning ('Exchange Auth Certificate (thumbprint {0}) has no valid expiry date — verify with Get-AuthConfig / Get-ExchangeCertificate' -f $thumbprint)
+                return
+            }
+            $daysLeft = ($notAfter - (Get-Date)).Days
             if ($daysLeft -le 0) {
-                Write-MyWarning ('Exchange Auth Certificate EXPIRED {0} day(s) ago (expires {1}, thumbprint {2}). Renew: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f [Math]::Abs($daysLeft), $cert.NotAfter.ToString('yyyy-MM-dd'), $thumbprint)
+                Write-MyWarning ('Exchange Auth Certificate EXPIRED {0} day(s) ago (expires {1}, thumbprint {2}). Renew: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f [Math]::Abs($daysLeft), $notAfter.ToString('yyyy-MM-dd'), $thumbprint)
             }
             elseif ($daysLeft -le 60) {
-                Write-MyWarning ('Exchange Auth Certificate expires in {0} days on {1} (thumbprint {2}). Renew soon: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f $daysLeft, $cert.NotAfter.ToString('yyyy-MM-dd'), $thumbprint)
+                Write-MyWarning ('Exchange Auth Certificate expires in {0} days on {1} (thumbprint {2}). Renew soon: New-ExchangeCertificate, then Set-AuthConfig -NewCertificateThumbprint / -PublishCertificate' -f $daysLeft, $notAfter.ToString('yyyy-MM-dd'), $thumbprint)
             }
             else {
-                Write-MyStep -Label 'Auth Cert' -Value ('valid {0}d (expires {1})' -f $daysLeft, $cert.NotAfter.ToString('yyyy-MM-dd'))
+                Write-MyStep -Label 'Auth Cert' -Value ('valid {0}d (expires {1})' -f $daysLeft, $notAfter.ToString('yyyy-MM-dd'))
             }
         }
         catch {
@@ -5393,7 +5480,7 @@ Write-Log 'Exchange log cleanup finished'
         try {
             $orgCfg = Get-OrganizationConfig -ErrorAction Stop
             if ($orgCfg.OAuth2ClientProfileEnabled) {
-                Write-MyVerbose 'Modern Authentication (OAuth2): Enabled (OK)'
+                Write-MyStep -Label 'Modern Authentication' -Value 'enabled' -Status OK
             }
             else {
                 Write-MyWarning 'Modern Authentication (OAuth2) is DISABLED — required for Outlook 2016+, Teams, mobile clients, and Hybrid. Enable: Set-OrganizationConfig -OAuth2ClientProfileEnabled $true'
@@ -6173,14 +6260,17 @@ Write-Log 'Exchange log cleanup finished'
         # Extended Protection — per-VDir breakdown (Frontend only; Back End EP=None by design)
         if (-not $State['InstallEdge']) {
             try {
+                # Do NOT use -ADPropertiesOnly: on Exchange CU14+/SE, EP is set by setup directly in IIS
+                # and the AD-cached ExtendedProtectionTokenChecking attribute may be empty/stale.
+                # Read live IIS values instead (no -ADPropertiesOnly) to get the actual current state.
                 $epCmdlets = @(
-                    @{ Name='OWA';         Get={ @(Get-OwaVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='ECP';         Get={ @(Get-EcpVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='EWS';         Get={ @(Get-WebServicesVirtualDirectory  -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='OAB';         Get={ @(Get-OabVirtualDirectory          -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='ActiveSync';  Get={ @(Get-ActiveSyncVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='MAPI';        Get={ @(Get-MapiVirtualDirectory         -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
-                    @{ Name='PowerShell';  Get={ @(Get-PowerShellVirtualDirectory   -Server $env:COMPUTERNAME -ADPropertiesOnly -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='OWA';         Get={ @(Get-OwaVirtualDirectory          -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='ECP';         Get={ @(Get-EcpVirtualDirectory          -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='EWS';         Get={ @(Get-WebServicesVirtualDirectory  -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='OAB';         Get={ @(Get-OabVirtualDirectory          -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='ActiveSync';  Get={ @(Get-ActiveSyncVirtualDirectory   -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='MAPI';        Get={ @(Get-MapiVirtualDirectory         -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
+                    @{ Name='PowerShell';  Get={ @(Get-PowerShellVirtualDirectory   -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue | Where-Object { $_.WebSiteName -notlike '*Back End*' }) } }
                 )
                 $epVdirRows = [System.Collections.Generic.List[string]]::new()
                 foreach ($ep in $epCmdlets) {
@@ -6750,7 +6840,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                         (Lc $rt.RetentionEnabled (L 'Aktiv' 'Enabled') (L 'Inaktiv' 'Disabled'))
                     ))
                 }
-                $null = $Parts.Add((New-WdTable -Headers @((L 'Tag-Name' 'Tag name'), (L 'Typ' 'Type'), (L 'Aufbewahrung' 'Retention'), (L 'Aktion' 'Action'), (L 'Status' 'Status')) -Rows $rtRows.ToArray() -Compact))
+                # ColWidths: Tag name 3500 (long names), Type 1200, Retention 1200, Action 1800, Status 1560 — total 9260 twips
+                $null = $Parts.Add((New-WdTable -Headers @((L 'Tag-Name' 'Tag name'), (L 'Typ' 'Type'), (L 'Aufbewahrung' 'Retention'), (L 'Aktion' 'Action'), (L 'Status' 'Status')) -Rows $rtRows.ToArray() -Compact -ColWidths @(3500, 1200, 1200, 1800, 1560)))
             }
             if ($orgD.DlpPolicies.Count -gt 0) {
                 $dlpRows = [System.Collections.Generic.List[object[]]]::new()
@@ -6954,7 +7045,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     } else { (L '(keine Mitglieder)' '(no members)') }
                     $rgRows.Add(@($rg.Name, (SafeVal $rg.Description), $memStr))
                 }
-                $null = $Parts.Add((New-WdTable -Headers @((L 'Rollengruppe' 'Role group'), (L 'Beschreibung' 'Description'), (L 'Mitglieder' 'Members')) -Rows $rgRows.ToArray()))
+                # ColWidths: Role group 2200, Description 4200 (long), Members 2860 — total 9260 twips (A4/Letter)
+                $null = $Parts.Add((New-WdTable -Headers @((L 'Rollengruppe' 'Role group'), (L 'Beschreibung' 'Description'), (L 'Mitglieder' 'Members')) -Rows $rgRows.ToArray() -ColWidths @(2200, 4200, 2860)))
                 $null = $Parts.Add((New-WdParagraph (L 'Hinweis: Eine detaillierte RBAC-Aufstellung mit verwalteten Rollen liefert der Befehl Get-RoleGroup | Format-List und Get-ManagementRoleAssignment. EXpress legt optional einen separaten RBAC-Report (.txt) im Reports-Verzeichnis ab.' 'Note: A detailed RBAC listing with managed roles is available via Get-RoleGroup | Format-List and Get-ManagementRoleAssignment. EXpress optionally writes a separate RBAC report (.txt) to the reports directory.')))
             }
 
@@ -7177,9 +7269,24 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         # long content in 6+ columns each cell wraps aggressively at 11pt default. 8pt
         # gives ~40% more horizontal characters per line and lifts most wrap to a single
         # break instead of cascading wraps on every column.
-        param([string[]]$Headers, [object[]]$Rows, [switch]$Compact)
+        #
+        # -ColWidths: optional array of column widths in twips (1/1440 inch = 1/20 pt).
+        # When provided, the table switches from auto-layout to fixed-width layout and
+        # each column/cell gets an explicit <w:tcW>. Useful when one column has long content
+        # that would otherwise get too narrow (e.g. Defender paths, RBAC descriptions).
+        # Standard usable page width: ~9260 twips (A4/Letter with standard margins).
+        # Example: -ColWidths @(2800, 6460) for a 30%/70% two-column split.
+        param([string[]]$Headers, [object[]]$Rows, [switch]$Compact, [int[]]$ColWidths)
         $sb = [System.Text.StringBuilder]::new()
-        $null = $sb.Append('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>')
+        if ($ColWidths -and $ColWidths.Count -gt 0) {
+            $totalW = ($ColWidths | Measure-Object -Sum).Sum
+            $null = $sb.Append(('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="{0}" w:type="dxa"/></w:tblPr>' -f $totalW))
+            $gridCols = ($ColWidths | ForEach-Object { '<w:gridCol w:w="{0}"/>' -f $_ }) -join ''
+            $null = $sb.Append(('<w:tblGrid>{0}</w:tblGrid>' -f $gridCols))
+        } else {
+            $null = $sb.Append('<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>')
+            $ColWidths = $null
+        }
         $colCount = if ($Headers) { $Headers.Count } else { 0 }
         # Font-size half-points: 22 = 11pt (default), 16 = 8pt (compact).
         $szHalfPt  = if ($Compact) { 16 } else { 22 }
@@ -7187,9 +7294,12 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
         $headerRPr = if ($Compact) { '<w:rPr><w:b/><w:color w:val="FFFFFF"/><w:sz w:val="{0}"/></w:rPr>' -f $szHalfPt } else { '<w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr>' }
         if ($Headers) {
             $null = $sb.Append('<w:tr><w:trPr><w:tblHeader/></w:trPr>')
+            $hIdx = 0
             foreach ($h in $Headers) {
-                $null = $sb.Append('<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="2F5496"/></w:tcPr>')
+                $hTcW = if ($ColWidths -and $hIdx -lt $ColWidths.Count) { '<w:tcW w:w="{0}" w:type="dxa"/>' -f $ColWidths[$hIdx] } else { '' }
+                $null = $sb.Append(('<w:tc><w:tcPr>{0}<w:shd w:val="clear" w:color="auto" w:fill="2F5496"/></w:tcPr>' -f $hTcW))
                 $null = $sb.Append(('<w:p><w:r>{0}<w:t xml:space="preserve">{1}</w:t></w:r></w:p></w:tc>' -f $headerRPr, (Invoke-XmlEscape $h)))
+                $hIdx++
             }
             $null = $sb.Append('</w:tr>')
         }
@@ -7220,8 +7330,10 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             # some Word versions flag as invalid and refuse to render past that point.
             $cells = @($row)
             $null = $sb.Append('<w:tr>')
+            $cIdx = 0
             foreach ($cell in $cells) {
                 $cellStr = [string]$cell
+                $cTcW = if ($ColWidths -and $cIdx -lt $ColWidths.Count) { '<w:tcW w:w="{0}" w:type="dxa"/>' -f $ColWidths[$cIdx] } else { '' }
                 if ($cellStr -match "`n") {
                     # Multi-line cell: split at newlines, render each line as a separate run
                     # with <w:br/> between them. Font shrunk to 9pt (18 half-pt) so long paths
@@ -7231,15 +7343,17 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                     $brRun = '<w:r>{0}<w:br/></w:r>' -f $mlRPr
                     $lines = $cellStr -split "`n"
                     $runs  = ($lines | ForEach-Object { '<w:r>{0}<w:t xml:space="preserve">{1}</w:t></w:r>' -f $mlRPr, (Invoke-XmlEscape $_) }) -join $brRun
-                    $null  = $sb.Append(('<w:tc><w:p>{0}</w:p></w:tc>' -f $runs))
+                    $null  = $sb.Append(('<w:tc><w:tcPr>{0}</w:tcPr><w:p>{1}</w:p></w:tc>' -f $cTcW, $runs))
                 }
                 else {
-                    $null = $sb.Append(('<w:tc><w:p><w:r>{0}<w:t xml:space="preserve">{1}</w:t></w:r></w:p></w:tc>' -f $cellRPr, (Invoke-XmlEscape $cellStr)))
+                    $null = $sb.Append(('<w:tc><w:tcPr>{0}</w:tcPr><w:p><w:r>{1}<w:t xml:space="preserve">{2}</w:t></w:r></w:p></w:tc>' -f $cTcW, $cellRPr, (Invoke-XmlEscape $cellStr)))
                 }
+                $cIdx++
             }
             # Pad short rows to header width so cell counts match the first/header row.
             for ($pad = $cells.Count; $pad -lt $colCount; $pad++) {
-                $null = $sb.Append(('<w:tc><w:p><w:r>{0}<w:t xml:space="preserve"></w:t></w:r></w:p></w:tc>' -f $cellRPr))
+                $padTcW = if ($ColWidths -and $pad -lt $ColWidths.Count) { '<w:tcW w:w="{0}" w:type="dxa"/>' -f $ColWidths[$pad] } else { '' }
+                $null = $sb.Append(('<w:tc><w:tcPr>{0}</w:tcPr><w:p><w:r>{1}<w:t xml:space="preserve"></w:t></w:r></w:p></w:tc>' -f $padTcW, $cellRPr))
             }
             $null = $sb.Append('</w:tr>')
         }
@@ -8290,7 +8404,8 @@ $body
             $defRows.Add(@((L 'Pfad-Ausnahmen' 'Path exclusions'), (SafeVal (($exr.ExclusionPath | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
             $defRows.Add(@((L 'Prozess-Ausnahmen' 'Process exclusions'), (SafeVal (($exr.ExclusionProcess | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
             $defRows.Add(@((L 'Dateityp-Ausnahmen' 'Extension exclusions'), (SafeVal (($exr.ExclusionExtension | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
-            $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $defRows.ToArray()))
+            # ColWidths: narrow label 2500, wide value (paths up to 121 chars) 6760 — total 9260 twips
+            $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $defRows.ToArray() -ColWidths @(2500, 6760)))
         }
 
         # 8.6 IIS- und Exchange-Logs
@@ -8396,7 +8511,8 @@ $body
             ,@((L 'Verlust des File Share Witness (FSW)' 'Loss of File Share Witness (FSW)'), (L 'DAG kann noch lesen; Alternate FSW übernimmt automatisch (wenn konfiguriert). Manuell: Set-DatabaseAvailabilityGroup -AlternateWitnessServer' 'DAG can still read; Alternate FSW takes over automatically (if configured). Manually: Set-DatabaseAvailabilityGroup -AlternateWitnessServer'))
             ,@((L 'Active-Directory-Ausfall' 'Active Directory failure'), (L 'Exchange kann ohne AD nicht starten (Ausnahme: Edge Transport). AD-Wiederherstellung hat Vorrang.' 'Exchange cannot start without AD (exception: Edge Transport). AD recovery takes priority.'))
         )
-        $null = $parts.Add((New-WdTable -Headers @((L 'Szenario' 'Scenario'), (L 'Vorgehensweise' 'Procedure')) -Rows $drRows))
+        # ColWidths: short scenario name 2500, long procedure text (up to 139 chars) 6760 — total 9260 twips
+        $null = $parts.Add((New-WdTable -Headers @((L 'Szenario' 'Scenario'), (L 'Vorgehensweise' 'Procedure')) -Rows $drRows -ColWidths @(2500, 6760)))
 
         # 10.4 Backup-Nachweis und Testzyklus
         $null = $parts.Add((New-WdHeading (L '10.4 Backup-Nachweis und Testzyklus' '10.4 Backup Evidence and Test Cycle') 2))
@@ -10076,7 +10192,7 @@ $body
         $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
         $current = (Get-ItemProperty -Path $regPath -Name DisabledComponents -ErrorAction SilentlyContinue).DisabledComponents
         if ($current -eq 0x20) {
-            Write-MyVerbose 'IPv4 over IPv6 preference already set (DisabledComponents = 0x20) (OK)'
+            Write-MyStep -Label 'IPv4 over IPv6' -Value 'already preferred' -Status OK
         } else {
             Set-RegistryValue -Path $regPath -Name 'DisabledComponents' -Value 0x20 -PropertyType DWord
             Write-MyStep -Label 'IPv4 over IPv6' -Value 'preferred (effective next reboot)' -Status OK
@@ -10259,22 +10375,27 @@ $body
 
     function Disable-RC4 {
         # https://support.microsoft.com/en-us/kb/2868725
-        # Note: Can't use regular New-Item as registry path contains '/' (always interpreted as path splitter)
+        # Note: Can't use regular New-Item as registry path contains '/' (always interpreted as path splitter).
+        # Use OpenSubKey/.NET directly to create the key; New-Item interprets '/' as path separator.
         Write-MyVerbose 'Disabling RC4 protocol for services'
         $RC4Keys = @('RC4 128/128', 'RC4 40/128', 'RC4 56/128')
-        $RegKey = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers'
-        $RegName = "Enabled"
-        foreach ( $RC4Key in $RC4Keys) {
-            if ( -not( Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue)) {
-                if ( -not (Test-Path $RegKey -ErrorAction SilentlyContinue)) {
-                    $RegHandle = (Get-Item 'HKLM:\').OpenSubKey( $RegKey, $true)
-                    $RegHandle.CreateSubKey( $RC4Key) | Out-Null
+        $RegBase    = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers'
+        $RegBaseRel = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers'
+        $RegName    = 'Enabled'
+        foreach ($RC4Key in $RC4Keys) {
+            $fullPath = Join-Path $RegBase $RC4Key
+            if (-not (Test-Path $fullPath -ErrorAction SilentlyContinue)) {
+                $RegHandle = (Get-Item 'HKLM:\').OpenSubKey($RegBaseRel, $true)
+                if ($RegHandle) {
+                    $RegHandle.CreateSubKey($RC4Key) | Out-Null
                     $RegHandle.Close()
+                } else {
+                    Write-MyWarning ('Disable-RC4: could not open registry key {0} for writing' -f $RegBase)
                 }
             }
-            Write-MyVerbose "Setting registry $RegKey\$RegName\RC4Key to 0"
-            New-ItemProperty -Path (Join-Path (Join-Path 'HKLM:\' $RegKey) $RC4Key) -Name $RegName -Value 0 -Force -ErrorAction SilentlyContinue | Out-Null
-            Register-ExecutedCommand -Category 'Hardening' -Command ("New-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\{0}' -Name Enabled -Value 0 -Force" -f $RC4Key)
+            Write-MyVerbose ('Setting {0}\{1} = 0' -f $fullPath, $RegName)
+            New-ItemProperty -Path $fullPath -Name $RegName -Value 0 -Force -ErrorAction SilentlyContinue | Out-Null
+            Register-ExecutedCommand -Category 'Hardening' -Command ("New-ItemProperty '$fullPath' -Name Enabled -Value 0 -Force")
         }
     }
 
@@ -10386,21 +10507,20 @@ $body
         # F13: SSL offloading at a reverse proxy prevents Extended Protection channel-binding from working.
         # Always set to $false — Exchange should terminate TLS itself, not receive plaintext from a proxy.
         if ($State['InstallEdge']) { return }
-        Write-MyStep -Label 'OA SSL offload' -Value 'configured' -Status OK
         try {
             $oa = Get-OutlookAnywhere -Server $env:computername -ErrorAction SilentlyContinue
             if ($oa) {
                 if ($oa.SSLOffloading) {
                     Set-OutlookAnywhere -Identity $oa.Identity -SSLOffloading $false -Confirm:$false -ErrorAction Stop
                     Register-ExecutedCommand -Category 'ExchangeTuning' -Command ("Set-OutlookAnywhere -Identity '{0}' -SSLOffloading `$false" -f $oa.Identity)
-                    Write-MyVerbose 'Outlook Anywhere SSL offloading disabled'
+                    Write-MyStep -Label 'OA SSL offload' -Value 'disabled' -Status OK
                 }
                 else {
-                    Write-MyVerbose 'Outlook Anywhere SSL offloading already disabled (OK)'
+                    Write-MyStep -Label 'OA SSL offload' -Value 'already disabled' -Status OK
                 }
             }
             else {
-                Write-MyVerbose 'No Outlook Anywhere virtual directory found on this server'
+                Write-MyStep -Label 'OA SSL offload' -Value 'not applicable (no OA vdir)' -Status Info
             }
         }
         catch {
@@ -10429,7 +10549,7 @@ $body
                         Write-MyWarning ('OWA Extended Protection is None (expected Require/Allow for Exchange {0}). Review ExtendedProtectionTokenChecking on all virtual directories.' -f $State['ExSetupVersion'])
                     }
                     else {
-                        Write-MyVerbose ('OWA ExtendedProtectionTokenChecking: {0} (OK)' -f $ep)
+                        Write-MyStep -Label 'OWA Extended Protection' -Value ($ep.ToString()) -Status OK
                     }
                 }
             }
@@ -10480,7 +10600,7 @@ $body
                 Write-MyStep -Label 'Root cert auto-update' -Value 're-enabled (was blocked by policy)' -Status Warn
             }
             else {
-                Write-MyVerbose 'Root certificate auto-update: not disabled by policy (OK)'
+                Write-MyStep -Label 'Root cert auto-update' -Value 'enabled (default)' -Status OK
             }
         }
         catch {
@@ -11326,6 +11446,60 @@ $body
         return $true
     }
 
+    function Invoke-LicenseKeyPrompt {
+        # Prompts for an Exchange Server product key in Copilot mode with 5-minute auto-skip.
+        # Autopilot / non-interactive: returns $null immediately without prompting.
+        # Returns the validated key string (XXXXX-XXXXX-...), or $null to continue as Trial.
+        if ($State['Autopilot'] -or -not [Environment]::UserInteractive) { return $null }
+
+        $timeoutSec = 300
+        $keyPattern = '^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$'
+
+        Write-Host ''
+        Write-Host '  Exchange Server product key (optional)' -ForegroundColor Cyan
+        Write-Host '  Activates Standard or Enterprise edition. Leave blank to continue as Trial (180-day evaluation).' -ForegroundColor DarkGray
+        Write-Host ("  Format: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX  —  auto-skip in {0} min, or press Enter to skip now." -f ($timeoutSec / 60)) -ForegroundColor DarkGray
+
+        $keyInput = $null
+        if ($IsPS2Exe) {
+            # PS2Exe / compiled mode: no RawUI available — fall back to plain Read-Host
+            $keyInput = Read-Host '  License key'
+        }
+        else {
+            $deadline = (Get-Date).AddSeconds($timeoutSec)
+            while ((Get-Date) -lt $deadline) {
+                if ($host.UI.RawUI.KeyAvailable) {
+                    $k = $host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+                    Write-Progress -Id 2 -Activity 'License key' -Completed
+                    # Enter (13) or Escape (27) with nothing typed → skip
+                    if ($k.VirtualKeyCode -eq 27) { break }
+                    if ($k.VirtualKeyCode -eq 13) { break }
+                    # Any other key → collect the rest of the line with Read-Host
+                    $keyInput = Read-Host '  License key'
+                    break
+                }
+                Start-Sleep -Milliseconds 200
+                $remaining = [int]([Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds))
+                Write-Progress -Id 2 -Activity 'License key' `
+                    -Status ('Auto-skip in {0}s — type key or press Enter to skip' -f $remaining) `
+                    -SecondsRemaining $remaining
+            }
+            Write-Progress -Id 2 -Activity 'License key' -Completed
+        }
+
+        if (-not $keyInput) {
+            Write-MyStep -Label 'License key' -Value 'skipped (Trial)' -Status Info
+            return $null
+        }
+        $keyInput = $keyInput.Trim().ToUpperInvariant()
+        if ($keyInput -match $keyPattern) {
+            Write-MyStep -Label 'License key' -Value 'provided (activates in Phase 6)' -Status OK
+            return $keyInput
+        }
+        Write-MyWarning ('Invalid product key format — expected XXXXX-XXXXX-XXXXX-XXXXX-XXXXX. Continuing as Trial.')
+        return $null
+    }
+
     function Test-Feature {
         # Returns $true when an Advanced feature is enabled.
         # Precedence: explicit $State['AdvancedFeatures'][Name] > Condition-gated default.
@@ -12169,6 +12343,7 @@ $body
             $LogRetentionDays     = Get-CfgValue 'LogRetentionDays' 30
             $RelaySubnets         = Get-CfgValue 'RelaySubnets'         $RelaySubnets
             $ExternalRelaySubnets = Get-CfgValue 'ExternalRelaySubnets' $ExternalRelaySubnets
+            $LicenseKey           = Get-CfgValue 'LicenseKey'           $LicenseKey
             $NoWordDoc            = [switch](Get-CfgValue 'NoWordDoc'        ([bool]$NoWordDoc))
             $CustomerDocument     = [switch](Get-CfgValue 'CustomerDocument' ([bool]$CustomerDocument))
             # Language resolution. Precedence (highest first):
@@ -12523,6 +12698,24 @@ $body
                 # ConvertFrom-SecureString without -Key uses DPAPI (user+machine bound).
                 # Safe here: PFX import happens in Phase 5 on the same machine/user.
                 $State["CertificatePassword"] = ($pfxPwd | ConvertFrom-SecureString)
+            }
+        }
+
+        # License key — collected once in Phase 0, activated in Phase 6 after Exchange setup.
+        # Key is never re-prompted after a reboot resume (state survives the Autopilot chain).
+        if (-not $State['LicenseKey']) {
+            if ($LicenseKey) {
+                # Provided via cmdline or config file
+                $State['LicenseKey'] = $LicenseKey
+                Write-MyStep -Label 'License key' -Value 'provided (will activate in Phase 6)' -Status OK
+            }
+            elseif (-not [bool]$Autopilot -and -not [bool]$InstallEdge -and
+                    -not [bool]$InstallManagementTools -and -not [bool]$InstallRecipientManagement) {
+                # Copilot interactive mode: offer the prompt with 5-minute auto-skip
+                $State['LicenseKey'] = Invoke-LicenseKeyPrompt
+            }
+            else {
+                $State['LicenseKey'] = $null
             }
         }
 
@@ -13373,6 +13566,12 @@ $body
                 if (-not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: RBAC report' -PercentComplete 78
                     Get-RBACReport
+                }
+
+                # Exchange product key activation (Trial → Standard/Enterprise)
+                if (-not $State['InstallEdge']) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: License activation' -PercentComplete 79
+                    Set-ExchangeLicense
                 }
 
                 # Run CSS-Exchange HealthChecker

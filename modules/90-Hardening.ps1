@@ -369,7 +369,7 @@
         $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
         $current = (Get-ItemProperty -Path $regPath -Name DisabledComponents -ErrorAction SilentlyContinue).DisabledComponents
         if ($current -eq 0x20) {
-            Write-MyVerbose 'IPv4 over IPv6 preference already set (DisabledComponents = 0x20) (OK)'
+            Write-MyStep -Label 'IPv4 over IPv6' -Value 'already preferred' -Status OK
         } else {
             Set-RegistryValue -Path $regPath -Name 'DisabledComponents' -Value 0x20 -PropertyType DWord
             Write-MyStep -Label 'IPv4 over IPv6' -Value 'preferred (effective next reboot)' -Status OK
@@ -552,22 +552,27 @@
 
     function Disable-RC4 {
         # https://support.microsoft.com/en-us/kb/2868725
-        # Note: Can't use regular New-Item as registry path contains '/' (always interpreted as path splitter)
+        # Note: Can't use regular New-Item as registry path contains '/' (always interpreted as path splitter).
+        # Use OpenSubKey/.NET directly to create the key; New-Item interprets '/' as path separator.
         Write-MyVerbose 'Disabling RC4 protocol for services'
         $RC4Keys = @('RC4 128/128', 'RC4 40/128', 'RC4 56/128')
-        $RegKey = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers'
-        $RegName = "Enabled"
-        foreach ( $RC4Key in $RC4Keys) {
-            if ( -not( Get-ItemProperty -Path $RegKey -Name $RegName -ErrorAction SilentlyContinue)) {
-                if ( -not (Test-Path $RegKey -ErrorAction SilentlyContinue)) {
-                    $RegHandle = (Get-Item 'HKLM:\').OpenSubKey( $RegKey, $true)
-                    $RegHandle.CreateSubKey( $RC4Key) | Out-Null
+        $RegBase    = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers'
+        $RegBaseRel = 'SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers'
+        $RegName    = 'Enabled'
+        foreach ($RC4Key in $RC4Keys) {
+            $fullPath = Join-Path $RegBase $RC4Key
+            if (-not (Test-Path $fullPath -ErrorAction SilentlyContinue)) {
+                $RegHandle = (Get-Item 'HKLM:\').OpenSubKey($RegBaseRel, $true)
+                if ($RegHandle) {
+                    $RegHandle.CreateSubKey($RC4Key) | Out-Null
                     $RegHandle.Close()
+                } else {
+                    Write-MyWarning ('Disable-RC4: could not open registry key {0} for writing' -f $RegBase)
                 }
             }
-            Write-MyVerbose "Setting registry $RegKey\$RegName\RC4Key to 0"
-            New-ItemProperty -Path (Join-Path (Join-Path 'HKLM:\' $RegKey) $RC4Key) -Name $RegName -Value 0 -Force -ErrorAction SilentlyContinue | Out-Null
-            Register-ExecutedCommand -Category 'Hardening' -Command ("New-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Ciphers\{0}' -Name Enabled -Value 0 -Force" -f $RC4Key)
+            Write-MyVerbose ('Setting {0}\{1} = 0' -f $fullPath, $RegName)
+            New-ItemProperty -Path $fullPath -Name $RegName -Value 0 -Force -ErrorAction SilentlyContinue | Out-Null
+            Register-ExecutedCommand -Category 'Hardening' -Command ("New-ItemProperty '$fullPath' -Name Enabled -Value 0 -Force")
         }
     }
 
@@ -679,21 +684,20 @@
         # F13: SSL offloading at a reverse proxy prevents Extended Protection channel-binding from working.
         # Always set to $false — Exchange should terminate TLS itself, not receive plaintext from a proxy.
         if ($State['InstallEdge']) { return }
-        Write-MyStep -Label 'OA SSL offload' -Value 'configured' -Status OK
         try {
             $oa = Get-OutlookAnywhere -Server $env:computername -ErrorAction SilentlyContinue
             if ($oa) {
                 if ($oa.SSLOffloading) {
                     Set-OutlookAnywhere -Identity $oa.Identity -SSLOffloading $false -Confirm:$false -ErrorAction Stop
                     Register-ExecutedCommand -Category 'ExchangeTuning' -Command ("Set-OutlookAnywhere -Identity '{0}' -SSLOffloading `$false" -f $oa.Identity)
-                    Write-MyVerbose 'Outlook Anywhere SSL offloading disabled'
+                    Write-MyStep -Label 'OA SSL offload' -Value 'disabled' -Status OK
                 }
                 else {
-                    Write-MyVerbose 'Outlook Anywhere SSL offloading already disabled (OK)'
+                    Write-MyStep -Label 'OA SSL offload' -Value 'already disabled' -Status OK
                 }
             }
             else {
-                Write-MyVerbose 'No Outlook Anywhere virtual directory found on this server'
+                Write-MyStep -Label 'OA SSL offload' -Value 'not applicable (no OA vdir)' -Status Info
             }
         }
         catch {
@@ -722,7 +726,7 @@
                         Write-MyWarning ('OWA Extended Protection is None (expected Require/Allow for Exchange {0}). Review ExtendedProtectionTokenChecking on all virtual directories.' -f $State['ExSetupVersion'])
                     }
                     else {
-                        Write-MyVerbose ('OWA ExtendedProtectionTokenChecking: {0} (OK)' -f $ep)
+                        Write-MyStep -Label 'OWA Extended Protection' -Value ($ep.ToString()) -Status OK
                     }
                 }
             }
@@ -773,7 +777,7 @@
                 Write-MyStep -Label 'Root cert auto-update' -Value 're-enabled (was blocked by policy)' -Status Warn
             }
             else {
-                Write-MyVerbose 'Root certificate auto-update: not disabled by policy (OK)'
+                Write-MyStep -Label 'Root cert auto-update' -Value 'enabled (default)' -Status OK
             }
         }
         catch {

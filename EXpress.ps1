@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.2.2
+    Version:     1.3.0
     Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -89,6 +89,14 @@
 
     ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
+    1.3.0   License key activation: -LicenseKey param, ConfigFile LicenseKey key, Copilot
+            prompt (5-min auto-skip); Set-ExchangeLicense activates Standard/Enterprise in
+            Phase 6. Bugfixes: Add-ADPermission retry with backoff (P2); Default Frontend
+            ProtocolLoggingLevel Verbose; RC4 registry path guards fixed; MAPI VDir skips
+            InternalAuthenticationMethods on Exchange SE RTM; auth cert NotAfter null guard;
+            EP HTML report uses live IIS values (no -ADPropertiesOnly); New-WdTable -ColWidths
+            parameter; explicit column widths for RBAC, retention tags, Defender paths, DR
+            scenarios Word tables.
     1.2.2   ConfigFile implies Autopilot (no explicit key needed); AnonymousRelay=$false now
             suppresses connector creation (gate was subnets-only); ConfigFile missing Namespace
             aborts with error instead of silent skip; LogRetentionDays defaults to 30 in
@@ -673,6 +681,14 @@
     (SID S-1-5-7 — language-independent). Use with extreme care — restrict
     to trusted senders (scanner/printer IPs).
 
+    .PARAMETER LicenseKey
+    Exchange Server product key (format: XXXXX-XXXXX-XXXXX-XXXXX-XXXXX).
+    Activates Standard or Enterprise edition at the end of Phase 6, before
+    the installation report is generated. Omit to run as Trial (180-day
+    evaluation). In Copilot mode the key can also be entered interactively
+    with a 5-minute auto-skip prompt. Can also be set via ConfigFile:
+    LicenseKey = 'XXXXX-XXXXX-XXXXX-XXXXX-XXXXX'.
+
     .PARAMETER StandaloneOptimize
     Standalone mode: runs post-install optimizations (VDir URLs, anonymous
     relay connectors, certificate import, DAG join, log cleanup task, RBAC
@@ -1061,6 +1077,10 @@ param(
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
     [string[]]$ExternalRelaySubnets,
+    [parameter( Mandatory = $false, ParameterSetName = 'M')]
+    [parameter( Mandatory = $false, ParameterSetName = 'O')]
+    [ValidatePattern('^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$')]
+    [string]$LicenseKey,
     [parameter( Mandatory = $true, ParameterSetName = 'O')]
     [switch]$StandaloneOptimize,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]

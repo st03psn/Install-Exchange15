@@ -6,6 +6,27 @@ Full version history for EXpress. See [README.md](README.md) for overview and qu
 
 ---
 
+## v1.3.0 (2026-04-27) — feature release
+
+### License key activation (new)
+
+- **`-LicenseKey` parameter** — new cmdline parameter (format: `XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`). Activates Standard or Enterprise edition at the end of Phase 6, before the installation report is generated. Omit to run as Trial (180-day evaluation).
+- **ConfigFile `LicenseKey` key** — `LicenseKey = 'XXXXX-...'` in `deploy.psd1` / `config.psd1` (commented out by default to prevent accidental activation with a wrong key).
+- **Copilot interactive prompt** — in Copilot mode a prompt appears after the Advanced Configuration menu with a 5-minute auto-skip countdown. Press Enter immediately to skip (Trial). PS2Exe / compiled mode falls back to `Read-Host`.
+- **`Set-ExchangeLicense` function** — activates the key via `Set-ExchangeServer -ProductKey`, verifies the resulting edition, and logs the outcome. Key is never written to the command register (redacted).
+
+### Bugfixes
+
+- **Default Frontend `ProtocolLoggingLevel Verbose`** — when removing `AnonymousUsers` from the Default Frontend receive connector, protocol logging is now also enabled in the same `Set-ReceiveConnector` call (was silently skipped).
+- **External relay `Add-ADPermission` retry (P2)** — replaced single piped call with a retry loop (5 attempts, backoff 5–25 s) using the string identity instead of the connector object. Prevents "wasn't found" failures immediately after `New-ReceiveConnector` due to AD replication lag.
+- **RC4 registry path fix** — `Get-ItemProperty` and `Test-Path` in `Disable-RC4` used the bare key path without `HKLM:\` prefix (silent fail). Fixed: full `HKLM:\...` path used for `Test-Path`; `OpenSubKey` null-guarded before `CreateSubKey`.
+- **MAPI VDir skip `InternalAuthenticationMethods` on Exchange SE** — `Set-MapiVirtualDirectory -InternalAuthenticationMethods` was removed in Exchange SE RTM. Added version check (`$EXSESETUPEXE_RTM`) to skip the attempt on SE; eliminates the ParameterBindingException verbose entry in the log.
+- **Auth cert `NotAfter` null guard** — `Test-AuthCertificate` threw "cannot call method on null-valued expression" when `$cert.NotAfter` was `DateTime.MinValue` (Exchange virtual auth cert). Added explicit guard; falls back to a warning with the thumbprint.
+- **EP HTML uses live IIS values** — `Get-*VirtualDirectory` in the Extended Protection per-VDir report section no longer uses `-ADPropertiesOnly`. Exchange CU14+/SE sets EP directly in IIS; the AD-cached `ExtendedProtectionTokenChecking` attribute may be empty/stale. Reading live values fixes the "None" badge for all VDirs on SE.
+- **`New-WdTable -ColWidths` parameter** — new optional parameter (array of twips) switches table layout from auto to fixed-width (`w:type="dxa"`), emits `<w:tblGrid>` and per-cell `<w:tcW>` elements. Applied to four problematic tables: RBAC role groups (description col), retention policy tags (tag name col), Defender path exclusions (value col), and DR scenario procedure col.
+
+---
+
 ## v1.2.2 (2026-04-27) — bugfix release
 
 - **ConfigFile implies Autopilot** — using `-ConfigFile` now automatically enables Autopilot (auto-reboot + resume) without requiring `Autopilot = $true` in the config file. Add `Autopilot = $false` explicitly to keep Copilot prompts while still loading parameters from a config file.

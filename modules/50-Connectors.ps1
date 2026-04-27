@@ -509,9 +509,26 @@
                         $connObj = Get-ReceiveConnector -Identity "$server\$extName" -ErrorAction SilentlyContinue
                     }
                 }
-                Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Get-ReceiveConnector '$server\$extName' | Add-ADPermission -User '$anonLogon' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'")
-                $connObj | Add-ADPermission -User $anonLogon `
-                    -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+                Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Add-ADPermission -Identity '$server\$extName' -User '$anonLogon' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'")
+                # Add-ADPermission can fail immediately after New-ReceiveConnector because Exchange AD objects
+                # may not yet be visible to the current DC. Retry up to 5 times with increasing backoff.
+                $adpErr = $null
+                for ($adpRetry = 1; $adpRetry -le 5; $adpRetry++) {
+                    try {
+                        Add-ADPermission -Identity "$server\$extName" -User $anonLogon `
+                            -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
+                        $adpErr = $null
+                        break
+                    }
+                    catch {
+                        $adpErr = $_
+                        if ($adpRetry -lt 5) {
+                            Write-MyVerbose ('Add-ADPermission attempt {0}/5 failed — retrying in {1}s ({2})' -f $adpRetry, ($adpRetry * 5), $_.Exception.Message)
+                            Start-Sleep -Seconds ($adpRetry * 5)
+                        }
+                    }
+                }
+                if ($adpErr) { throw $adpErr }
                 Write-MyStep -Label 'External relay' -Value ('created ({0})' -f $anonLogon) -Status OK
             }
             catch {
@@ -533,11 +550,17 @@
                 $rc = Get-ReceiveConnector -Identity "$server\$defaultName" -ErrorAction SilentlyContinue
                 if ($rc -and ($rc.PermissionGroups -match 'AnonymousUsers')) {
                     $pgList  = ($rc.PermissionGroups.ToString() -split ',\s*') | Where-Object { $_.Trim() -ne 'AnonymousUsers' }
-                    Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Set-ReceiveConnector -Identity '$server\$defaultName' -PermissionGroups '$($pgList -join ',')'  # AnonymousUsers removed")
-                    Set-ReceiveConnector -Identity "$server\$defaultName" -PermissionGroups ($pgList -join ',') -ErrorAction Stop
-                    Write-MyStep -Label 'AnonymousUsers' -Value ('removed from {0}' -f $defaultName) -Status OK
+                    Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Set-ReceiveConnector -Identity '$server\$defaultName' -PermissionGroups '$($pgList -join ',')' -ProtocolLoggingLevel Verbose  # AnonymousUsers removed, logging enabled")
+                    Set-ReceiveConnector -Identity "$server\$defaultName" -PermissionGroups ($pgList -join ',') -ProtocolLoggingLevel Verbose -ErrorAction Stop
+                    Write-MyStep -Label 'Default Frontend' -Value ('AnonymousUsers removed, logging enabled') -Status OK
                 }
                 else {
+                    # AnonymousUsers already absent — still ensure protocol logging is enabled
+                    if ($rc -and $rc.ProtocolLoggingLevel -ne 'Verbose') {
+                        Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Set-ReceiveConnector -Identity '$server\$defaultName' -ProtocolLoggingLevel Verbose")
+                        Set-ReceiveConnector -Identity "$server\$defaultName" -ProtocolLoggingLevel Verbose -ErrorAction SilentlyContinue
+                        Write-MyVerbose ('Protocol logging enabled on "{0}"' -f $defaultName)
+                    }
                     Write-MyVerbose ('AnonymousUsers already absent from "{0}"' -f $defaultName)
                 }
             }
@@ -637,6 +660,37 @@
         }
         catch {
             Write-MyWarning ('Email Address Policy configuration failed: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    function Set-ExchangeLicense {
+        # Activates an Exchange Server product key stored in $State['LicenseKey'].
+        # Converts Trial (evaluation) to Standard or Enterprise edition.
+        # Safe to re-run: Set-ExchangeServer -ProductKey is idempotent.
+        # Key is never written to the command registry or logs (redacted).
+        $key = $State['LicenseKey']
+        if (-not $key) {
+            Write-MyStep -Label 'Exchange license' -Value 'Trial (no key provided)' -Status Info
+            return
+        }
+        $server = $env:COMPUTERNAME
+        try {
+            Write-MyVerbose ('Activating Exchange product key on {0}' -f $server)
+            Set-ExchangeServer -Identity $server -ProductKey $key -ErrorAction Stop
+            Register-ExecutedCommand -Category 'Configuration' -Command ("Set-ExchangeServer -Identity '$server' -ProductKey <redacted>")
+            # Brief pause so AD replication can reflect the edition change
+            Start-Sleep -Seconds 5
+            $srv = Get-ExchangeServer -Identity $server -ErrorAction SilentlyContinue
+            $edition = if ($srv -and $srv.Edition) { $srv.Edition.ToString() } else { '(unknown)' }
+            if ($edition -match 'Trial|Evaluation') {
+                Write-MyWarning ('Exchange license: edition still shows "{0}" after key activation — key may be invalid or an IIS/Transport restart is needed' -f $edition)
+            }
+            else {
+                Write-MyStep -Label 'Exchange license' -Value ('activated — {0} edition' -f $edition) -Status OK
+            }
+        }
+        catch {
+            Write-MyWarning ('Exchange product key activation failed: {0}' -f $_.Exception.Message)
         }
     }
 

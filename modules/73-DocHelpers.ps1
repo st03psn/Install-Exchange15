@@ -110,7 +110,8 @@
                         (Lc $rt.RetentionEnabled (L 'Aktiv' 'Enabled') (L 'Inaktiv' 'Disabled'))
                     ))
                 }
-                $null = $Parts.Add((New-WdTable -Headers @((L 'Tag-Name' 'Tag name'), (L 'Typ' 'Type'), (L 'Aufbewahrung' 'Retention'), (L 'Aktion' 'Action'), (L 'Status' 'Status')) -Rows $rtRows.ToArray() -Compact))
+                # ColWidths: Tag name 3500 (long names), Type 1200, Retention 1200, Action 1800, Status 1560 — total 9260 twips
+                $null = $Parts.Add((New-WdTable -Headers @((L 'Tag-Name' 'Tag name'), (L 'Typ' 'Type'), (L 'Aufbewahrung' 'Retention'), (L 'Aktion' 'Action'), (L 'Status' 'Status')) -Rows $rtRows.ToArray() -Compact -ColWidths @(3500, 1200, 1200, 1800, 1560)))
             }
             if ($orgD.DlpPolicies.Count -gt 0) {
                 $dlpRows = [System.Collections.Generic.List[object[]]]::new()
@@ -314,7 +315,8 @@
                     } else { (L '(keine Mitglieder)' '(no members)') }
                     $rgRows.Add(@($rg.Name, (SafeVal $rg.Description), $memStr))
                 }
-                $null = $Parts.Add((New-WdTable -Headers @((L 'Rollengruppe' 'Role group'), (L 'Beschreibung' 'Description'), (L 'Mitglieder' 'Members')) -Rows $rgRows.ToArray()))
+                # ColWidths: Role group 2200, Description 4200 (long), Members 2860 — total 9260 twips (A4/Letter)
+                $null = $Parts.Add((New-WdTable -Headers @((L 'Rollengruppe' 'Role group'), (L 'Beschreibung' 'Description'), (L 'Mitglieder' 'Members')) -Rows $rgRows.ToArray() -ColWidths @(2200, 4200, 2860)))
                 $null = $Parts.Add((New-WdParagraph (L 'Hinweis: Eine detaillierte RBAC-Aufstellung mit verwalteten Rollen liefert der Befehl Get-RoleGroup | Format-List und Get-ManagementRoleAssignment. EXpress legt optional einen separaten RBAC-Report (.txt) im Reports-Verzeichnis ab.' 'Note: A detailed RBAC listing with managed roles is available via Get-RoleGroup | Format-List and Get-ManagementRoleAssignment. EXpress optionally writes a separate RBAC report (.txt) to the reports directory.')))
             }
 
