@@ -570,3 +570,12 @@
         }
         return $rval
     }
+
+    function Format-Elapsed {
+        param([double]$Seconds)
+        if ($Seconds -lt 60) { return ('{0:F1}s' -f $Seconds) }
+        $min = [int][Math]::Floor($Seconds / 60)
+        $sec = [int]($Seconds % 60)
+        if ($sec -eq 0) { return ('{0} min' -f $min) }
+        return ('{0} min {1}s' -f $min, $sec)
+    }

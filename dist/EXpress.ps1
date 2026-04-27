@@ -2337,6 +2337,15 @@ process {
         }
         return $rval
     }
+
+    function Format-Elapsed {
+        param([double]$Seconds)
+        if ($Seconds -lt 60) { return ('{0:F1}s' -f $Seconds) }
+        $min = [int][Math]::Floor($Seconds / 60)
+        $sec = [int]($Seconds % 60)
+        if ($sec -eq 0) { return ('{0} min' -f $min) }
+        return ('{0} min {1}s' -f $min, $sec)
+    }
     function Get-ForestRootNC {
         try {
             return ([ADSI]'LDAP://RootDSE').rootDomainNamingContext.toString()
@@ -9324,7 +9333,9 @@ $body
             $wuJob = Start-Job -ScriptBlock {
                 param([string[]]$kbs)
                 Import-Module PSWindowsUpdate -ErrorAction Stop
-                $result = Install-WindowsUpdate -KBArticleID $kbs -AcceptAll -IgnoreReboot -ErrorAction Stop
+                # Get-WindowsUpdate -KBArticleID filters the search to the approved KBs before
+                # passing to the installer — prevents -AcceptAll from installing all pending updates.
+                $result = Get-WindowsUpdate -KBArticleID $kbs -AcceptAll -Install -IgnoreReboot -ErrorAction Stop
                 $result | Select-Object Title, KB, Result, RebootRequired
             } -ArgumentList (,$approvedKBs)
         }
@@ -9401,7 +9412,7 @@ $body
 
         $rebootNeeded = $false
         if ($useModule) {
-            $installed    = @($jobOut | Where-Object { $_.Result -eq 'Installed' -and $_.KB -and ($approvedKBs -contains $_.KB) }).Count
+            $installed    = @($jobOut | Where-Object { $_.Result -eq 'Installed' }).Count
             $rebootNeeded = ($jobOut | Where-Object { $_.RebootRequired }) -as [bool]
             Write-MyStep -Label 'Windows Updates' -Value ('{0} installed' -f $installed) -Status OK
         }
@@ -13046,7 +13057,7 @@ $body
                 # Install pending Windows Updates before rebooting (if requested)
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Windows Updates' -PercentComplete 90
                 Install-PendingWindowsUpdates
-                Write-MyVerbose ('Phase 1 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
+                Write-MyVerbose ('Phase 1 completed in {0}' -f (Format-Elapsed $phSw.Elapsed.TotalSeconds))
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
@@ -13128,7 +13139,7 @@ $body
                 Install-MyPackage "{9BCA2118-F753-4A1E-BCF3-5A820729965C}" "URL Rewrite Module 2.1" "rewrite_amd64_en-US.msi" "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi" ("/quiet", "/norestart")
                 $urlRwVal = if ($urlRwBefore) { 'already installed' } else { 'installed' }
                 Write-MyStep -Label 'URL Rewrite Module 2.1' -Value $urlRwVal -Status OK
-                Write-MyVerbose ('Phase 2 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
+                Write-MyVerbose ('Phase 2 completed in {0}' -f (Format-Elapsed $phSw.Elapsed.TotalSeconds))
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
 
             }
@@ -13158,7 +13169,7 @@ $body
                         Wait-ADReplication
                     }
                 }
-                Write-MyVerbose ('Phase 3 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
+                Write-MyVerbose ('Phase 3 completed in {0}' -f (Format-Elapsed $phSw.Elapsed.TotalSeconds))
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
@@ -13200,7 +13211,7 @@ $body
                     Dismount-DiskImage -ImagePath $State['SourceImage'] | Out-Null
                     Write-MyVerbose ('Exchange setup complete — dismounted ISO: {0}' -f $State['SourceImage'])
                 }
-                Write-MyVerbose ('Phase 4 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
+                Write-MyVerbose ('Phase 4 completed in {0}' -f (Format-Elapsed $phSw.Elapsed.TotalSeconds))
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 

@@ -1037,7 +1037,7 @@
                 # Install pending Windows Updates before rebooting (if requested)
                 Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 1 of 6: Windows Updates' -PercentComplete 90
                 Install-PendingWindowsUpdates
-                Write-MyVerbose ('Phase 1 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
+                Write-MyVerbose ('Phase 1 completed in {0}' -f (Format-Elapsed $phSw.Elapsed.TotalSeconds))
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
@@ -1119,7 +1119,7 @@
                 Install-MyPackage "{9BCA2118-F753-4A1E-BCF3-5A820729965C}" "URL Rewrite Module 2.1" "rewrite_amd64_en-US.msi" "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi" ("/quiet", "/norestart")
                 $urlRwVal = if ($urlRwBefore) { 'already installed' } else { 'installed' }
                 Write-MyStep -Label 'URL Rewrite Module 2.1' -Value $urlRwVal -Status OK
-                Write-MyVerbose ('Phase 2 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
+                Write-MyVerbose ('Phase 2 completed in {0}' -f (Format-Elapsed $phSw.Elapsed.TotalSeconds))
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
 
             }
@@ -1149,7 +1149,7 @@
                         Wait-ADReplication
                     }
                 }
-                Write-MyVerbose ('Phase 3 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
+                Write-MyVerbose ('Phase 3 completed in {0}' -f (Format-Elapsed $phSw.Elapsed.TotalSeconds))
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
@@ -1191,7 +1191,7 @@
                     Dismount-DiskImage -ImagePath $State['SourceImage'] | Out-Null
                     Write-MyVerbose ('Exchange setup complete — dismounted ISO: {0}' -f $State['SourceImage'])
                 }
-                Write-MyVerbose ('Phase 4 completed in {0:F1}s' -f $phSw.Elapsed.TotalSeconds)
+                Write-MyVerbose ('Phase 4 completed in {0}' -f (Format-Elapsed $phSw.Elapsed.TotalSeconds))
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
             }
 
