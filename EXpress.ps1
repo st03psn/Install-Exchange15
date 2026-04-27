@@ -1079,7 +1079,7 @@ param(
     [string[]]$ExternalRelaySubnets,
     [parameter( Mandatory = $false, ParameterSetName = 'M')]
     [parameter( Mandatory = $false, ParameterSetName = 'O')]
-    [ValidatePattern('^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$')]
+    [ValidatePattern('^$|^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$')]
     [string]$LicenseKey,
     [parameter( Mandatory = $true, ParameterSetName = 'O')]
     [switch]$StandaloneOptimize,
