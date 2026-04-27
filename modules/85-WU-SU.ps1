@@ -195,7 +195,9 @@
             $wuJob = Start-Job -ScriptBlock {
                 param([string[]]$kbs)
                 Import-Module PSWindowsUpdate -ErrorAction Stop
-                $result = Install-WindowsUpdate -KBArticleID $kbs -AcceptAll -IgnoreReboot -ErrorAction Stop
+                # Get-WindowsUpdate -KBArticleID filters the search to the approved KBs before
+                # passing to the installer — prevents -AcceptAll from installing all pending updates.
+                $result = Get-WindowsUpdate -KBArticleID $kbs -AcceptAll -Install -IgnoreReboot -ErrorAction Stop
                 $result | Select-Object Title, KB, Result, RebootRequired
             } -ArgumentList (,$approvedKBs)
         }
@@ -272,7 +274,7 @@
 
         $rebootNeeded = $false
         if ($useModule) {
-            $installed    = @($jobOut | Where-Object { $_.Result -eq 'Installed' -and $_.KB -and ($approvedKBs -contains $_.KB) }).Count
+            $installed    = @($jobOut | Where-Object { $_.Result -eq 'Installed' }).Count
             $rebootNeeded = ($jobOut | Where-Object { $_.RebootRequired }) -as [bool]
             Write-MyStep -Label 'Windows Updates' -Value ('{0} installed' -f $installed) -Status OK
         }
