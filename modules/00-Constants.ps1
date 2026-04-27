@@ -1,5 +1,5 @@
 ﻿
-    $ScriptVersion = '1.2.1'
+    $ScriptVersion = '1.2.2'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001

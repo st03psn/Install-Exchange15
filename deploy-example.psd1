@@ -8,7 +8,8 @@
 # All keys are optional — omitted keys fall back to the script's built-in defaults.
 #
 # Fully unattended setup checklist:
-#   - Autopilot = $true                               (auto-reboot + resume after each phase)
+#   - Using -ConfigFile already implies Autopilot (auto-reboot + resume).
+#     Add Autopilot = $false only if you want Copilot prompts with a config file.
 #   - AdminUser / AdminPassword set in this file      (or interactive prompt on first run)
 #   - InstallWindowsUpdates = $true                   (Windows Updates installed in Phase 1)
 #   - AutoApproveWindowsUpdates auto-defaults to $true for ConfigFile runs — no extra setup
@@ -60,12 +61,11 @@
     # TargetPath = 'D:\Exchange'
 
     # -------------------------------------------------------------------------
-    # AutoPilot & credentials  (KEEP NEAR TOP — required for unattended setup)
+    # Credentials  (KEEP NEAR TOP — required for unattended setup)
     # -------------------------------------------------------------------------
-
-    # Autopilot: automatic reboot + resume after each phase (fully unattended).
-    # Set to $false (or omit) to use Copilot (interactive) mode.
-    Autopilot = $true
+    # Autopilot (auto-reboot + resume) is the default when using -ConfigFile.
+    # To keep Copilot prompts while still loading from a config file, add:
+    #   Autopilot = $false
 
     # ###################################################################
     # SECURITY: plain-text secrets below are ONLY for zero-touch pipelines.
@@ -174,7 +174,7 @@
         SSLOffloading       = $true    # Configure OWA/ECP/EWS for SSL offloading at the load balancer
         MRSProxy            = $true    # Enable MRSProxy on EWS (cross-org / cross-site mailbox moves)
         IANATimezone        = $true    # Configure IANA ↔ Windows TZ mapping (skipped for existing orgs — one-way change)
-        # AnonymousRelay      = $true  # Create anonymous internal relay connector (auto-enabled when RelaySubnets set)
+        # AnonymousRelay is configured in the "Relay connectors" section below — not here.
         AccessNamespaceMail = $true    # Add Accepted Domain + EAP from MailDomain. Skipped automatically
                                        # when org already exists (only runs if EXpress created the org this run)
                                        # or when Namespace is blank.
@@ -273,40 +273,46 @@
     # -------------------------------------------------------------------------
     # Relay connectors
     # -------------------------------------------------------------------------
+    # AnonymousRelay = $true is the master switch. Without it no connectors are created,
+    # even if subnet keys below are set.
+    #
+    # Modes:
+    #   AnonymousRelay = $true + subnet keys set   → connectors created with those subnets
+    #   AnonymousRelay = $true + no subnet keys    → connectors created with RFC 5737
+    #                                                placeholders (192.0.2.1/32 internal,
+    #                                                192.0.2.2/32 external) — visible in EAC
+    #                                                for the admin to fill in real subnets
+    #   AnonymousRelay omitted / $false            → no connectors created
 
-    # Behaviour:
-    #   - AdvancedFeatures.AnonymousRelay = $false (or omitted): NO connector is created,
-    #     subnet keys below are ignored.
-    #   - AdvancedFeatures.AnonymousRelay = $true + subnet keys set: connectors created
-    #     with the listed subnets.
-    #   - AdvancedFeatures.AnonymousRelay = $true + subnet keys missing/empty:
-    #     connectors are created with RFC 5737 documentation placeholders
-    #     (internal 192.0.2.1/32, external 192.0.2.2/32) that block all traffic until
-    #     the admin fills in real subnets via EAC. Mirrors Copilot blank-answer behaviour.
+    # Uncomment all three lines for a typical scanner/printer relay setup:
+    # AnonymousRelay    = $true
 
-    # Internal relay connector: anonymous SMTP relay restricted to accepted domains
-    # (no external relay right). Source IPs are resolved via SID S-1-5-7, which is
-    # language-independent (works on DE/EN/FR/... installs).
-    # RFC 1918 private address space — adjust to match your environment.
-    # RelaySubnets = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
+    # Internal relay connector: anonymous SMTP relay restricted to accepted domains only.
+    # Source IPs resolved via SID S-1-5-7 (language-independent).
+    # RelaySubnets      = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
 
-    # External relay connector: anonymous SMTP relay with Ms-Exch-SMTP-Accept-Any-Recipient.
-    # SECURITY: restrict to trusted send systems (scanners, printers) — open relay = abuse.
+    # External relay connector: relay to ANY recipient (Ms-Exch-SMTP-Accept-Any-Recipient).
+    # SECURITY: restrict to specific trusted hosts (scanners, printers) — open relay = abuse.
     # ExternalRelaySubnets = @('10.0.1.100')
 
     # -------------------------------------------------------------------------
-    # Log cleanup & namespace
+    # Log cleanup
     # -------------------------------------------------------------------------
-
-    # Register daily scheduled task (02:00, SYSTEM) to delete logs older than N days.
+    # Daily scheduled task (02:00, SYSTEM) to delete logs older than N days.
     # Cleans: IIS logs, Exchange transport logs, message tracking logs.
-    # Set to 0 or omit to skip the task entirely.
+    # Default when using -ConfigFile: 30 days. Set to 0 to disable.
     # LogRetentionDays = 30
-    # Folder where the cleanup script and its own logs live (created if missing).
-    # LogCleanupFolder  = 'C:\#service'
 
+    # Folder where the cleanup script and its own log live (created if missing).
+    # LogCleanupFolder = 'C:\#service'
+
+    # -------------------------------------------------------------------------
+    # Namespace & mail domain
+    # -------------------------------------------------------------------------
     # Access namespace for Virtual Directory URL configuration (Phase 6).
-    # Sets InternalUrl/ExternalUrl on OWA/ECP/EWS/OAB/MAPI/EAS to https://<Namespace>/...
+    # Sets InternalUrl/ExternalUrl on OWA/ECP/EWS/OAB/MAPI/EAS/PowerShell/IMAP/POP3
+    # to https://<Namespace>/... (IMAP/POP3 use <Namespace> directly).
+    # Required for a functional deployment — EXpress aborts the config-file run when missing.
     # Namespace = 'mail.contoso.com'
 
     # Mail domain — root domain for Accepted Domain + Email Address Policy (e.g. @contoso.com).

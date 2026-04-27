@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.2.1
+    Version:     1.2.2
     Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -89,6 +89,11 @@
 
     ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
+    1.2.2   ConfigFile implies Autopilot (no explicit key needed); AnonymousRelay=$false now
+            suppresses connector creation (gate was subnets-only); ConfigFile missing Namespace
+            aborts with error instead of silent skip; LogRetentionDays defaults to 30 in
+            ConfigFile mode (was hidden inside function); deploy-example relay section
+            restructured with AnonymousRelay as self-documented master switch.
     1.2.1   Bugfixes: parser error in DNS template rows (if-in-array, PS 5.1); ExistingOrg
             probe re-run after Phase 3 (catch sets $false); Test-Feature explicit config
             blocked by Condition (precedence inverted); Enable-IanaTimeZoneMappings
