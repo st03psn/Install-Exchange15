@@ -184,7 +184,7 @@
 
         # ── 1. Dokumenteigenschaften ─────────────────────────────────────────────
         $null = $parts.Add((New-WdHeading (L '1. Dokumenteigenschaften' '1. Document Properties') 1))
-        $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows @(
+        $null = $parts.Add((New-WdTable -Compact -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows @(
             @((L 'Dokument' 'Document'), $docTitle)
             @('EXpress Version', "v$ScriptVersion")
             @((L 'Erstellt auf Server' 'Generated on server'), $env:COMPUTERNAME)
@@ -222,15 +222,12 @@
             $paramRows.Add(@((L 'Zertifikatspfad' 'Certificate path'), (Mask-Val (SafeVal $State['CertificatePath'] '—'))))
             $logRet = if ($State['LogRetentionDays']) { '{0} {1}' -f $State['LogRetentionDays'], (L 'Tage' 'days') } else { '—' }
             $paramRows.Add(@((L 'Log-Aufbewahrung' 'Log retention'), $logRet))
-            $paramRows.Add(@((L 'Relay-Subnetze' 'Relay subnets'),   (if ($State['RelaySubnets']) { Mask-Ip (($State['RelaySubnets'] -join ', ')) } else { '—' })))
+            $relayStr = if ($State['RelaySubnets']) { Mask-Ip (($State['RelaySubnets'] -join ', ')) } else { '—' }
+            $paramRows.Add(@((L 'Relay-Subnetze' 'Relay subnets'), $relayStr))
             $paramRows.Add(@((L 'Modus' 'Mode'), $modeText))
-            $paramRows.Add(@('TLS 1.2', (Format-RegBool $State['EnableTLS12'])))
-            $paramRows.Add(@('TLS 1.3', (Format-RegBool $State['EnableTLS13'])))
-            # PS 5.1: (if ...) cannot be used inline as an array element — assign first (Known Pitfall)
-            $tls10text = if ($null -eq $State['DisableSSL3']) { (L '(nicht gesetzt)' '(not set)') } elseif ($State['DisableSSL3']) { (L 'deaktiviert' 'disabled') } else { (L 'aktiv' 'active') }
-            $paramRows.Add(@('TLS 1.0 / TLS 1.1', $tls10text))
             $paramRows.Add(@((L 'Logdatei' 'Log file'), (SafeVal $State['TranscriptFile'])))
             $null = $parts.Add((New-WdTable -Headers @((L 'Parameter' 'Parameter'), (L 'Wert' 'Value')) -Rows $paramRows.ToArray()))
+            $null = $parts.Add((New-WdParagraph (L 'TLS-Protokoll- und Schannel-Einstellungen (TLS 1.2/1.3, TLS 1.0/1.1, Cipher Suites) sind in Kapitel 8 dokumentiert.' 'TLS protocol and Schannel settings (TLS 1.2/1.3, TLS 1.0/1.1, cipher suites) are documented in Chapter 8.')))
         }
 
         # ── 3. IST-Aufnahme Active Directory ─────────────────────────────────────
@@ -315,29 +312,8 @@
                 if ($dbRows2.Count -eq 0) { $dbRows2.Add(@((L '(keine Datenbank auf diesem Server)' '(no database on this server)'), '', '', '')) }
                 $null = $parts.Add((New-WdTable -Headers @((L 'Datenbank' 'Database'), (L 'DB-Pfad' 'DB path'), (L 'Log-Pfad' 'Log path'), (L 'Status' 'Status')) -Rows $dbRows2.ToArray()))
 
-                # 5.x.4 Virtuelle Verzeichnisse
-                $null = $parts.Add((New-WdHeading (L 'Virtuelle Verzeichnisse' 'Virtual Directories') 3))
-                $vd2Rows = [System.Collections.Generic.List[object[]]]::new()
-                $vdirSources = @(
-                    @{ Name='OWA';        Data=$srvD.VDirOWA  }
-                    @{ Name='ECP';        Data=$srvD.VDirECP  }
-                    @{ Name='EWS';        Data=$srvD.VDirEWS  }
-                    @{ Name='OAB';        Data=$srvD.VDirOAB  }
-                    @{ Name='ActiveSync'; Data=$srvD.VDirAS   }
-                    @{ Name='MAPI';       Data=$srvD.VDirMAPI }
-                )
-                foreach ($vde in $vdirSources) {
-                    $vd3 = $vde.Data | Select-Object -First 1
-                    if ($vd3) {
-                        $int2 = if ($vd3.InternalUrl) { $vd3.InternalUrl.AbsoluteUri } else { (L '(nicht gesetzt)' '(not set)') }
-                        $ext2 = if ($vd3.ExternalUrl) { $vd3.ExternalUrl.AbsoluteUri } else { (L '(nicht gesetzt)' '(not set)') }
-                        $epRaw2 = "$($vd3.ExtendedProtectionTokenChecking)"
-                        if ($epRaw2 -eq '2') { $epRaw2 = 'Require' } elseif ($epRaw2 -eq '1') { $epRaw2 = 'Allow' } elseif ($epRaw2 -eq '0') { $epRaw2 = 'None' }
-                        $ep2 = if ($epRaw2) { $epRaw2 } else { '—' }
-                        $vd2Rows.Add(@($vde.Name, (Mask-Ip $int2), (Mask-Ip $ext2), $ep2))
-                    }
-                }
-                $null = $parts.Add((New-WdTable -Headers @((L 'Dienst' 'Service'), (L 'Intern' 'Internal'), (L 'Extern' 'External'), 'EP') -Rows $vd2Rows.ToArray()))
+                # 5.x.4 Virtuelle Verzeichnisse → konsolidierte Übersicht in Abschnitt 4.13
+                # Virtual directories → consolidated view in section 4.13
 
                 # 5.x.5 Receive Connectors — split into two tables (network / security)
                 # A single 8-column table wraps every cell in portrait Word; splitting into
@@ -435,13 +411,30 @@
 
         # DNS record template — Autodiscover pre-filled with configured namespace; MX/SPF/DKIM/DMARC
         # resolved via Resolve-DnsName (best-effort; internal DNS view may differ from external).
+        # Domain list: prefer the mail domain (namespace parent or MailDomain) over the AD domain,
+        # and skip non-routable suffixes (.local/.lan/.internal/.corp) that never need public DNS records.
         $dnsTemplateRows = [System.Collections.Generic.List[object[]]]::new()
-        $authDomainNames = @()
+        $nsForDns = if ($State['Namespace']) { $State['Namespace'] } else { $null }
+        # Compute mail domain (same logic as Enable-AccessNamespaceMailConfig)
+        $mailDomainForDns = if ($State['MailDomain']) {
+            $State['MailDomain']
+        } elseif ($nsForDns) {
+            $nsPart = ($nsForDns -split '\.', 2)[1]
+            if ($nsPart -match '\.') { $nsPart } else { $nsForDns }
+        } else { $null }
+        $authDomainNames = [System.Collections.Generic.List[string]]::new()
+        if ($mailDomainForDns) { $authDomainNames.Add($mailDomainForDns) }
         if ($rd.Org -and $rd.Org.AcceptedDomains) {
-            $authDomainNames = @($rd.Org.AcceptedDomains | Where-Object { $_.DomainType -eq 'Authoritative' } | Select-Object -ExpandProperty DomainName | Select-Object -First 5)
+            $nonRoutable = @('\.local$','\.lan$','\.internal$','\.corp$','\.home$','\.intranet$')
+            $rd.Org.AcceptedDomains | Where-Object { $_.DomainType -eq 'Authoritative' } | Select-Object -ExpandProperty DomainName | ForEach-Object {
+                $dn = [string]$_
+                $isNonRoutable = $nonRoutable | Where-Object { $dn -match $_ }
+                if (-not $isNonRoutable -and $dn -ne $mailDomainForDns -and $authDomainNames.Count -lt 5) {
+                    $authDomainNames.Add($dn)
+                }
+            }
         }
-        if (-not $authDomainNames -or $authDomainNames.Count -eq 0) { $authDomainNames = @('<domain>') }
-        $nsForDns   = if ($State['Namespace']) { $State['Namespace'] } else { $null }
+        if ($authDomainNames.Count -eq 0) { $authDomainNames.Add('<domain>') }
         $dnsManual  = L '(bitte manuell ergänzen)' '(please fill in manually)'
         $dnsInvalid = L '(nicht auflösbar — bitte manuell ergänzen)' '(not resolvable — please fill in manually)'
         foreach ($d in $authDomainNames) {
@@ -599,7 +592,9 @@
         # TLS Cipher Suite inventory
         $null = $parts.Add((New-WdParagraph (L 'TLS Cipher Suites (aktiv auf diesem Server):' 'TLS Cipher Suites (active on this server):')))
         $cipherRows = [System.Collections.Generic.List[object[]]]::new()
-        $cipherSuites = @(Get-TlsCipherSuite -ErrorAction SilentlyContinue | Select-Object Name, Exchange, Hash, KeyExchange)
+        # Where-Object { $_ } filters out $null pipeline values that Select-Object would otherwise
+        # silently promote to a single all-null PSCustomObject, bypassing the Count -eq 0 fallback.
+        $cipherSuites = @(Get-TlsCipherSuite -ErrorAction SilentlyContinue | Where-Object { $_ } | Select-Object Name, Exchange, Hash, KeyExchange)
         foreach ($cs2 in $cipherSuites) {
             $cipherRows.Add(@($cs2.Name, (SafeVal $cs2.Exchange '—'), (SafeVal $cs2.Hash '—'), (SafeVal $cs2.KeyExchange '—')))
         }
@@ -685,6 +680,16 @@
         } catch { '(unknown)' }
         $dlDomain = if ($State['DownloadDomain']) { $State['DownloadDomain'] } else { '—' }
         $exHardRows.Add(@('EnableDownloadDomains (CVE-2021-1730)', ('{0} — Domain: {1}' -f $dlEnabled, $dlDomain), (L 'Isoliert OWA-Anhänge auf Subdomain (verhindert CSRF/Cookie-Hijacking)' 'Isolates OWA attachments on subdomain (prevents CSRF/cookie hijacking)')))
+        # SMTP Protocol Logging
+        $smtpLogVal = try {
+            $logConns = @(Get-ReceiveConnector -Server $env:COMPUTERNAME -ErrorAction Stop |
+                Where-Object { $_.Name -match '^Default Frontend |^Anonymous (Internal|External) Relay' })
+            if ($logConns.Count -gt 0) {
+                $verboseCount = ($logConns | Where-Object { $_.ProtocolLoggingLevel -eq 'Verbose' }).Count
+                '{0}/{1} Verbose' -f $verboseCount, $logConns.Count
+            } else { (L '(kein passender Connector)' '(no matching connector)') }
+        } catch { (L '(nicht abrufbar)' '(not available)') }
+        $exHardRows.Add(@('SMTP Protocol Logging', $smtpLogVal, (L 'Verbose-Logging auf Default Frontend + Relay-Connectors (BSI APP.5.3)' 'Verbose logging on Default Frontend + relay connectors (BSI APP.5.3)')))
         $null = $parts.Add((New-WdTable -Headers @((L 'Härtungsmaßnahme' 'Hardening measure'), (L 'Status / Wert' 'Status / value'), (L 'Zweck' 'Purpose')) -Rows $exHardRows.ToArray()))
 
         # 8.5 Windows Defender Exclusions
@@ -694,7 +699,8 @@
             $null = $parts.Add((New-WdParagraph (L 'Microsoft dokumentiert umfangreiche Pfad-, Prozess- und Dateityp-Ausnahmen für Exchange Server, ohne die Antivirus-Software Datenbank-Dateien, Transport-Warteschlangen oder Logs blockiert und Leistung wie Stabilität schwer beeinträchtigt. EXpress trägt diese Ausnahmen automatisch in Windows Defender ein. Bei Drittanbieter-Antivirus müssen dieselben Pfade manuell in das entsprechende Produkt übernommen werden. Weitere Informationen: Microsoft Docs "Exchange antivirus software".' 'Microsoft documents extensive path, process and filetype exclusions for Exchange Server without which antivirus software would block database files, transport queues or logs and severely impact performance and stability. EXpress automatically registers these exclusions with Windows Defender. For third-party antivirus, the same paths must be manually configured in the corresponding product. Further information: Microsoft Docs "Exchange antivirus software".')))
             $exr = $localSrvData.DefenderExclusions
             $defRows = [System.Collections.Generic.List[object[]]]::new()
-            $defRows.Add(@((L 'Echtzeit-Überwachung' 'Real-time monitoring'), (Lc $exr.RealTimeEnabled (L 'aktiv' 'enabled') (L 'inaktiv' 'disabled'))))
+            $dvModeStr = if ($exr.AMRunningMode) { ' ({0})' -f $exr.AMRunningMode } else { '' }
+            $defRows.Add(@((L 'Echtzeit-Überwachung' 'Real-time monitoring'), ((Lc $exr.RealTimeEnabled (L 'aktiv' 'enabled') (L 'inaktiv' 'disabled')) + $dvModeStr)))
             $defRows.Add(@((L 'Pfad-Ausnahmen' 'Path exclusions'), (SafeVal (($exr.ExclusionPath | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
             $defRows.Add(@((L 'Prozess-Ausnahmen' 'Process exclusions'), (SafeVal (($exr.ExclusionProcess | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
             $defRows.Add(@((L 'Dateityp-Ausnahmen' 'Extension exclusions'), (SafeVal (($exr.ExclusionExtension | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
@@ -738,6 +744,7 @@
         $null = $parts.Add((New-WdHeading (L '8.8 Compliance-Mapping (CIS / BSI IT-Grundschutz)' '8.8 Compliance Mapping (CIS / BSI)') 2))
         $null = $parts.Add((New-WdParagraph (L 'Die folgende Tabelle ordnet die von EXpress angewendeten Härtungsmaßnahmen den relevanten Kontrollen aus dem CIS Benchmark for Microsoft Windows Server und dem BSI IT-Grundschutz-Kompendium zu. Sie dient als Nachweis für Audits und interne Compliance-Prüfungen.' 'The table below maps the hardening measures applied by EXpress to the relevant controls from the CIS Benchmark for Microsoft Windows Server and the BSI IT-Grundschutz Compendium. It serves as evidence for audits and internal compliance reviews.')))
         $null = $parts.Add((New-WdParagraph (L 'Wichtiger Hinweis zur Protokoll-Auswertung: Mehrere der nachfolgenden Kontrollen — insbesondere Admin Audit Log, Mailbox Audit Log, Windows Security Eventlog und IIS-Zugriffsprotokolle — entfalten ihren vollen Compliance- und forensischen Nutzen erst, wenn die erzeugten Ereignisse zentral zusammengeführt, korreliert und revisionssicher aufbewahrt werden. EXpress aktiviert und konfiguriert die Protokollquellen auf dem Server, sieht jedoch ausdrücklich keine SIEM-Anbindung vor — diese ist organisationsweit zu planen und liegt außerhalb des Scopes einer Server-Installation. Für die Erfüllung von BSI APP.5.2 A13 (Protokollierung), BSI OPS.1.1.5 (Protokollierung), CIS Control 8 (Audit Log Management) sowie der DSGVO-Rechenschaftspflicht (Art. 5 Abs. 2) ist die Anbindung an ein SIEM (Security Information and Event Management) dringend empfohlen. Ein SIEM ermöglicht: (1) zentrale Korrelation über mehrere Exchange-Server, Domain Controller und Edge-Komponenten hinweg; (2) Alarmierung bei Anomalien (Brute-Force-Versuche, ungewöhnliche EWS-/PowerShell-Zugriffe, Mass-Mail-Abfluss); (3) revisionssichere Langzeit-Aufbewahrung über die lokale Bereinigungsfrist hinaus; (4) Nachweisführung gegenüber Auditoren ohne Eingriff am Produktivsystem. Empfohlene Quellen für die Auslieferung: Windows Security/System/Application-Eventlog, IIS-W3C-Logs, Exchange MessageTracking, HttpProxy, Managed Availability, sowie das Admin- und Mailbox-Audit-Log via Search-AdminAuditLog / Search-MailboxAuditLog oder New-MailboxAuditLogSearch.' 'Important note on log evaluation: Several of the controls below — in particular Admin Audit Log, Mailbox Audit Log, Windows Security event log and IIS access logs — only deliver their full compliance and forensic value when the generated events are centrally aggregated, correlated and retained tamper-evidently. EXpress enables and configures the log sources on the server, but explicitly does not provide SIEM integration — this must be planned organisation-wide and is out of scope for a server installation. To meet BSI APP.5.2 A13 (logging), BSI OPS.1.1.5 (logging), CIS Control 8 (Audit Log Management) and the GDPR accountability obligation (Art. 5(2)), integration with a SIEM (Security Information and Event Management) is strongly recommended. A SIEM enables: (1) central correlation across multiple Exchange servers, domain controllers and edge components; (2) alerting on anomalies (brute-force attempts, unusual EWS/PowerShell access, mass mail exfiltration); (3) tamper-evident long-term retention beyond the local cleanup period; (4) audit evidence without touching the production system. Recommended sources for forwarding: Windows Security/System/Application event log, IIS W3C logs, Exchange MessageTracking, HttpProxy, Managed Availability, plus the Admin and Mailbox Audit Log via Search-AdminAuditLog / Search-MailboxAuditLog or New-MailboxAuditLogSearch.')))
+        $smtpLogStatus = if (Test-Feature 'SMTPConnectorLogging') { (L 'Umgesetzt' 'Implemented') } else { (L 'Deaktiviert' 'Disabled') }
         $null = $parts.Add((New-WdTable -Headers @((L 'Maßnahme' 'Measure'), (L 'CIS-Kontrolle' 'CIS Control'), (L 'BSI-Grundschutz' 'BSI Control'), (L 'Status' 'Status')) -Rows @(
             ,@((L 'TLS 1.0 / 1.1 deaktiviert' 'TLS 1.0 / 1.1 disabled'),                          'CIS WS2022 18.4.x',   'BSI SYS.1.2 A5',  (L 'Umgesetzt' 'Implemented'))
             ,@((L 'TLS 1.2 erzwungen + .NET Strong Crypto' 'TLS 1.2 enforced + .NET Strong Crypto'), 'CIS WS2022 18.4.x',   'BSI SYS.1.2 A5',  (L 'Umgesetzt' 'Implemented'))
@@ -751,6 +758,7 @@
             ,@((L 'Defender Ausnahmen (Exchange-VSS, Transport, IIS)' 'Defender exclusions (Exchange VSS, Transport, IIS)'), 'MS Exchange Best Practice', 'BSI APP.5.2 A4', (L 'Umgesetzt' 'Implemented'))
             ,@('LLMNR / mDNS deaktiviert',                                                            'CIS WS2022 18.5.4.2', 'BSI NET.3.1 A10', (L 'Umgesetzt' 'Implemented'))
             ,@((L 'Dienste minimiert (Browser/Fax/Xcopy u. a.)' 'Services minimised (Browser/Fax/Xcopy etc.)'), 'CIS WS2022 5.x', 'BSI SYS.1.2 A3', (L 'Umgesetzt' 'Implemented'))
+            ,@((L 'SMTP Protocol Logging (Default Frontend + Relay)' 'SMTP Protocol Logging (Default Frontend + relay)'), 'MS Exchange Best Practice', 'BSI APP.5.3', $smtpLogStatus)
             ,@((L 'Admin Audit Log aktiviert' 'Admin Audit Log enabled'),                             'CIS EX2019 1.1',      'BSI APP.5.2 A13', (L 'Umgesetzt' 'Implemented'))
             ,@((L 'SIEM-Anbindung / zentrale Log-Auswertung' 'SIEM integration / central log evaluation'), 'CIS Control 8',     'BSI OPS.1.1.5 / APP.5.2 A13', (L 'Out of Scope — organisationsweit zu planen' 'Out of scope — to be planned organisation-wide'))
             ,@((L 'Log-Bereinigung am Server (Volume-Schutz)' 'Local log cleanup (volume protection)'), 'MS Best Practice',     'BSI APP.5.2 A4',  (L 'Umgesetzt — geplante Aufgabe (siehe 7.1)' 'Implemented — scheduled task (see 7.1)'))
@@ -986,7 +994,7 @@
             ,@((L 'SMTP ausgehend' 'SMTP outbound'), (L 'Testmail vom Exchange nach extern senden' 'Send test mail from Exchange to external'),           '', '')
             ,@('MAPI/HTTP',     (L 'Outlook-Client verbinden (Autodiscover, kein TCP 135 erforderlich)' 'Connect Outlook client (Autodiscover, no TCP 135 required)'), '', '')
             ,@('ActiveSync',    (L 'Mobiles Gerät verbinden (EAS, HTTPS 443)' 'Connect mobile device (EAS, HTTPS 443)'),             '', '')
-            ,@('Zertifikat',    (L 'TLS-Zertifikat gültig, kein Browser-Warning' 'TLS certificate valid, no browser warning'),       '', '')
+            ,@((L 'Zertifikat' 'Certificate'), (L 'TLS-Zertifikat gültig, kein Browser-Warning' 'TLS certificate valid, no browser warning'), '', '')
             ,@('DAG',           (L 'DAG-Datenbankkopien-Status: alle Healthy / Mounted' 'DAG database copy status: all Healthy / Mounted'), '', '')
             ,@('Backup',        (L 'Erstes VSS-Backup erfolgreich, Logs abgeschnitten' 'First VSS backup successful, logs truncated'), '', '')
             ,@('HealthChecker',  (L 'Keine kritischen Findings (Reds)' 'No critical findings (Reds)'),                               '', '')

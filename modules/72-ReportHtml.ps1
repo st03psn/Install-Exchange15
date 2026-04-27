@@ -208,19 +208,26 @@
 
         # Certificates — try with -Server first; fall back to local query if remoting fails
         $certRows.Add('<tr><th>Subject</th><th>Expiry</th><th>Services</th><th>Thumbprint</th></tr>')
-        $certFilter = { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }
         $rawCerts = $null
         try {
-            $rawCerts = @(Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | Where-Object $certFilter)
+            $rawCerts = @(Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | Where-Object { $_.Thumbprint })
         } catch {
             Write-MyVerbose ('Get-ExchangeCertificate -Server failed in report: {0}' -f $_)
-            try { $rawCerts = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
+            try { $rawCerts = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object { $_.Thumbprint }) }
             catch { Write-MyVerbose ('Get-ExchangeCertificate (local) failed in report: {0}' -f $_) }
         }
         if ($rawCerts) {
             foreach ($cert in $rawCerts) {
-                $daysLeft = [int][Math]::Floor(($cert.NotAfter - (Get-Date)).TotalDays)
-                $expiryBadge = if ($daysLeft -lt 30) { Format-Badge ('Expires {0}d!' -f $daysLeft) 'fail' } elseif ($daysLeft -lt 90) { Format-Badge ('Expires {0}d' -f $daysLeft) 'warn' } else { Format-Badge ('{0} ({1}d)' -f $cert.NotAfter.ToString('yyyy-MM-dd'), $daysLeft) 'ok' }
+                # Exchange-internal certs (Auth, Transport) have NotAfter = DateTime::MinValue — show as 'internal'
+                $validDate = $cert.NotAfter -gt [datetime]'1970-01-01'
+                $expiryBadge = if (-not $validDate) {
+                    Format-Badge 'Internal cert' 'info'
+                } else {
+                    $daysLeft = [int][Math]::Floor(($cert.NotAfter - (Get-Date)).TotalDays)
+                    if ($daysLeft -lt 30) { Format-Badge ('Expires {0}d!' -f $daysLeft) 'fail' }
+                    elseif ($daysLeft -lt 90) { Format-Badge ('Expires {0}d' -f $daysLeft) 'warn' }
+                    else { Format-Badge ('{0} ({1}d)' -f $cert.NotAfter.ToString('yyyy-MM-dd'), $daysLeft) 'ok' }
+                }
                 $certRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td><code>{3}</code></td></tr>' -f $cert.Subject, $expiryBadge, $cert.Services, $cert.Thumbprint))
             }
         } else {
@@ -246,8 +253,8 @@
             $transCfg2 = Get-TransportConfig -ErrorAction SilentlyContinue
             if ($transCfg2) {
                 # MaxSendSize / MaxReceiveSize may be Unlimited ($null .Value) on fresh orgs.
-                $maxSendMB = if ($transCfg2.MaxSendSize    -and $transCfg2.MaxSendSize.Value)    { [math]::Round($transCfg2.MaxSendSize.Value.ToBytes()    / 1MB, 0) } else { $null }
-                $maxRecvMB = if ($transCfg2.MaxReceiveSize -and $transCfg2.MaxReceiveSize.Value) { [math]::Round($transCfg2.MaxReceiveSize.Value.ToBytes() / 1MB, 0) } else { $null }
+                $maxSendMB = if ($transCfg2.MaxSendSize    -and -not $transCfg2.MaxSendSize.IsUnlimited)    { [math]::Round($transCfg2.MaxSendSize.Value.ToBytes()    / 1MB, 0) } else { $null }
+                $maxRecvMB = if ($transCfg2.MaxReceiveSize -and -not $transCfg2.MaxReceiveSize.IsUnlimited) { [math]::Round($transCfg2.MaxReceiveSize.Value.ToBytes() / 1MB, 0) } else { $null }
                 $maxSendDisp = if ($null -ne $maxSendMB) { ('{0} MB' -f $maxSendMB) } else { 'Unlimited / not set' }
                 $maxRecvDisp = if ($null -ne $maxRecvMB) { ('{0} MB' -f $maxRecvMB) } else { 'Unlimited / not set' }
                 $sizeBadge = if ($null -ne $maxSendMB -and $maxSendMB -ge 50) { Format-Badge '✓' 'ok' } else { Format-Badge 'Default 25 MB' 'warn' }
@@ -326,6 +333,18 @@
         $uacVal = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
         $uacBadge = if ($uacVal -eq 1 -or $null -eq $uacVal) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Disabled!' 'fail' }
         $secRows.Add(('<tr><td>UAC (EnableLUA)</td><td>{0}</td><td>1 = Enabled (re-enabled after setup)</td><td>{1}</td><td>{2}</td><td>CIS L1 §17.2 / BSI SYS.2.1</td></tr>' -f $uacVal, $uacBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/' 'MS Learn')))
+
+        # Windows Defender AV status
+        try {
+            $mpStatus2  = Get-MpComputerStatus -ErrorAction Stop
+            $rtOn       = $mpStatus2.RealTimeProtectionEnabled
+            $amMode2    = [string]$mpStatus2.AMRunningMode
+            $dvBadge    = if ($rtOn)                        { Format-Badge 'Active' 'ok'   }
+                          elseif ($amMode2 -eq 'Passive Mode') { Format-Badge 'Passive (3rd-party AV)' 'info' }
+                          else                               { Format-Badge 'Disabled' 'warn' }
+            $dvVal      = 'RealTime={0}, Mode={1}' -f $rtOn, $amMode2
+            $secRows.Add(('<tr><td>Windows Defender Realtime</td><td>{0}</td><td>Active or Passive (3rd-party AV)</td><td>{1}</td><td>{2}</td><td>BSI SYS.1 / CIS L1</td></tr>' -f $dvVal, $dvBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/microsoft-365/security/defender-endpoint/microsoft-defender-antivirus-windows' 'MS Learn')))
+        } catch { Write-MyVerbose ('Get-MpComputerStatus failed: {0}' -f $_) }
 
         # IPv4 over IPv6 preference
         $ipv4Comp = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents'
@@ -463,6 +482,19 @@
                     $secRows.Add(('<tr><td>SMTP Banner</td><td>{0}/{1} Frontend connectors hardened</td><td>Generic banner (hides Exchange version from attackers)</td><td>{2}</td><td>{3}</td><td>CIS / DISA STIG</td></tr>' -f $bannersHardened, $feBannerConns.Count, $bannerBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors' 'MS Learn')))
                 }
             } catch { Write-MyVerbose ('Get-ReceiveConnector (SMTP Banner) failed: {0}' -f $_) }
+        }
+
+        # SMTP Protocol Logging
+        if (-not $State['InstallEdge']) {
+            try {
+                $logConns = @(Get-ReceiveConnector -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^Default Frontend |^Anonymous (Internal|External) Relay' })
+                if ($logConns.Count -gt 0) {
+                    $verboseCount = ($logConns | Where-Object { $_.ProtocolLoggingLevel -eq 'Verbose' }).Count
+                    $logBadge = if ($verboseCount -eq $logConns.Count) { Format-Badge 'Verbose ✓' 'ok' } else { Format-Badge ('{0}/{1} Verbose' -f $verboseCount, $logConns.Count) 'warn' }
+                    $secRows.Add(('<tr><td>SMTP Protocol Logging</td><td>{0}/{1} connectors Verbose</td><td>Verbose on Default Frontend + relay connectors</td><td>{2}</td><td>{3}</td><td>BSI APP.5.3</td></tr>' -f $verboseCount, $logConns.Count, $logBadge, (Format-RefLink 'https://www.bsi.bund.de/SharedDocs/Downloads/DE/BSI/Grundschutz/IT-GS-Kompendium/IT_Grundschutz_Kompendium.html' 'BSI')))
+                }
+            } catch { Write-MyVerbose ('Get-ReceiveConnector (SMTP Protocol Logging) failed: {0}' -f $_) }
         }
 
         $secContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th><th>Reference</th><th>CIS / BSI</th></tr>' + ($secRows -join '') + '</table>'

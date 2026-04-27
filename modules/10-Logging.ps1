@@ -204,6 +204,12 @@
             foreach ($item in @($State['ExecutedCommands'])) { $rehydrated.Add($item) }
             $State['ExecutedCommands'] = $rehydrated
         }
+        # Skip exact duplicates that accumulate when a phase re-runs after a reboot
+        # (same Phase+Category+Command already in list from prior run).
+        $alreadyRecorded = $State['ExecutedCommands'] | Where-Object {
+            $_.Phase -eq [int]($State['InstallPhase']) -and $_.Category -eq $Category -and $_.Command -eq $Command
+        }
+        if ($alreadyRecorded) { return }
         $State['ExecutedCommands'].Add([pscustomobject]@{
             Timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
             Phase     = [int]($State['InstallPhase'])

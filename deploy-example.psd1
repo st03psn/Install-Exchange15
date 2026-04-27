@@ -35,7 +35,7 @@
     # InstallEdge                = $false   # Install Edge Transport role instead of Mailbox
     # EdgeDNSSuffix              = ''       # DNS suffix for Edge Transport (blank = auto-detect)
     # Recover                    = $false   # Recover-Server install (rebuild from AD object)
-    # NoSetup                    = $false   # Skip Exchange setup entirely (post-config only)
+    # NoSetup                    = $false   # Prerequisites + PrepareAD only; skip Exchange setup, hardening, and post-config
     # InstallRecipientManagement = $false   # Install Recipient Management Tools only (no server role)
     # InstallManagementTools     = $false   # Install Exchange Management Tools only (no server role)
 

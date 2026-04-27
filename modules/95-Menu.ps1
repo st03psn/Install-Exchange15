@@ -36,6 +36,7 @@
             CRLTimeout          = @{ Category='Hardening'; Label='CRL Check Timeout';         Default=$true;  Description='Tune CRL retrieval timeout to avoid slow startup when OCSP/CRL endpoints are unreachable.' }
             RootCAAutoUpdate    = @{ Category='Hardening'; Label='Root CA Auto-Update';       Default=$true;  Description='Keep Automatic Root Certificates Update enabled (required for Modern Auth / O365 Hybrid).' }
             SMTPBannerHarden    = @{ Category='Hardening'; Label='Harden SMTP banner';        Default=$true;  Description='Replace Exchange version banner on Frontend Receive Connectors with "220 Mail Service".' }
+            SMTPConnectorLogging = @{ Category='Hardening'; Label='SMTP Protocol Logging';    Default=$true;  Description='Enable protocol logging (Verbose) on Default Frontend and Anonymous relay receive connectors (BSI IT-Grundschutz APP.5.3).' }
 
             # ─── Performance / Tuning ────────────────────────────────────────
             MaxConcurrentAPI    = @{ Category='Performance'; Label='MaxConcurrentAPI';        Default=$true;  Description='MS KB 2688798 — raise MaxConcurrentApi to prevent NTLM auth bottlenecks.' }

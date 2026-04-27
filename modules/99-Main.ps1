@@ -610,17 +610,6 @@
             $State['RelaySubnets']         = $RelaySubnets
             $State['ExternalRelaySubnets'] = $ExternalRelaySubnets
         }
-        # Project every catalog entry to its flat $State[Name] so the rest of the
-        # script (Phase 5 hardening, reports, HealthChecker gates …) keeps reading
-        # $State['DisableSSL3'] etc. unchanged. Test-Feature applies precedence.
-        foreach ($name in $advCatalog.Keys) { $State[$name] = Test-Feature $name }
-        # Derived: EnableCBC is the logical inverse of NoCBC.
-        $State["EnableCBC"]     = -not (Test-Feature 'NoCBC')
-        if ($State["EnableTLS13"] -and -not $State["EnableTLS12"]) {
-            Write-MyWarning 'EnableTLS13 requires EnableTLS12; automatically enabling TLS 1.2 enforcement'
-            $State["EnableTLS12"] = $true
-            $State['AdvancedFeatures']['EnableTLS12'] = $true
-        }
         $State["DoNotEnableEP_FEEWS"] = $DoNotEnableEP_FEEWS
         $State["SCP"] = $SCP
         $State["EdgeDNSSuffix"] = $EdgeDNSSuffix
@@ -665,6 +654,20 @@
         $State["DocumentScope"]       = if ($DocumentScope) { $DocumentScope } else { 'All' }
         $State["IncludeServers"]      = if ($IncludeServers) { $IncludeServers -join ',' } else { '' }
         $State["TemplatePath"]        = $TemplatePath
+
+        # Project every catalog entry to its flat $State[Name] so the rest of the
+        # script (Phase 5 hardening, reports, HealthChecker gates …) keeps reading
+        # $State['DisableSSL3'] etc. unchanged. Test-Feature applies precedence.
+        # Must run after all context values ($State['Namespace'], 'DAGName', etc.) are set,
+        # because Condition scriptblocks (e.g. AccessNamespaceMail) evaluate $script:State.
+        foreach ($name in $advCatalog.Keys) { $State[$name] = Test-Feature $name }
+        # Derived: EnableCBC is the logical inverse of NoCBC.
+        $State["EnableCBC"]     = -not (Test-Feature 'NoCBC')
+        if ($State["EnableTLS13"] -and -not $State["EnableTLS12"]) {
+            Write-MyWarning 'EnableTLS13 requires EnableTLS12; automatically enabling TLS 1.2 enforcement'
+            $State["EnableTLS12"] = $true
+            $State['AdvancedFeatures']['EnableTLS12'] = $true
+        }
 
         # PFX password handling. Three paths:
         #   1. Config supplied plain-text CertificatePassword → use it (security warning was logged earlier).
@@ -729,6 +732,24 @@
         Write-MyVerbose "Continuing from last successful phase $($State["InstallPhase"])"
         $State["InstallPhase"] = $State["LastSuccessfulPhase"]
     }
+
+    # Debug mode (Copilot only): halt before Phase 5 starts so the user can take a VM
+    # snapshot. LastSuccessfulPhase is still 4 here (not yet incremented). State already
+    # has InstallPhase=4; next launch increments to 5 and continues normally.
+    if ($State['LogDebug'] -and $State['InstallPhase'] -eq 4 -and -not $PSBoundParameters.ContainsKey('Phase') -and -not $State['Autopilot']) {
+        Write-Host ''
+        Write-Host '  ============================================================' -ForegroundColor Magenta
+        Write-Host '   DEBUG MODE: Phase 4 complete - HALT for snapshot           ' -ForegroundColor Magenta -BackgroundColor Black
+        Write-Host '  ------------------------------------------------------------' -ForegroundColor Magenta
+        Write-Host '   Take a VM snapshot now, then re-run the script to' -ForegroundColor Magenta
+        Write-Host '   continue with Phase 5 (security hardening + VDir URLs).' -ForegroundColor Magenta
+        Write-Host ('   State file: {0}' -f $StateFile) -ForegroundColor Magenta
+        Write-Host '  ============================================================' -ForegroundColor Magenta
+        Write-Host ''
+        Write-MyOutput 'DEBUG MODE: halted after Phase 4 for snapshot. Re-run to continue.'
+        exit $ERR_OK
+    }
+
     if ( $PSBoundParameters.ContainsKey('Phase')) {
         Write-MyVerbose "Phase manually set to $Phase"
         $State["InstallPhase"] = $Phase
@@ -906,8 +927,7 @@
                 1 {
                     Write-MyOutput 'Standalone Document — generating Word installation document for existing Exchange server'
                     Import-ExchangeModule
-                    # Ensure Defender realtime is on before we snapshot server state into the report.
-                    Enable-DefenderRealtimeMonitoring -Force
+                    Enable-DefenderRealtimeMonitoring
                     try { New-InstallationDocument } catch { Write-MyError ('Word document failed: {0}' -f $_.Exception.Message) }
                     Write-MyOutput 'Installation document generation complete.'
                 }
@@ -938,6 +958,9 @@
                     if ($State['AnonymousRelay']) {
                         New-AnonymousRelayConnector
                     }
+
+                    # SMTP Protocol Logging — Default Frontend + Anonymous relay connectors
+                    if (Test-Feature 'SMTPConnectorLogging') { Enable-SMTPProtocolLogging }
 
                     # Access Namespace — Accepted Domain + Email Address Policy (F26)
                     if ($State['AccessNamespaceMail'] -and $State['Namespace']) {
@@ -1535,6 +1558,12 @@
                     New-AnonymousRelayConnector
                 }
 
+                # SMTP Protocol Logging — Default Frontend + Anonymous relay connectors
+                if (-not $State['InstallEdge'] -and (Test-Feature 'SMTPConnectorLogging')) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: SMTP protocol logging' -PercentComplete 78
+                    Enable-SMTPProtocolLogging
+                }
+
                 # Access Namespace — Accepted Domain + Email Address Policy (F26)
                 if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Access namespace mail config' -PercentComplete 79
@@ -1584,8 +1613,7 @@
 
                     if (-not $State['NoWordDoc']) {
                         Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Word Installation Document' -PercentComplete 94
-                        # Ensure Defender realtime is on before we snapshot server state into the report.
-                        Enable-DefenderRealtimeMonitoring -Force
+                        Enable-DefenderRealtimeMonitoring
                         try { New-InstallationDocument } catch {
                             $derr = $_
                             Write-MyError ('Word document failed: ' + $derr.Exception.Message)
@@ -1598,6 +1626,7 @@
                 }
 
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
+                Test-PostInstallVerification
                 Write-MySection 'Setup finished — we are good to go'
             }
 
@@ -1640,25 +1669,6 @@
     if ( $State['SourceImage']) {
         Dismount-DiskImage -ImagePath $State['SourceImage'] | Out-Null
         Write-MyVerbose ('Dismounted ISO: {0}' -f $State['SourceImage'])
-    }
-
-    # Debug mode (Copilot only): halt after Phase 4 so the user can take a VM snapshot
-    # before Phase 5 (hardening / SU / VDir URLs). State already advanced to phase 5;
-    # next launch resumes from there. No reboot, no RunOnce, just stop.
-    # Autopilot runs (cmdline -Autopilot or ConfigFile-driven) continue uninterrupted
-    # even with -Debug.
-    if ($State['LogDebug'] -and $State['LastSuccessfulPhase'] -eq 4 -and -not $State['Autopilot']) {
-        Write-Host ''
-        Write-Host '  ============================================================' -ForegroundColor Magenta
-        Write-Host '   DEBUG MODE: Phase 4 complete - HALT for snapshot           ' -ForegroundColor Magenta -BackgroundColor Black
-        Write-Host '  ------------------------------------------------------------' -ForegroundColor Magenta
-        Write-Host '   Take a VM snapshot now, then re-run the script to' -ForegroundColor Magenta
-        Write-Host '   continue with Phase 5 (security hardening + VDir URLs).' -ForegroundColor Magenta
-        Write-Host ('   State file: {0}' -f $StateFile) -ForegroundColor Magenta
-        Write-Host '  ============================================================' -ForegroundColor Magenta
-        Write-Host ''
-        Write-MyOutput 'DEBUG MODE: halted after Phase 4 for snapshot. Re-run to continue.'
-        exit $ERR_OK
     }
 
     if ( $State["Autopilot"]) {

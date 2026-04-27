@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.3.0
+    Version:     1.3.1
     Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -89,6 +89,15 @@
 
     ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
+    1.3.1   Word doc: TLS rows removed from section 2 (→ chapter 8 reference); VDir table
+            removed from 5.x.4; DB Copy Status merged into 4.9 DAGs; section 4.14 removed;
+            auth-cert + doc-properties tables compact; DNS domain derived from namespace
+            parent; org version label fix; certificate collection fallback for local server.
+            Script: flat-projection ordering fixed (AccessNamespaceMail Condition now
+            evaluates after $State['Namespace'] is set); debug halt moved to before Phase 5
+            (was after); post-install verification (Test-PostInstallVerification) runs at
+            end of Phase 6 and reports PASS/WARN for services, DB mount, OWA URL, auth cert,
+            TLS 1.2 registry, and IIS app pools.
     1.3.0   License key activation: -LicenseKey param, ConfigFile LicenseKey key, Copilot
             prompt (5-min auto-skip); Set-ExchangeLicense activates Standard/Enterprise in
             Phase 6. Bugfixes: Add-ADPermission retry with backoff (P2); Default Frontend
@@ -1169,7 +1178,7 @@ process {
     # variable to build the Autopilot RunOnce command correctly.
     $EXpressEntryScript = $MyInvocation.MyCommand.Path
 
-    $ScriptVersion = '1.3.0'
+    $ScriptVersion = '1.3.1'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -1561,6 +1570,12 @@ process {
             foreach ($item in @($State['ExecutedCommands'])) { $rehydrated.Add($item) }
             $State['ExecutedCommands'] = $rehydrated
         }
+        # Skip exact duplicates that accumulate when a phase re-runs after a reboot
+        # (same Phase+Category+Command already in list from prior run).
+        $alreadyRecorded = $State['ExecutedCommands'] | Where-Object {
+            $_.Phase -eq [int]($State['InstallPhase']) -and $_.Category -eq $Category -and $_.Command -eq $Command
+        }
+        if ($alreadyRecorded) { return }
         $State['ExecutedCommands'].Add([pscustomobject]@{
             Timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
             Phase     = [int]($State['InstallPhase'])
@@ -2398,7 +2413,7 @@ process {
             $rval = ($ExOrgContainer.PSBase.Children | Where-Object { $_.objectClass -eq 'msExchOrganizationContainer' }).Name
         }
         catch {
-            Write-MyVerbose "Can't find Exchange Organization object"
+            Write-MyDebug "Can't find Exchange Organization object"
             $rval = $null
         }
         return $rval
@@ -4623,6 +4638,37 @@ Write-Log 'Exchange log cleanup finished'
         }
     }
 
+    function Enable-SMTPProtocolLogging {
+        # Security hardening: enable protocol logging (Verbose) on Default Frontend and
+        # Anonymous relay receive connectors (BSI IT-Grundschutz APP.5.3 recommendation).
+        if ($State['InstallEdge']) {
+            Write-MyVerbose 'Enable-ReceiveConnectorLogging: skipped (Edge Transport)'
+            return
+        }
+        $server  = $env:COMPUTERNAME
+        $targets = @(
+            ('Default Frontend {0}'          -f $server)
+            ('Anonymous Internal Relay - {0}' -f $server)
+            ('Anonymous External Relay - {0}' -f $server)
+        )
+        foreach ($name in $targets) {
+            try {
+                $rc = Get-ReceiveConnector -Identity "$server\$name" -ErrorAction SilentlyContinue
+                if (-not $rc) { continue }
+                if ($rc.ProtocolLoggingLevel -eq 'Verbose') {
+                    Write-MyVerbose ('Protocol logging already Verbose: "{0}"' -f $name)
+                    continue
+                }
+                Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Set-ReceiveConnector -Identity '$server\$name' -ProtocolLoggingLevel Verbose")
+                Set-ReceiveConnector -Identity "$server\$name" -ProtocolLoggingLevel Verbose -ErrorAction Stop
+                Write-MyStep -Label 'Protocol logging' -Value ('enabled: {0}' -f $name) -Status OK
+            }
+            catch {
+                Write-MyWarning ('Could not enable protocol logging on "{0}": {1}' -f $name, $_.Exception.Message)
+            }
+        }
+    }
+
     function Enable-AccessNamespaceMailConfig {
         # F26 — Configure the Access Namespace as an Accepted Domain and update the
         # default Email Address Policy so that mailboxes get a primary SMTP address
@@ -5662,20 +5708,19 @@ Write-Log 'Exchange log cleanup finished'
         }
 
         # Certificates — filter phantom entries (DateTime.MinValue from Get-ExchangeCertificate).
-        # -Server can fail after IIS restarts (implicit-remoting session state); fall back to no -Server
-        # for the local server (same result, more resilient).
+        # -Server can silently return 0 results when called from within an existing implicit-remoting
+        # session to the same server (session redirect interference). For the local server always try
+        # both approaches and use whichever returns data.
         $certFilter = { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }
-        try {
-            $srv.Certificates = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object $certFilter)
-        } catch {
-            Write-MyVerbose ('Get-ExchangeCertificate -Server {0} failed: {1}' -f $ServerName, $_)
-            if ($ServerName -ieq $env:COMPUTERNAME) {
-                try { $srv.Certificates = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
-                catch { Write-MyVerbose ('Get-ExchangeCertificate (local) failed: {0}' -f $_); $srv.Certificates = @() }
-            } else {
-                $srv.Certificates = @()
-            }
+        $certsWithServer = @()
+        $certsNoServer   = @()
+        try { $certsWithServer = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object $certFilter) }
+        catch { Write-MyVerbose ('Get-ExchangeCertificate -Server {0} failed: {1}' -f $ServerName, $_) }
+        if ($ServerName -ieq $env:COMPUTERNAME -and $certsWithServer.Count -eq 0) {
+            try { $certsNoServer = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
+            catch { Write-MyVerbose ('Get-ExchangeCertificate (local, no -Server) failed: {0}' -f $_) }
         }
+        $srv.Certificates = if ($certsNoServer.Count -gt $certsWithServer.Count) { $certsNoServer } else { $certsWithServer }
 
         # Transport agents (only present on servers with Hub Transport)
         try { $srv.TransportAgents = @(Get-TransportAgent -ErrorAction Stop) } catch { $srv.TransportAgents = @() }
@@ -5688,12 +5733,14 @@ Write-Log 'Exchange log cleanup finished'
         $srv.DefenderExclusions = $null
         if ($ServerName -ieq $env:COMPUTERNAME) {
             try {
-                $mp = Get-MpPreference -ErrorAction Stop
+                $mp       = Get-MpPreference    -ErrorAction Stop
+                $mpStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
                 $srv.DefenderExclusions = [pscustomobject]@{
                     ExclusionPath      = @($mp.ExclusionPath)
                     ExclusionProcess   = @($mp.ExclusionProcess)
                     ExclusionExtension = @($mp.ExclusionExtension)
-                    RealTimeEnabled    = -not $mp.DisableRealtimeMonitoring
+                    RealTimeEnabled    = if ($mpStatus) { $mpStatus.RealTimeProtectionEnabled } else { -not $mp.DisableRealtimeMonitoring }
+                    AMRunningMode      = if ($mpStatus) { [string]$mpStatus.AMRunningMode } else { $null }
                 }
             } catch { Write-MyVerbose ('Get-MpPreference failed for {0}: {1}' -f $ServerName, $_) }
         }
@@ -6121,19 +6168,26 @@ Write-Log 'Exchange log cleanup finished'
 
         # Certificates — try with -Server first; fall back to local query if remoting fails
         $certRows.Add('<tr><th>Subject</th><th>Expiry</th><th>Services</th><th>Thumbprint</th></tr>')
-        $certFilter = { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }
         $rawCerts = $null
         try {
-            $rawCerts = @(Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | Where-Object $certFilter)
+            $rawCerts = @(Get-ExchangeCertificate -Server $env:COMPUTERNAME -ErrorAction Stop | Where-Object { $_.Thumbprint })
         } catch {
             Write-MyVerbose ('Get-ExchangeCertificate -Server failed in report: {0}' -f $_)
-            try { $rawCerts = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
+            try { $rawCerts = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object { $_.Thumbprint }) }
             catch { Write-MyVerbose ('Get-ExchangeCertificate (local) failed in report: {0}' -f $_) }
         }
         if ($rawCerts) {
             foreach ($cert in $rawCerts) {
-                $daysLeft = [int][Math]::Floor(($cert.NotAfter - (Get-Date)).TotalDays)
-                $expiryBadge = if ($daysLeft -lt 30) { Format-Badge ('Expires {0}d!' -f $daysLeft) 'fail' } elseif ($daysLeft -lt 90) { Format-Badge ('Expires {0}d' -f $daysLeft) 'warn' } else { Format-Badge ('{0} ({1}d)' -f $cert.NotAfter.ToString('yyyy-MM-dd'), $daysLeft) 'ok' }
+                # Exchange-internal certs (Auth, Transport) have NotAfter = DateTime::MinValue — show as 'internal'
+                $validDate = $cert.NotAfter -gt [datetime]'1970-01-01'
+                $expiryBadge = if (-not $validDate) {
+                    Format-Badge 'Internal cert' 'info'
+                } else {
+                    $daysLeft = [int][Math]::Floor(($cert.NotAfter - (Get-Date)).TotalDays)
+                    if ($daysLeft -lt 30) { Format-Badge ('Expires {0}d!' -f $daysLeft) 'fail' }
+                    elseif ($daysLeft -lt 90) { Format-Badge ('Expires {0}d' -f $daysLeft) 'warn' }
+                    else { Format-Badge ('{0} ({1}d)' -f $cert.NotAfter.ToString('yyyy-MM-dd'), $daysLeft) 'ok' }
+                }
                 $certRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td><code>{3}</code></td></tr>' -f $cert.Subject, $expiryBadge, $cert.Services, $cert.Thumbprint))
             }
         } else {
@@ -6159,8 +6213,8 @@ Write-Log 'Exchange log cleanup finished'
             $transCfg2 = Get-TransportConfig -ErrorAction SilentlyContinue
             if ($transCfg2) {
                 # MaxSendSize / MaxReceiveSize may be Unlimited ($null .Value) on fresh orgs.
-                $maxSendMB = if ($transCfg2.MaxSendSize    -and $transCfg2.MaxSendSize.Value)    { [math]::Round($transCfg2.MaxSendSize.Value.ToBytes()    / 1MB, 0) } else { $null }
-                $maxRecvMB = if ($transCfg2.MaxReceiveSize -and $transCfg2.MaxReceiveSize.Value) { [math]::Round($transCfg2.MaxReceiveSize.Value.ToBytes() / 1MB, 0) } else { $null }
+                $maxSendMB = if ($transCfg2.MaxSendSize    -and -not $transCfg2.MaxSendSize.IsUnlimited)    { [math]::Round($transCfg2.MaxSendSize.Value.ToBytes()    / 1MB, 0) } else { $null }
+                $maxRecvMB = if ($transCfg2.MaxReceiveSize -and -not $transCfg2.MaxReceiveSize.IsUnlimited) { [math]::Round($transCfg2.MaxReceiveSize.Value.ToBytes() / 1MB, 0) } else { $null }
                 $maxSendDisp = if ($null -ne $maxSendMB) { ('{0} MB' -f $maxSendMB) } else { 'Unlimited / not set' }
                 $maxRecvDisp = if ($null -ne $maxRecvMB) { ('{0} MB' -f $maxRecvMB) } else { 'Unlimited / not set' }
                 $sizeBadge = if ($null -ne $maxSendMB -and $maxSendMB -ge 50) { Format-Badge '✓' 'ok' } else { Format-Badge 'Default 25 MB' 'warn' }
@@ -6239,6 +6293,18 @@ Write-Log 'Exchange log cleanup finished'
         $uacVal = Get-SecRegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
         $uacBadge = if ($uacVal -eq 1 -or $null -eq $uacVal) { Format-Badge 'Enabled' 'ok' } else { Format-Badge 'Disabled!' 'fail' }
         $secRows.Add(('<tr><td>UAC (EnableLUA)</td><td>{0}</td><td>1 = Enabled (re-enabled after setup)</td><td>{1}</td><td>{2}</td><td>CIS L1 §17.2 / BSI SYS.2.1</td></tr>' -f $uacVal, $uacBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/' 'MS Learn')))
+
+        # Windows Defender AV status
+        try {
+            $mpStatus2  = Get-MpComputerStatus -ErrorAction Stop
+            $rtOn       = $mpStatus2.RealTimeProtectionEnabled
+            $amMode2    = [string]$mpStatus2.AMRunningMode
+            $dvBadge    = if ($rtOn)                        { Format-Badge 'Active' 'ok'   }
+                          elseif ($amMode2 -eq 'Passive Mode') { Format-Badge 'Passive (3rd-party AV)' 'info' }
+                          else                               { Format-Badge 'Disabled' 'warn' }
+            $dvVal      = 'RealTime={0}, Mode={1}' -f $rtOn, $amMode2
+            $secRows.Add(('<tr><td>Windows Defender Realtime</td><td>{0}</td><td>Active or Passive (3rd-party AV)</td><td>{1}</td><td>{2}</td><td>BSI SYS.1 / CIS L1</td></tr>' -f $dvVal, $dvBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/microsoft-365/security/defender-endpoint/microsoft-defender-antivirus-windows' 'MS Learn')))
+        } catch { Write-MyVerbose ('Get-MpComputerStatus failed: {0}' -f $_) }
 
         # IPv4 over IPv6 preference
         $ipv4Comp = Get-SecRegVal 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' 'DisabledComponents'
@@ -6376,6 +6442,19 @@ Write-Log 'Exchange log cleanup finished'
                     $secRows.Add(('<tr><td>SMTP Banner</td><td>{0}/{1} Frontend connectors hardened</td><td>Generic banner (hides Exchange version from attackers)</td><td>{2}</td><td>{3}</td><td>CIS / DISA STIG</td></tr>' -f $bannersHardened, $feBannerConns.Count, $bannerBadge, (Format-RefLink 'https://learn.microsoft.com/en-us/exchange/mail-flow/connectors/receive-connectors' 'MS Learn')))
                 }
             } catch { Write-MyVerbose ('Get-ReceiveConnector (SMTP Banner) failed: {0}' -f $_) }
+        }
+
+        # SMTP Protocol Logging
+        if (-not $State['InstallEdge']) {
+            try {
+                $logConns = @(Get-ReceiveConnector -Server $env:COMPUTERNAME -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^Default Frontend |^Anonymous (Internal|External) Relay' })
+                if ($logConns.Count -gt 0) {
+                    $verboseCount = ($logConns | Where-Object { $_.ProtocolLoggingLevel -eq 'Verbose' }).Count
+                    $logBadge = if ($verboseCount -eq $logConns.Count) { Format-Badge 'Verbose ✓' 'ok' } else { Format-Badge ('{0}/{1} Verbose' -f $verboseCount, $logConns.Count) 'warn' }
+                    $secRows.Add(('<tr><td>SMTP Protocol Logging</td><td>{0}/{1} connectors Verbose</td><td>Verbose on Default Frontend + relay connectors</td><td>{2}</td><td>{3}</td><td>BSI APP.5.3</td></tr>' -f $verboseCount, $logConns.Count, $logBadge, (Format-RefLink 'https://www.bsi.bund.de/SharedDocs/Downloads/DE/BSI/Grundschutz/IT-GS-Kompendium/IT_Grundschutz_Kompendium.html' 'BSI')))
+                }
+            } catch { Write-MyVerbose ('Get-ReceiveConnector (SMTP Protocol Logging) failed: {0}' -f $_) }
         }
 
         $secContent = '<table class="data-table"><tr><th>Setting</th><th>Current Value</th><th>Exchange Recommendation</th><th>Status</th><th>Reference</th><th>CIS / BSI</th></tr>' + ($secRows -join '') + '</table>'
@@ -6771,7 +6850,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             if ($orgD -and $orgD.OrgConfig) {
                 $oc = $orgD.OrgConfig
                 $orgRows.Add(@((L 'Name' 'Name'), (SafeVal $oc.Name)))
-                $orgRows.Add(@((L 'Version' 'Version'), (SafeVal $oc.AdminDisplayVersion)))
+                $orgRows.Add(@((L 'Exchange-Version' 'Exchange version'), (SafeVal $oc.AdminDisplayVersion)))
                 $orgRows.Add(@((L 'MAPI/HTTP' 'MAPI/HTTP'), (SafeVal $oc.MapiHttpEnabled)))
                 $orgRows.Add(@((L 'Modern Auth (OAuth2)' 'Modern Auth (OAuth2)'), (SafeVal $oc.OAuth2ClientProfileEnabled)))
                 $orgRows.Add(@((L 'CEIP deaktiviert' 'CEIP disabled'), (SafeVal (-not $oc.CustomerFeedbackEnabled))))
@@ -6846,7 +6925,12 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $null = $Parts.Add((New-WdParagraph (L 'Konfigurierte Aufbewahrungs-Tags (Retention Tags) — definieren je Postfachordner oder benutzergewählt, nach welcher Frist welche Aktion (Verschieben ins Archiv, Löschen mit/ohne Wiederherstellung, MarkAsPastRetentionLimit) ausgeführt wird:' 'Configured retention tags — define per mailbox folder or user-selectable which action (move to archive, delete with/without recovery, MarkAsPastRetentionLimit) is executed after which retention period:')))
                 $rtRows = [System.Collections.Generic.List[object[]]]::new()
                 foreach ($rt in ($orgD.RetentionPolicyTags | Sort-Object Type, Name)) {
-                    $age = if ($null -ne $rt.AgeLimitForRetention) { ('{0} {1}' -f $rt.AgeLimitForRetention.Days, (L 'Tage' 'days')) } else { (L '(unbegrenzt)' '(unlimited)') }
+                    # AgeLimitForRetention is a deserialized EnhancedTimeSpan over implicit remoting —
+                    # CLR-inherited .Days returns $null on deserialized objects; parse from ToString() instead.
+                    $age = if ($null -ne $rt.AgeLimitForRetention) {
+                        $ageTs = try { [TimeSpan]::Parse($rt.AgeLimitForRetention.ToString()) } catch { $null }
+                        if ($null -ne $ageTs) { '{0} {1}' -f [int]$ageTs.TotalDays, (L 'Tage' 'days') } else { $rt.AgeLimitForRetention.ToString() }
+                    } else { (L '(unbegrenzt)' '(unlimited)') }
                     $rtRows.Add(@(
                         $rt.Name,
                         (SafeVal $rt.Type),
@@ -6895,15 +6979,19 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                         @((L 'Replikationsnetz' 'Replication networks'), (SafeVal ($dag2.ReplicationDagNetwork -join ', ')))
                     )
                     $null = $Parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $dagInfoRows))
-                    $copyRows = [System.Collections.Generic.List[object[]]]::new()
-                    try {
-                        Get-MailboxDatabaseCopyStatus -Server ($dag2.Servers | Select-Object -First 1) -ErrorAction SilentlyContinue | ForEach-Object {
-                            $copyRows.Add(@($_.Name, $_.Status, $_.CopyQueueLength, $_.ReplayQueueLength, (SafeVal $_.ContentIndexState)))
+                }
+                # Database copy status across all servers (consolidated view)
+                $anyCopies49 = @($ReportData.Servers | ForEach-Object { $_.DatabaseCopies } | Where-Object { $_ })
+                if ($anyCopies49.Count -gt 0) {
+                    $null = $Parts.Add((New-WdHeading (L 'Datenbank-Kopien-Status' 'Database Copy Status') 3))
+                    $null = $Parts.Add((New-WdParagraph (L 'CopyQueueLength = noch nicht replizierte Logs, ReplayQueueLength = noch nicht eingespielt. Im Normalbetrieb sollten beide Werte einstellig bleiben. ContentIndexState = "Healthy" ist Voraussetzung für die Postfachsuche.' 'CopyQueueLength = logs not yet replicated, ReplayQueueLength = logs not yet replayed. Both values should stay single-digit in normal operation. ContentIndexState = "Healthy" is required for mailbox search.')))
+                    $dcRows49 = [System.Collections.Generic.List[object[]]]::new()
+                    foreach ($srv2 in $ReportData.Servers) {
+                        foreach ($dc in $srv2.DatabaseCopies) {
+                            $dcRows49.Add(@($dc.DatabaseName, $dc.MailboxServer, $dc.Status, $dc.CopyQueueLength, $dc.ReplayQueueLength, (SafeVal $dc.ContentIndexState), (SafeVal $dc.ActivationPreference)))
                         }
-                    } catch { Write-MyVerbose ('Get-MailboxDatabaseCopyStatus failed: {0}' -f $_) }
-                    if ($copyRows.Count -gt 0) {
-                        $null = $Parts.Add((New-WdTable -Headers @((L 'DB-Kopie' 'DB copy'), (L 'Status' 'Status'), 'Copy-Q', 'Replay-Q', (L 'Suchindex' 'Content index')) -Rows $copyRows.ToArray()))
                     }
+                    $null = $Parts.Add((New-WdTable -Headers @((L 'Datenbank' 'Database'), (L 'Server' 'Server'), (L 'Status' 'Status'), 'Copy-Q', 'Replay-Q', (L 'Suchindex' 'Content index'), (L 'AktPref' 'ActPref')) -Rows $dcRows49.ToArray()))
                 }
             } else {
                 $null = $Parts.Add((New-WdParagraph (L '(Keine DAG konfiguriert — Standalone-Umgebung)' '(No DAG configured — standalone environment)')))
@@ -7000,7 +7088,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $authRows.Add(@((L 'Vorheriges Auth-Zertifikat' 'Previous Auth certificate'), $tpPrev))
                 $authRows.Add(@((L 'Realm' 'Realm'), (SafeVal $ac.Realm (L '(leer — Default)' '(empty — default)'))))
                 $authRows.Add(@((L 'Service Name' 'Service name'), (SafeVal $ac.ServiceName (L '(nicht gesetzt)' '(not set)'))))
-                $null = $Parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $authRows.ToArray()))
+                $null = $Parts.Add((New-WdTable -Compact -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $authRows.ToArray()))
             } else {
                 $null = $Parts.Add((New-WdParagraph (L '(AuthConfig nicht abrufbar)' '(AuthConfig not available)')))
             }
@@ -7041,23 +7129,9 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             }
             $null = $Parts.Add((New-WdTable -Headers @((L 'Dienst' 'Service'), (L 'Interne URL' 'Internal URL'), (L 'Externe URL' 'External URL'), (L 'Konsistenz' 'Consistency')) -Rows $nsRows.ToArray()))
 
-            # 4.14 Datenbank-Kopien-Status (DAG-übergreifend)
-            $anyCopies = @($ReportData.Servers | ForEach-Object { $_.DatabaseCopies } | Where-Object { $_ })
-            if ($anyCopies.Count -gt 0) {
-                $null = $Parts.Add((New-WdHeading (L '4.14 Datenbank-Kopien-Status' '4.14 Database Copy Status') 2))
-                $null = $Parts.Add((New-WdParagraph (L 'Der Status aller Datenbankkopien wird serverübergreifend erfasst. CopyQueueLength bezeichnet die Anzahl der noch nicht replizierten Log-Dateien auf die Kopie, ReplayQueueLength die Anzahl der noch nicht eingespielten Logs. Im Normalbetrieb sollten beide Werte einstellig bleiben. ContentIndexState = "Healthy" ist erforderlich für die Postfachsuche. Eine dauerhaft hohe Queue deutet auf Netzwerk- oder I/O-Probleme hin.' 'The status of all database copies is collected across all servers. CopyQueueLength is the number of log files not yet replicated to the copy, ReplayQueueLength the number of logs not yet replayed. In normal operation both values should stay single-digit. ContentIndexState = "Healthy" is required for mailbox search. A persistently high queue indicates network or I/O problems.')))
-                $dcRows = [System.Collections.Generic.List[object[]]]::new()
-                foreach ($srv2 in $ReportData.Servers) {
-                    foreach ($dc in $srv2.DatabaseCopies) {
-                        $dcRows.Add(@($dc.DatabaseName, $dc.MailboxServer, $dc.Status, $dc.CopyQueueLength, $dc.ReplayQueueLength, (SafeVal $dc.ContentIndexState), (SafeVal $dc.ActivationPreference)))
-                    }
-                }
-                $null = $Parts.Add((New-WdTable -Headers @((L 'Datenbank' 'Database'), (L 'Server' 'Server'), (L 'Status' 'Status'), 'Copy-Q', 'Replay-Q', (L 'Suchindex' 'Content index'), (L 'AktPref' 'ActPref')) -Rows $dcRows.ToArray()))
-            }
-
-            # 4.15 RBAC — Rollengruppen
+            # 4.14 RBAC — Rollengruppen (was 4.15 — 4.14 Database Copy Status merged into 4.9)
             if ($orgD.RoleGroups -and $orgD.RoleGroups.Count -gt 0) {
-                $null = $Parts.Add((New-WdHeading (L '4.15 RBAC — Rollengruppen' '4.15 RBAC — Role Groups') 2))
+                $null = $Parts.Add((New-WdHeading (L '4.14 RBAC — Rollengruppen' '4.14 RBAC — Role Groups') 2))
                 $null = $Parts.Add((New-WdParagraph (L 'Role-Based Access Control (RBAC) steuert, welche Exchange-Cmdlets und -Parameter ein Benutzer ausführen darf. Built-in-Rollengruppen wie "Organization Management", "Recipient Management" oder "View-Only Organization Management" werden von Exchange bereitgestellt. Benutzerdefinierte Rollengruppen erlauben feingranulare Delegation (z. B. Helpdesk ohne Zugriff auf Transport oder Hybrid). Diese Tabelle zeigt alle Rollengruppen mit ihren Mitgliedern — eine Dokumentation ist wichtig für Audits und Zugriffskontrollen.' 'Role-Based Access Control (RBAC) governs which Exchange cmdlets and parameters a user may run. Built-in role groups such as "Organization Management", "Recipient Management" or "View-Only Organization Management" are provided by Exchange. Custom role groups allow fine-grained delegation (e.g. helpdesk without access to transport or hybrid). This table lists all role groups with their members — documentation matters for audits and access reviews.')))
                 $rgRows = [System.Collections.Generic.List[object[]]]::new()
                 foreach ($rg in $orgD.RoleGroups) {
@@ -7071,8 +7145,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $null = $Parts.Add((New-WdParagraph (L 'Hinweis: Eine detaillierte RBAC-Aufstellung mit verwalteten Rollen liefert der Befehl Get-RoleGroup | Format-List und Get-ManagementRoleAssignment. EXpress legt optional einen separaten RBAC-Report (.txt) im Reports-Verzeichnis ab.' 'Note: A detailed RBAC listing with managed roles is available via Get-RoleGroup | Format-List and Get-ManagementRoleAssignment. EXpress optionally writes a separate RBAC report (.txt) to the reports directory.')))
             }
 
-            # 4.16 Audit-Konfiguration
-            $null = $Parts.Add((New-WdHeading (L '4.16 Audit-Konfiguration' '4.16 Audit Configuration') 2))
+            # 4.15 Audit-Konfiguration (was 4.16)
+            $null = $Parts.Add((New-WdHeading (L '4.15 Audit-Konfiguration' '4.15 Audit Configuration') 2))
             $null = $Parts.Add((New-WdParagraph (L 'Das Admin-Auditprotokoll zeichnet alle Exchange-Verwaltungscmdlets auf, die von Administratoren ausgeführt werden (wer hat wann was geändert). Es ist Grundlage für Compliance-Anforderungen wie ISO 27001, BSI-Grundschutz und DSGVO-Rechenschaftspflicht. Das Protokoll wird in einem dedizierten verborgenen Postfach in der Exchange-Organisation gespeichert und kann per Search-AdminAuditLog abgefragt werden. Die Aufbewahrungsfrist (AdminAuditLogAgeLimit) bestimmt, wie lange Einträge erhalten bleiben (Standard: 90 Tage).' 'The admin audit log records all Exchange management cmdlets executed by administrators (who changed what and when). It is the basis for compliance requirements such as ISO 27001, BSI baseline protection and GDPR accountability. The log is stored in a dedicated hidden mailbox in the Exchange organisation and can be queried via Search-AdminAuditLog. The retention period (AdminAuditLogAgeLimit) determines how long entries are kept (default: 90 days).')))
             if ($orgD.AdminAuditLog) {
                 $aal = $orgD.AdminAuditLog
@@ -7091,8 +7165,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $null = $Parts.Add((New-WdParagraph (L '(Admin-Auditprotokoll-Konfiguration nicht abrufbar)' '(Admin audit log configuration not available)')))
             }
 
-            # 4.17 Exchange AD-Sicherheitsgruppen und Dienstkonten
-            $null = $Parts.Add((New-WdHeading (L '4.17 Exchange AD-Sicherheitsgruppen und Dienstkonten' '4.17 Exchange AD Security Groups and Service Accounts') 2))
+            # 4.16 Exchange AD-Sicherheitsgruppen und Dienstkonten (was 4.17)
+            $null = $Parts.Add((New-WdHeading (L '4.16 Exchange AD-Sicherheitsgruppen und Dienstkonten' '4.16 Exchange AD Security Groups and Service Accounts') 2))
             $null = $Parts.Add((New-WdParagraph (L 'Exchange erstellt bei der Installation und PrepareAD automatisch universelle Sicherheitsgruppen im Active Directory. Diese Gruppen steuern die Exchange-internen AD-Berechtigungen und sollten niemals manuell verändert werden. Dedizierte Dienstkonten für externe Integrationen (Backup, Monitoring, Archivierung, Relay) sind nach dem Principle of Least Privilege zu erstellen und mit minimalen Exchange-Rechten auszustatten.' 'Exchange creates universal security groups in Active Directory automatically during installation and PrepareAD. These groups control Exchange-internal AD permissions and must never be modified manually. Dedicated service accounts for external integrations (backup, monitoring, archiving, relay) must be created following the Principle of Least Privilege and assigned minimum Exchange rights.')))
             $adSecGrpRows = [System.Collections.Generic.List[object[]]]::new()
             $adSecGrpRows.Add(@('Exchange Trusted Subsystem',        (L 'Exchange-Servercomputer — vollständige AD-Kontrolle über Exchange-Objekte' 'Exchange server computers — full AD control over Exchange objects')))
@@ -7888,7 +7962,7 @@ $body
 
         # ── 1. Dokumenteigenschaften ─────────────────────────────────────────────
         $null = $parts.Add((New-WdHeading (L '1. Dokumenteigenschaften' '1. Document Properties') 1))
-        $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows @(
+        $null = $parts.Add((New-WdTable -Compact -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows @(
             @((L 'Dokument' 'Document'), $docTitle)
             @('EXpress Version', "v$ScriptVersion")
             @((L 'Erstellt auf Server' 'Generated on server'), $env:COMPUTERNAME)
@@ -7926,15 +8000,12 @@ $body
             $paramRows.Add(@((L 'Zertifikatspfad' 'Certificate path'), (Mask-Val (SafeVal $State['CertificatePath'] '—'))))
             $logRet = if ($State['LogRetentionDays']) { '{0} {1}' -f $State['LogRetentionDays'], (L 'Tage' 'days') } else { '—' }
             $paramRows.Add(@((L 'Log-Aufbewahrung' 'Log retention'), $logRet))
-            $paramRows.Add(@((L 'Relay-Subnetze' 'Relay subnets'),   (if ($State['RelaySubnets']) { Mask-Ip (($State['RelaySubnets'] -join ', ')) } else { '—' })))
+            $relayStr = if ($State['RelaySubnets']) { Mask-Ip (($State['RelaySubnets'] -join ', ')) } else { '—' }
+            $paramRows.Add(@((L 'Relay-Subnetze' 'Relay subnets'), $relayStr))
             $paramRows.Add(@((L 'Modus' 'Mode'), $modeText))
-            $paramRows.Add(@('TLS 1.2', (Format-RegBool $State['EnableTLS12'])))
-            $paramRows.Add(@('TLS 1.3', (Format-RegBool $State['EnableTLS13'])))
-            # PS 5.1: (if ...) cannot be used inline as an array element — assign first (Known Pitfall)
-            $tls10text = if ($null -eq $State['DisableSSL3']) { (L '(nicht gesetzt)' '(not set)') } elseif ($State['DisableSSL3']) { (L 'deaktiviert' 'disabled') } else { (L 'aktiv' 'active') }
-            $paramRows.Add(@('TLS 1.0 / TLS 1.1', $tls10text))
             $paramRows.Add(@((L 'Logdatei' 'Log file'), (SafeVal $State['TranscriptFile'])))
             $null = $parts.Add((New-WdTable -Headers @((L 'Parameter' 'Parameter'), (L 'Wert' 'Value')) -Rows $paramRows.ToArray()))
+            $null = $parts.Add((New-WdParagraph (L 'TLS-Protokoll- und Schannel-Einstellungen (TLS 1.2/1.3, TLS 1.0/1.1, Cipher Suites) sind in Kapitel 8 dokumentiert.' 'TLS protocol and Schannel settings (TLS 1.2/1.3, TLS 1.0/1.1, cipher suites) are documented in Chapter 8.')))
         }
 
         # ── 3. IST-Aufnahme Active Directory ─────────────────────────────────────
@@ -8019,29 +8090,8 @@ $body
                 if ($dbRows2.Count -eq 0) { $dbRows2.Add(@((L '(keine Datenbank auf diesem Server)' '(no database on this server)'), '', '', '')) }
                 $null = $parts.Add((New-WdTable -Headers @((L 'Datenbank' 'Database'), (L 'DB-Pfad' 'DB path'), (L 'Log-Pfad' 'Log path'), (L 'Status' 'Status')) -Rows $dbRows2.ToArray()))
 
-                # 5.x.4 Virtuelle Verzeichnisse
-                $null = $parts.Add((New-WdHeading (L 'Virtuelle Verzeichnisse' 'Virtual Directories') 3))
-                $vd2Rows = [System.Collections.Generic.List[object[]]]::new()
-                $vdirSources = @(
-                    @{ Name='OWA';        Data=$srvD.VDirOWA  }
-                    @{ Name='ECP';        Data=$srvD.VDirECP  }
-                    @{ Name='EWS';        Data=$srvD.VDirEWS  }
-                    @{ Name='OAB';        Data=$srvD.VDirOAB  }
-                    @{ Name='ActiveSync'; Data=$srvD.VDirAS   }
-                    @{ Name='MAPI';       Data=$srvD.VDirMAPI }
-                )
-                foreach ($vde in $vdirSources) {
-                    $vd3 = $vde.Data | Select-Object -First 1
-                    if ($vd3) {
-                        $int2 = if ($vd3.InternalUrl) { $vd3.InternalUrl.AbsoluteUri } else { (L '(nicht gesetzt)' '(not set)') }
-                        $ext2 = if ($vd3.ExternalUrl) { $vd3.ExternalUrl.AbsoluteUri } else { (L '(nicht gesetzt)' '(not set)') }
-                        $epRaw2 = "$($vd3.ExtendedProtectionTokenChecking)"
-                        if ($epRaw2 -eq '2') { $epRaw2 = 'Require' } elseif ($epRaw2 -eq '1') { $epRaw2 = 'Allow' } elseif ($epRaw2 -eq '0') { $epRaw2 = 'None' }
-                        $ep2 = if ($epRaw2) { $epRaw2 } else { '—' }
-                        $vd2Rows.Add(@($vde.Name, (Mask-Ip $int2), (Mask-Ip $ext2), $ep2))
-                    }
-                }
-                $null = $parts.Add((New-WdTable -Headers @((L 'Dienst' 'Service'), (L 'Intern' 'Internal'), (L 'Extern' 'External'), 'EP') -Rows $vd2Rows.ToArray()))
+                # 5.x.4 Virtuelle Verzeichnisse → konsolidierte Übersicht in Abschnitt 4.13
+                # Virtual directories → consolidated view in section 4.13
 
                 # 5.x.5 Receive Connectors — split into two tables (network / security)
                 # A single 8-column table wraps every cell in portrait Word; splitting into
@@ -8139,13 +8189,30 @@ $body
 
         # DNS record template — Autodiscover pre-filled with configured namespace; MX/SPF/DKIM/DMARC
         # resolved via Resolve-DnsName (best-effort; internal DNS view may differ from external).
+        # Domain list: prefer the mail domain (namespace parent or MailDomain) over the AD domain,
+        # and skip non-routable suffixes (.local/.lan/.internal/.corp) that never need public DNS records.
         $dnsTemplateRows = [System.Collections.Generic.List[object[]]]::new()
-        $authDomainNames = @()
+        $nsForDns = if ($State['Namespace']) { $State['Namespace'] } else { $null }
+        # Compute mail domain (same logic as Enable-AccessNamespaceMailConfig)
+        $mailDomainForDns = if ($State['MailDomain']) {
+            $State['MailDomain']
+        } elseif ($nsForDns) {
+            $nsPart = ($nsForDns -split '\.', 2)[1]
+            if ($nsPart -match '\.') { $nsPart } else { $nsForDns }
+        } else { $null }
+        $authDomainNames = [System.Collections.Generic.List[string]]::new()
+        if ($mailDomainForDns) { $authDomainNames.Add($mailDomainForDns) }
         if ($rd.Org -and $rd.Org.AcceptedDomains) {
-            $authDomainNames = @($rd.Org.AcceptedDomains | Where-Object { $_.DomainType -eq 'Authoritative' } | Select-Object -ExpandProperty DomainName | Select-Object -First 5)
+            $nonRoutable = @('\.local$','\.lan$','\.internal$','\.corp$','\.home$','\.intranet$')
+            $rd.Org.AcceptedDomains | Where-Object { $_.DomainType -eq 'Authoritative' } | Select-Object -ExpandProperty DomainName | ForEach-Object {
+                $dn = [string]$_
+                $isNonRoutable = $nonRoutable | Where-Object { $dn -match $_ }
+                if (-not $isNonRoutable -and $dn -ne $mailDomainForDns -and $authDomainNames.Count -lt 5) {
+                    $authDomainNames.Add($dn)
+                }
+            }
         }
-        if (-not $authDomainNames -or $authDomainNames.Count -eq 0) { $authDomainNames = @('<domain>') }
-        $nsForDns   = if ($State['Namespace']) { $State['Namespace'] } else { $null }
+        if ($authDomainNames.Count -eq 0) { $authDomainNames.Add('<domain>') }
         $dnsManual  = L '(bitte manuell ergänzen)' '(please fill in manually)'
         $dnsInvalid = L '(nicht auflösbar — bitte manuell ergänzen)' '(not resolvable — please fill in manually)'
         foreach ($d in $authDomainNames) {
@@ -8303,7 +8370,9 @@ $body
         # TLS Cipher Suite inventory
         $null = $parts.Add((New-WdParagraph (L 'TLS Cipher Suites (aktiv auf diesem Server):' 'TLS Cipher Suites (active on this server):')))
         $cipherRows = [System.Collections.Generic.List[object[]]]::new()
-        $cipherSuites = @(Get-TlsCipherSuite -ErrorAction SilentlyContinue | Select-Object Name, Exchange, Hash, KeyExchange)
+        # Where-Object { $_ } filters out $null pipeline values that Select-Object would otherwise
+        # silently promote to a single all-null PSCustomObject, bypassing the Count -eq 0 fallback.
+        $cipherSuites = @(Get-TlsCipherSuite -ErrorAction SilentlyContinue | Where-Object { $_ } | Select-Object Name, Exchange, Hash, KeyExchange)
         foreach ($cs2 in $cipherSuites) {
             $cipherRows.Add(@($cs2.Name, (SafeVal $cs2.Exchange '—'), (SafeVal $cs2.Hash '—'), (SafeVal $cs2.KeyExchange '—')))
         }
@@ -8389,6 +8458,16 @@ $body
         } catch { '(unknown)' }
         $dlDomain = if ($State['DownloadDomain']) { $State['DownloadDomain'] } else { '—' }
         $exHardRows.Add(@('EnableDownloadDomains (CVE-2021-1730)', ('{0} — Domain: {1}' -f $dlEnabled, $dlDomain), (L 'Isoliert OWA-Anhänge auf Subdomain (verhindert CSRF/Cookie-Hijacking)' 'Isolates OWA attachments on subdomain (prevents CSRF/cookie hijacking)')))
+        # SMTP Protocol Logging
+        $smtpLogVal = try {
+            $logConns = @(Get-ReceiveConnector -Server $env:COMPUTERNAME -ErrorAction Stop |
+                Where-Object { $_.Name -match '^Default Frontend |^Anonymous (Internal|External) Relay' })
+            if ($logConns.Count -gt 0) {
+                $verboseCount = ($logConns | Where-Object { $_.ProtocolLoggingLevel -eq 'Verbose' }).Count
+                '{0}/{1} Verbose' -f $verboseCount, $logConns.Count
+            } else { (L '(kein passender Connector)' '(no matching connector)') }
+        } catch { (L '(nicht abrufbar)' '(not available)') }
+        $exHardRows.Add(@('SMTP Protocol Logging', $smtpLogVal, (L 'Verbose-Logging auf Default Frontend + Relay-Connectors (BSI APP.5.3)' 'Verbose logging on Default Frontend + relay connectors (BSI APP.5.3)')))
         $null = $parts.Add((New-WdTable -Headers @((L 'Härtungsmaßnahme' 'Hardening measure'), (L 'Status / Wert' 'Status / value'), (L 'Zweck' 'Purpose')) -Rows $exHardRows.ToArray()))
 
         # 8.5 Windows Defender Exclusions
@@ -8398,7 +8477,8 @@ $body
             $null = $parts.Add((New-WdParagraph (L 'Microsoft dokumentiert umfangreiche Pfad-, Prozess- und Dateityp-Ausnahmen für Exchange Server, ohne die Antivirus-Software Datenbank-Dateien, Transport-Warteschlangen oder Logs blockiert und Leistung wie Stabilität schwer beeinträchtigt. EXpress trägt diese Ausnahmen automatisch in Windows Defender ein. Bei Drittanbieter-Antivirus müssen dieselben Pfade manuell in das entsprechende Produkt übernommen werden. Weitere Informationen: Microsoft Docs "Exchange antivirus software".' 'Microsoft documents extensive path, process and filetype exclusions for Exchange Server without which antivirus software would block database files, transport queues or logs and severely impact performance and stability. EXpress automatically registers these exclusions with Windows Defender. For third-party antivirus, the same paths must be manually configured in the corresponding product. Further information: Microsoft Docs "Exchange antivirus software".')))
             $exr = $localSrvData.DefenderExclusions
             $defRows = [System.Collections.Generic.List[object[]]]::new()
-            $defRows.Add(@((L 'Echtzeit-Überwachung' 'Real-time monitoring'), (Lc $exr.RealTimeEnabled (L 'aktiv' 'enabled') (L 'inaktiv' 'disabled'))))
+            $dvModeStr = if ($exr.AMRunningMode) { ' ({0})' -f $exr.AMRunningMode } else { '' }
+            $defRows.Add(@((L 'Echtzeit-Überwachung' 'Real-time monitoring'), ((Lc $exr.RealTimeEnabled (L 'aktiv' 'enabled') (L 'inaktiv' 'disabled')) + $dvModeStr)))
             $defRows.Add(@((L 'Pfad-Ausnahmen' 'Path exclusions'), (SafeVal (($exr.ExclusionPath | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
             $defRows.Add(@((L 'Prozess-Ausnahmen' 'Process exclusions'), (SafeVal (($exr.ExclusionProcess | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
             $defRows.Add(@((L 'Dateityp-Ausnahmen' 'Extension exclusions'), (SafeVal (($exr.ExclusionExtension | Sort-Object) -join "`n") (L '(keine)' '(none)'))))
@@ -8442,6 +8522,7 @@ $body
         $null = $parts.Add((New-WdHeading (L '8.8 Compliance-Mapping (CIS / BSI IT-Grundschutz)' '8.8 Compliance Mapping (CIS / BSI)') 2))
         $null = $parts.Add((New-WdParagraph (L 'Die folgende Tabelle ordnet die von EXpress angewendeten Härtungsmaßnahmen den relevanten Kontrollen aus dem CIS Benchmark for Microsoft Windows Server und dem BSI IT-Grundschutz-Kompendium zu. Sie dient als Nachweis für Audits und interne Compliance-Prüfungen.' 'The table below maps the hardening measures applied by EXpress to the relevant controls from the CIS Benchmark for Microsoft Windows Server and the BSI IT-Grundschutz Compendium. It serves as evidence for audits and internal compliance reviews.')))
         $null = $parts.Add((New-WdParagraph (L 'Wichtiger Hinweis zur Protokoll-Auswertung: Mehrere der nachfolgenden Kontrollen — insbesondere Admin Audit Log, Mailbox Audit Log, Windows Security Eventlog und IIS-Zugriffsprotokolle — entfalten ihren vollen Compliance- und forensischen Nutzen erst, wenn die erzeugten Ereignisse zentral zusammengeführt, korreliert und revisionssicher aufbewahrt werden. EXpress aktiviert und konfiguriert die Protokollquellen auf dem Server, sieht jedoch ausdrücklich keine SIEM-Anbindung vor — diese ist organisationsweit zu planen und liegt außerhalb des Scopes einer Server-Installation. Für die Erfüllung von BSI APP.5.2 A13 (Protokollierung), BSI OPS.1.1.5 (Protokollierung), CIS Control 8 (Audit Log Management) sowie der DSGVO-Rechenschaftspflicht (Art. 5 Abs. 2) ist die Anbindung an ein SIEM (Security Information and Event Management) dringend empfohlen. Ein SIEM ermöglicht: (1) zentrale Korrelation über mehrere Exchange-Server, Domain Controller und Edge-Komponenten hinweg; (2) Alarmierung bei Anomalien (Brute-Force-Versuche, ungewöhnliche EWS-/PowerShell-Zugriffe, Mass-Mail-Abfluss); (3) revisionssichere Langzeit-Aufbewahrung über die lokale Bereinigungsfrist hinaus; (4) Nachweisführung gegenüber Auditoren ohne Eingriff am Produktivsystem. Empfohlene Quellen für die Auslieferung: Windows Security/System/Application-Eventlog, IIS-W3C-Logs, Exchange MessageTracking, HttpProxy, Managed Availability, sowie das Admin- und Mailbox-Audit-Log via Search-AdminAuditLog / Search-MailboxAuditLog oder New-MailboxAuditLogSearch.' 'Important note on log evaluation: Several of the controls below — in particular Admin Audit Log, Mailbox Audit Log, Windows Security event log and IIS access logs — only deliver their full compliance and forensic value when the generated events are centrally aggregated, correlated and retained tamper-evidently. EXpress enables and configures the log sources on the server, but explicitly does not provide SIEM integration — this must be planned organisation-wide and is out of scope for a server installation. To meet BSI APP.5.2 A13 (logging), BSI OPS.1.1.5 (logging), CIS Control 8 (Audit Log Management) and the GDPR accountability obligation (Art. 5(2)), integration with a SIEM (Security Information and Event Management) is strongly recommended. A SIEM enables: (1) central correlation across multiple Exchange servers, domain controllers and edge components; (2) alerting on anomalies (brute-force attempts, unusual EWS/PowerShell access, mass mail exfiltration); (3) tamper-evident long-term retention beyond the local cleanup period; (4) audit evidence without touching the production system. Recommended sources for forwarding: Windows Security/System/Application event log, IIS W3C logs, Exchange MessageTracking, HttpProxy, Managed Availability, plus the Admin and Mailbox Audit Log via Search-AdminAuditLog / Search-MailboxAuditLog or New-MailboxAuditLogSearch.')))
+        $smtpLogStatus = if (Test-Feature 'SMTPConnectorLogging') { (L 'Umgesetzt' 'Implemented') } else { (L 'Deaktiviert' 'Disabled') }
         $null = $parts.Add((New-WdTable -Headers @((L 'Maßnahme' 'Measure'), (L 'CIS-Kontrolle' 'CIS Control'), (L 'BSI-Grundschutz' 'BSI Control'), (L 'Status' 'Status')) -Rows @(
             ,@((L 'TLS 1.0 / 1.1 deaktiviert' 'TLS 1.0 / 1.1 disabled'),                          'CIS WS2022 18.4.x',   'BSI SYS.1.2 A5',  (L 'Umgesetzt' 'Implemented'))
             ,@((L 'TLS 1.2 erzwungen + .NET Strong Crypto' 'TLS 1.2 enforced + .NET Strong Crypto'), 'CIS WS2022 18.4.x',   'BSI SYS.1.2 A5',  (L 'Umgesetzt' 'Implemented'))
@@ -8455,6 +8536,7 @@ $body
             ,@((L 'Defender Ausnahmen (Exchange-VSS, Transport, IIS)' 'Defender exclusions (Exchange VSS, Transport, IIS)'), 'MS Exchange Best Practice', 'BSI APP.5.2 A4', (L 'Umgesetzt' 'Implemented'))
             ,@('LLMNR / mDNS deaktiviert',                                                            'CIS WS2022 18.5.4.2', 'BSI NET.3.1 A10', (L 'Umgesetzt' 'Implemented'))
             ,@((L 'Dienste minimiert (Browser/Fax/Xcopy u. a.)' 'Services minimised (Browser/Fax/Xcopy etc.)'), 'CIS WS2022 5.x', 'BSI SYS.1.2 A3', (L 'Umgesetzt' 'Implemented'))
+            ,@((L 'SMTP Protocol Logging (Default Frontend + Relay)' 'SMTP Protocol Logging (Default Frontend + relay)'), 'MS Exchange Best Practice', 'BSI APP.5.3', $smtpLogStatus)
             ,@((L 'Admin Audit Log aktiviert' 'Admin Audit Log enabled'),                             'CIS EX2019 1.1',      'BSI APP.5.2 A13', (L 'Umgesetzt' 'Implemented'))
             ,@((L 'SIEM-Anbindung / zentrale Log-Auswertung' 'SIEM integration / central log evaluation'), 'CIS Control 8',     'BSI OPS.1.1.5 / APP.5.2 A13', (L 'Out of Scope — organisationsweit zu planen' 'Out of scope — to be planned organisation-wide'))
             ,@((L 'Log-Bereinigung am Server (Volume-Schutz)' 'Local log cleanup (volume protection)'), 'MS Best Practice',     'BSI APP.5.2 A4',  (L 'Umgesetzt — geplante Aufgabe (siehe 7.1)' 'Implemented — scheduled task (see 7.1)'))
@@ -8690,7 +8772,7 @@ $body
             ,@((L 'SMTP ausgehend' 'SMTP outbound'), (L 'Testmail vom Exchange nach extern senden' 'Send test mail from Exchange to external'),           '', '')
             ,@('MAPI/HTTP',     (L 'Outlook-Client verbinden (Autodiscover, kein TCP 135 erforderlich)' 'Connect Outlook client (Autodiscover, no TCP 135 required)'), '', '')
             ,@('ActiveSync',    (L 'Mobiles Gerät verbinden (EAS, HTTPS 443)' 'Connect mobile device (EAS, HTTPS 443)'),             '', '')
-            ,@('Zertifikat',    (L 'TLS-Zertifikat gültig, kein Browser-Warning' 'TLS certificate valid, no browser warning'),       '', '')
+            ,@((L 'Zertifikat' 'Certificate'), (L 'TLS-Zertifikat gültig, kein Browser-Warning' 'TLS certificate valid, no browser warning'), '', '')
             ,@('DAG',           (L 'DAG-Datenbankkopien-Status: alle Healthy / Mounted' 'DAG database copy status: all Healthy / Mounted'), '', '')
             ,@('Backup',        (L 'Erstes VSS-Backup erfolgreich, Logs abgeschnitten' 'First VSS backup successful, logs truncated'), '', '')
             ,@('HealthChecker',  (L 'Keine kritischen Findings (Reds)' 'No critical findings (Reds)'),                               '', '')
@@ -10894,14 +10976,11 @@ $body
     }
 
     function Enable-DefenderRealtimeMonitoring {
-        # Re-enable Defender realtime scanning. With -Force the function always attempts
-        # to turn realtime on, regardless of whether EXpress was the one to disable it —
-        # this is used right before the Word report generates so the report reflects an
-        # active protection state after installation. Without -Force, it only reverses
-        # an EXpress-initiated disable (flag set in Disable-DefenderRealtimeMonitoring).
-        param([switch]$Force)
+        # Re-enable Defender realtime scanning only if EXpress was the one to disable it
+        # (flag set in Disable-DefenderRealtimeMonitoring). No-op if Defender was already
+        # off before setup started (e.g. 3rd-party AV installed).
         if (-not (Get-Command -Name Set-MpPreference -ErrorAction SilentlyContinue)) { return }
-        $shouldAct = $Force -or $State['DefenderRealtimeDisabledByEXpress']
+        $shouldAct = $State['DefenderRealtimeDisabledByEXpress']
         if ($shouldAct) {
             try {
                 $pref = Get-MpPreference -ErrorAction Stop
@@ -10909,8 +10988,7 @@ $body
                     Write-MyVerbose 'Defender realtime monitoring already enabled'
                 }
                 else {
-                    if ($Force) { Write-MyStep -Label 'Defender realtime' -Value 'enabled (pre-report)' -Status OK }
-                    else        { Write-MyStep -Label 'Defender realtime' -Value 're-enabled' -Status OK }
+                    Write-MyStep -Label 'Defender realtime' -Value 're-enabled' -Status OK
                     Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop
                     Start-Sleep -Seconds 1
                     $post = Get-MpPreference -ErrorAction SilentlyContinue
@@ -11134,6 +11212,91 @@ $body
         }
     }
 
+    function Test-PostInstallVerification {
+        # Smoke-test critical Exchange components after phase 6 completes.
+        # Logs PASS/WARN per check; never exits — informational only.
+        # Skipped for Edge Transport (no Mailbox role) and no-setup runs.
+        if ($State['InstallEdge'] -or $State['NoSetup']) { return }
+
+        $checks = [System.Collections.Generic.List[hashtable]]::new()
+        function Add-Check {
+            param([string]$Name, [string]$Status, [string]$Detail)
+            $checks.Add(@{ Name = $Name; Status = $Status; Detail = $Detail })
+        }
+
+        # 1. Critical Exchange services
+        foreach ($svcName in @('MSExchangeTransport', 'MSExchangeIS', 'MSExchangeADTopology', 'MSExchangeServiceHost')) {
+            try {
+                $s = Get-Service -Name $svcName -ErrorAction Stop
+                if ($s.Status -eq 'Running') { Add-Check $svcName 'PASS' 'Running' }
+                else { Add-Check $svcName 'WARN' $s.Status.ToString() }
+            } catch { Add-Check $svcName 'WARN' 'Not found' }
+        }
+
+        # 2. Mailbox database(s) mounted
+        try {
+            $unmounted = @(Get-MailboxDatabase -Status -ErrorAction Stop | Where-Object { -not $_.Mounted })
+            if ($unmounted.Count -eq 0) { Add-Check 'DB mounted' 'PASS' 'All databases mounted' }
+            else {
+                $nameList = ($unmounted | ForEach-Object { $_.Name }) -join ', '
+                Add-Check 'DB mounted' 'WARN' ('Not mounted: {0}' -f $nameList)
+            }
+        } catch { Add-Check 'DB mounted' 'WARN' ('Query failed: {0}' -f $_.Exception.Message) }
+
+        # 3. OWA InternalUrl configured
+        try {
+            $owaVdir = Get-OwaVirtualDirectory -ErrorAction Stop | Select-Object -First 1
+            if ($owaVdir -and $owaVdir.InternalUrl) { Add-Check 'OWA InternalUrl' 'PASS' $owaVdir.InternalUrl.AbsoluteUri }
+            else { Add-Check 'OWA InternalUrl' 'WARN' 'Not set — run Set-OwaVirtualDirectory or re-run VDir URLs' }
+        } catch { Add-Check 'OWA InternalUrl' 'WARN' ('Query failed: {0}' -f $_.Exception.Message) }
+
+        # 4. Auth certificate valid
+        try {
+            $authCfg = Get-AuthConfig -ErrorAction Stop
+            if ($authCfg.CurrentCertificateThumbprint) {
+                $authCert = Get-ExchangeCertificate -Thumbprint $authCfg.CurrentCertificateThumbprint -ErrorAction SilentlyContinue
+                if ($authCert -and $authCert.NotAfter -gt (Get-Date)) {
+                    Add-Check 'Auth certificate' 'PASS' ('Valid until {0:yyyy-MM-dd}' -f $authCert.NotAfter)
+                } else { Add-Check 'Auth certificate' 'WARN' 'Expired or not found in cert store' }
+            } else { Add-Check 'Auth certificate' 'WARN' 'No thumbprint in AuthConfig' }
+        } catch { Add-Check 'Auth certificate' 'WARN' ('Query failed: {0}' -f $_.Exception.Message) }
+
+        # 5. TLS 1.2 Schannel (server side)
+        $tls12Key = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server'
+        $tls12Props = Get-ItemProperty -Path $tls12Key -ErrorAction SilentlyContinue
+        if ($null -ne $tls12Props -and $tls12Props.Enabled -eq 1) {
+            Add-Check 'TLS 1.2 Schannel' 'PASS' 'Explicitly enabled'
+        } else {
+            Add-Check 'TLS 1.2 Schannel' 'INFO' 'Not explicitly set (OS default applies)'
+        }
+
+        # 6. IIS application pools running
+        try {
+            $stopped = @(Get-WebConfigurationProperty -Filter '/system.applicationHost/applicationPools/add' -Name 'state' -PSPath 'IIS:\' -ErrorAction Stop | Where-Object { $_.Value -ne 'Started' })
+            if ($stopped.Count -eq 0) { Add-Check 'IIS App Pools' 'PASS' 'All running' }
+            else { Add-Check 'IIS App Pools' 'WARN' ('{0} pool(s) not running' -f $stopped.Count) }
+        } catch { Add-Check 'IIS App Pools' 'WARN' ('Query failed: {0}' -f $_.Exception.Message) }
+
+        Write-MySection 'Post-Install Verification'
+        $passCount = 0; $warnCount = 0
+        foreach ($c in $checks) {
+            if ($c['Status'] -eq 'PASS') {
+                $passCount++
+                Write-MyStep -Label $c['Name'] -Value $c['Detail'] -Status OK
+            } elseif ($c['Status'] -eq 'INFO') {
+                Write-MyStep -Label $c['Name'] -Value $c['Detail'] -Status Info
+            } else {
+                $warnCount++
+                Write-MyWarning ('{0}: {1}' -f $c['Name'], $c['Detail'])
+            }
+        }
+        if ($warnCount -eq 0) {
+            Write-MyOutput ('Post-install verification: all {0} checks passed.' -f $passCount)
+        } else {
+            Write-MyWarning ('Post-install verification: {0} passed, {1} warning(s) — review above.' -f $passCount, $warnCount)
+        }
+    }
+
     function Get-AdvancedFeatureCatalog {
         # Advanced Configuration catalog. Each entry:
         #   Name        — unique key persisted in $State['AdvancedFeatures'] and config file
@@ -11172,6 +11335,7 @@ $body
             CRLTimeout          = @{ Category='Hardening'; Label='CRL Check Timeout';         Default=$true;  Description='Tune CRL retrieval timeout to avoid slow startup when OCSP/CRL endpoints are unreachable.' }
             RootCAAutoUpdate    = @{ Category='Hardening'; Label='Root CA Auto-Update';       Default=$true;  Description='Keep Automatic Root Certificates Update enabled (required for Modern Auth / O365 Hybrid).' }
             SMTPBannerHarden    = @{ Category='Hardening'; Label='Harden SMTP banner';        Default=$true;  Description='Replace Exchange version banner on Frontend Receive Connectors with "220 Mail Service".' }
+            SMTPConnectorLogging = @{ Category='Hardening'; Label='SMTP Protocol Logging';    Default=$true;  Description='Enable protocol logging (Verbose) on Default Frontend and Anonymous relay receive connectors (BSI IT-Grundschutz APP.5.3).' }
 
             # ─── Performance / Tuning ────────────────────────────────────────
             MaxConcurrentAPI    = @{ Category='Performance'; Label='MaxConcurrentAPI';        Default=$true;  Description='MS KB 2688798 — raise MaxConcurrentApi to prevent NTLM auth bottlenecks.' }
@@ -12631,17 +12795,6 @@ $body
             $State['RelaySubnets']         = $RelaySubnets
             $State['ExternalRelaySubnets'] = $ExternalRelaySubnets
         }
-        # Project every catalog entry to its flat $State[Name] so the rest of the
-        # script (Phase 5 hardening, reports, HealthChecker gates …) keeps reading
-        # $State['DisableSSL3'] etc. unchanged. Test-Feature applies precedence.
-        foreach ($name in $advCatalog.Keys) { $State[$name] = Test-Feature $name }
-        # Derived: EnableCBC is the logical inverse of NoCBC.
-        $State["EnableCBC"]     = -not (Test-Feature 'NoCBC')
-        if ($State["EnableTLS13"] -and -not $State["EnableTLS12"]) {
-            Write-MyWarning 'EnableTLS13 requires EnableTLS12; automatically enabling TLS 1.2 enforcement'
-            $State["EnableTLS12"] = $true
-            $State['AdvancedFeatures']['EnableTLS12'] = $true
-        }
         $State["DoNotEnableEP_FEEWS"] = $DoNotEnableEP_FEEWS
         $State["SCP"] = $SCP
         $State["EdgeDNSSuffix"] = $EdgeDNSSuffix
@@ -12686,6 +12839,20 @@ $body
         $State["DocumentScope"]       = if ($DocumentScope) { $DocumentScope } else { 'All' }
         $State["IncludeServers"]      = if ($IncludeServers) { $IncludeServers -join ',' } else { '' }
         $State["TemplatePath"]        = $TemplatePath
+
+        # Project every catalog entry to its flat $State[Name] so the rest of the
+        # script (Phase 5 hardening, reports, HealthChecker gates …) keeps reading
+        # $State['DisableSSL3'] etc. unchanged. Test-Feature applies precedence.
+        # Must run after all context values ($State['Namespace'], 'DAGName', etc.) are set,
+        # because Condition scriptblocks (e.g. AccessNamespaceMail) evaluate $script:State.
+        foreach ($name in $advCatalog.Keys) { $State[$name] = Test-Feature $name }
+        # Derived: EnableCBC is the logical inverse of NoCBC.
+        $State["EnableCBC"]     = -not (Test-Feature 'NoCBC')
+        if ($State["EnableTLS13"] -and -not $State["EnableTLS12"]) {
+            Write-MyWarning 'EnableTLS13 requires EnableTLS12; automatically enabling TLS 1.2 enforcement'
+            $State["EnableTLS12"] = $true
+            $State['AdvancedFeatures']['EnableTLS12'] = $true
+        }
 
         # PFX password handling. Three paths:
         #   1. Config supplied plain-text CertificatePassword → use it (security warning was logged earlier).
@@ -12750,6 +12917,24 @@ $body
         Write-MyVerbose "Continuing from last successful phase $($State["InstallPhase"])"
         $State["InstallPhase"] = $State["LastSuccessfulPhase"]
     }
+
+    # Debug mode (Copilot only): halt before Phase 5 starts so the user can take a VM
+    # snapshot. LastSuccessfulPhase is still 4 here (not yet incremented). State already
+    # has InstallPhase=4; next launch increments to 5 and continues normally.
+    if ($State['LogDebug'] -and $State['InstallPhase'] -eq 4 -and -not $PSBoundParameters.ContainsKey('Phase') -and -not $State['Autopilot']) {
+        Write-Host ''
+        Write-Host '  ============================================================' -ForegroundColor Magenta
+        Write-Host '   DEBUG MODE: Phase 4 complete - HALT for snapshot           ' -ForegroundColor Magenta -BackgroundColor Black
+        Write-Host '  ------------------------------------------------------------' -ForegroundColor Magenta
+        Write-Host '   Take a VM snapshot now, then re-run the script to' -ForegroundColor Magenta
+        Write-Host '   continue with Phase 5 (security hardening + VDir URLs).' -ForegroundColor Magenta
+        Write-Host ('   State file: {0}' -f $StateFile) -ForegroundColor Magenta
+        Write-Host '  ============================================================' -ForegroundColor Magenta
+        Write-Host ''
+        Write-MyOutput 'DEBUG MODE: halted after Phase 4 for snapshot. Re-run to continue.'
+        exit $ERR_OK
+    }
+
     if ( $PSBoundParameters.ContainsKey('Phase')) {
         Write-MyVerbose "Phase manually set to $Phase"
         $State["InstallPhase"] = $Phase
@@ -12927,8 +13112,7 @@ $body
                 1 {
                     Write-MyOutput 'Standalone Document — generating Word installation document for existing Exchange server'
                     Import-ExchangeModule
-                    # Ensure Defender realtime is on before we snapshot server state into the report.
-                    Enable-DefenderRealtimeMonitoring -Force
+                    Enable-DefenderRealtimeMonitoring
                     try { New-InstallationDocument } catch { Write-MyError ('Word document failed: {0}' -f $_.Exception.Message) }
                     Write-MyOutput 'Installation document generation complete.'
                 }
@@ -12959,6 +13143,9 @@ $body
                     if ($State['AnonymousRelay']) {
                         New-AnonymousRelayConnector
                     }
+
+                    # SMTP Protocol Logging — Default Frontend + Anonymous relay connectors
+                    if (Test-Feature 'SMTPConnectorLogging') { Enable-SMTPProtocolLogging }
 
                     # Access Namespace — Accepted Domain + Email Address Policy (F26)
                     if ($State['AccessNamespaceMail'] -and $State['Namespace']) {
@@ -13556,6 +13743,12 @@ $body
                     New-AnonymousRelayConnector
                 }
 
+                # SMTP Protocol Logging — Default Frontend + Anonymous relay connectors
+                if (-not $State['InstallEdge'] -and (Test-Feature 'SMTPConnectorLogging')) {
+                    Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: SMTP protocol logging' -PercentComplete 78
+                    Enable-SMTPProtocolLogging
+                }
+
                 # Access Namespace — Accepted Domain + Email Address Policy (F26)
                 if ($State['AccessNamespaceMail'] -and $State['Namespace'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Access namespace mail config' -PercentComplete 79
@@ -13605,8 +13798,7 @@ $body
 
                     if (-not $State['NoWordDoc']) {
                         Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Word Installation Document' -PercentComplete 94
-                        # Ensure Defender realtime is on before we snapshot server state into the report.
-                        Enable-DefenderRealtimeMonitoring -Force
+                        Enable-DefenderRealtimeMonitoring
                         try { New-InstallationDocument } catch {
                             $derr = $_
                             Write-MyError ('Word document failed: ' + $derr.Exception.Message)
@@ -13619,6 +13811,7 @@ $body
                 }
 
                 Write-PhaseProgress -Activity 'Exchange Installation' -Completed
+                Test-PostInstallVerification
                 Write-MySection 'Setup finished — we are good to go'
             }
 
@@ -13661,25 +13854,6 @@ $body
     if ( $State['SourceImage']) {
         Dismount-DiskImage -ImagePath $State['SourceImage'] | Out-Null
         Write-MyVerbose ('Dismounted ISO: {0}' -f $State['SourceImage'])
-    }
-
-    # Debug mode (Copilot only): halt after Phase 4 so the user can take a VM snapshot
-    # before Phase 5 (hardening / SU / VDir URLs). State already advanced to phase 5;
-    # next launch resumes from there. No reboot, no RunOnce, just stop.
-    # Autopilot runs (cmdline -Autopilot or ConfigFile-driven) continue uninterrupted
-    # even with -Debug.
-    if ($State['LogDebug'] -and $State['LastSuccessfulPhase'] -eq 4 -and -not $State['Autopilot']) {
-        Write-Host ''
-        Write-Host '  ============================================================' -ForegroundColor Magenta
-        Write-Host '   DEBUG MODE: Phase 4 complete - HALT for snapshot           ' -ForegroundColor Magenta -BackgroundColor Black
-        Write-Host '  ------------------------------------------------------------' -ForegroundColor Magenta
-        Write-Host '   Take a VM snapshot now, then re-run the script to' -ForegroundColor Magenta
-        Write-Host '   continue with Phase 5 (security hardening + VDir URLs).' -ForegroundColor Magenta
-        Write-Host ('   State file: {0}' -f $StateFile) -ForegroundColor Magenta
-        Write-Host '  ============================================================' -ForegroundColor Magenta
-        Write-Host ''
-        Write-MyOutput 'DEBUG MODE: halted after Phase 4 for snapshot. Re-run to continue.'
-        exit $ERR_OK
     }
 
     if ( $State["Autopilot"]) {

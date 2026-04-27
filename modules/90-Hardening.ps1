@@ -1067,14 +1067,11 @@
     }
 
     function Enable-DefenderRealtimeMonitoring {
-        # Re-enable Defender realtime scanning. With -Force the function always attempts
-        # to turn realtime on, regardless of whether EXpress was the one to disable it —
-        # this is used right before the Word report generates so the report reflects an
-        # active protection state after installation. Without -Force, it only reverses
-        # an EXpress-initiated disable (flag set in Disable-DefenderRealtimeMonitoring).
-        param([switch]$Force)
+        # Re-enable Defender realtime scanning only if EXpress was the one to disable it
+        # (flag set in Disable-DefenderRealtimeMonitoring). No-op if Defender was already
+        # off before setup started (e.g. 3rd-party AV installed).
         if (-not (Get-Command -Name Set-MpPreference -ErrorAction SilentlyContinue)) { return }
-        $shouldAct = $Force -or $State['DefenderRealtimeDisabledByEXpress']
+        $shouldAct = $State['DefenderRealtimeDisabledByEXpress']
         if ($shouldAct) {
             try {
                 $pref = Get-MpPreference -ErrorAction Stop
@@ -1082,8 +1079,7 @@
                     Write-MyVerbose 'Defender realtime monitoring already enabled'
                 }
                 else {
-                    if ($Force) { Write-MyStep -Label 'Defender realtime' -Value 'enabled (pre-report)' -Status OK }
-                    else        { Write-MyStep -Label 'Defender realtime' -Value 're-enabled' -Status OK }
+                    Write-MyStep -Label 'Defender realtime' -Value 're-enabled' -Status OK
                     Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop
                     Start-Sleep -Seconds 1
                     $post = Get-MpPreference -ErrorAction SilentlyContinue
@@ -1304,6 +1300,91 @@
             }
             $Global:BackgroundJobs = @()
             Write-MyVerbose "Background job cleanup completed."
+        }
+    }
+
+    function Test-PostInstallVerification {
+        # Smoke-test critical Exchange components after phase 6 completes.
+        # Logs PASS/WARN per check; never exits — informational only.
+        # Skipped for Edge Transport (no Mailbox role) and no-setup runs.
+        if ($State['InstallEdge'] -or $State['NoSetup']) { return }
+
+        $checks = [System.Collections.Generic.List[hashtable]]::new()
+        function Add-Check {
+            param([string]$Name, [string]$Status, [string]$Detail)
+            $checks.Add(@{ Name = $Name; Status = $Status; Detail = $Detail })
+        }
+
+        # 1. Critical Exchange services
+        foreach ($svcName in @('MSExchangeTransport', 'MSExchangeIS', 'MSExchangeADTopology', 'MSExchangeServiceHost')) {
+            try {
+                $s = Get-Service -Name $svcName -ErrorAction Stop
+                if ($s.Status -eq 'Running') { Add-Check $svcName 'PASS' 'Running' }
+                else { Add-Check $svcName 'WARN' $s.Status.ToString() }
+            } catch { Add-Check $svcName 'WARN' 'Not found' }
+        }
+
+        # 2. Mailbox database(s) mounted
+        try {
+            $unmounted = @(Get-MailboxDatabase -Status -ErrorAction Stop | Where-Object { -not $_.Mounted })
+            if ($unmounted.Count -eq 0) { Add-Check 'DB mounted' 'PASS' 'All databases mounted' }
+            else {
+                $nameList = ($unmounted | ForEach-Object { $_.Name }) -join ', '
+                Add-Check 'DB mounted' 'WARN' ('Not mounted: {0}' -f $nameList)
+            }
+        } catch { Add-Check 'DB mounted' 'WARN' ('Query failed: {0}' -f $_.Exception.Message) }
+
+        # 3. OWA InternalUrl configured
+        try {
+            $owaVdir = Get-OwaVirtualDirectory -ErrorAction Stop | Select-Object -First 1
+            if ($owaVdir -and $owaVdir.InternalUrl) { Add-Check 'OWA InternalUrl' 'PASS' $owaVdir.InternalUrl.AbsoluteUri }
+            else { Add-Check 'OWA InternalUrl' 'WARN' 'Not set — run Set-OwaVirtualDirectory or re-run VDir URLs' }
+        } catch { Add-Check 'OWA InternalUrl' 'WARN' ('Query failed: {0}' -f $_.Exception.Message) }
+
+        # 4. Auth certificate valid
+        try {
+            $authCfg = Get-AuthConfig -ErrorAction Stop
+            if ($authCfg.CurrentCertificateThumbprint) {
+                $authCert = Get-ExchangeCertificate -Thumbprint $authCfg.CurrentCertificateThumbprint -ErrorAction SilentlyContinue
+                if ($authCert -and $authCert.NotAfter -gt (Get-Date)) {
+                    Add-Check 'Auth certificate' 'PASS' ('Valid until {0:yyyy-MM-dd}' -f $authCert.NotAfter)
+                } else { Add-Check 'Auth certificate' 'WARN' 'Expired or not found in cert store' }
+            } else { Add-Check 'Auth certificate' 'WARN' 'No thumbprint in AuthConfig' }
+        } catch { Add-Check 'Auth certificate' 'WARN' ('Query failed: {0}' -f $_.Exception.Message) }
+
+        # 5. TLS 1.2 Schannel (server side)
+        $tls12Key = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server'
+        $tls12Props = Get-ItemProperty -Path $tls12Key -ErrorAction SilentlyContinue
+        if ($null -ne $tls12Props -and $tls12Props.Enabled -eq 1) {
+            Add-Check 'TLS 1.2 Schannel' 'PASS' 'Explicitly enabled'
+        } else {
+            Add-Check 'TLS 1.2 Schannel' 'INFO' 'Not explicitly set (OS default applies)'
+        }
+
+        # 6. IIS application pools running
+        try {
+            $stopped = @(Get-WebConfigurationProperty -Filter '/system.applicationHost/applicationPools/add' -Name 'state' -PSPath 'IIS:\' -ErrorAction Stop | Where-Object { $_.Value -ne 'Started' })
+            if ($stopped.Count -eq 0) { Add-Check 'IIS App Pools' 'PASS' 'All running' }
+            else { Add-Check 'IIS App Pools' 'WARN' ('{0} pool(s) not running' -f $stopped.Count) }
+        } catch { Add-Check 'IIS App Pools' 'WARN' ('Query failed: {0}' -f $_.Exception.Message) }
+
+        Write-MySection 'Post-Install Verification'
+        $passCount = 0; $warnCount = 0
+        foreach ($c in $checks) {
+            if ($c['Status'] -eq 'PASS') {
+                $passCount++
+                Write-MyStep -Label $c['Name'] -Value $c['Detail'] -Status OK
+            } elseif ($c['Status'] -eq 'INFO') {
+                Write-MyStep -Label $c['Name'] -Value $c['Detail'] -Status Info
+            } else {
+                $warnCount++
+                Write-MyWarning ('{0}: {1}' -f $c['Name'], $c['Detail'])
+            }
+        }
+        if ($warnCount -eq 0) {
+            Write-MyOutput ('Post-install verification: all {0} checks passed.' -f $passCount)
+        } else {
+            Write-MyWarning ('Post-install verification: {0} passed, {1} warning(s) — review above.' -f $passCount, $warnCount)
         }
     }
 

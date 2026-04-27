@@ -577,6 +577,37 @@
         }
     }
 
+    function Enable-SMTPProtocolLogging {
+        # Security hardening: enable protocol logging (Verbose) on Default Frontend and
+        # Anonymous relay receive connectors (BSI IT-Grundschutz APP.5.3 recommendation).
+        if ($State['InstallEdge']) {
+            Write-MyVerbose 'Enable-ReceiveConnectorLogging: skipped (Edge Transport)'
+            return
+        }
+        $server  = $env:COMPUTERNAME
+        $targets = @(
+            ('Default Frontend {0}'          -f $server)
+            ('Anonymous Internal Relay - {0}' -f $server)
+            ('Anonymous External Relay - {0}' -f $server)
+        )
+        foreach ($name in $targets) {
+            try {
+                $rc = Get-ReceiveConnector -Identity "$server\$name" -ErrorAction SilentlyContinue
+                if (-not $rc) { continue }
+                if ($rc.ProtocolLoggingLevel -eq 'Verbose') {
+                    Write-MyVerbose ('Protocol logging already Verbose: "{0}"' -f $name)
+                    continue
+                }
+                Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Set-ReceiveConnector -Identity '$server\$name' -ProtocolLoggingLevel Verbose")
+                Set-ReceiveConnector -Identity "$server\$name" -ProtocolLoggingLevel Verbose -ErrorAction Stop
+                Write-MyStep -Label 'Protocol logging' -Value ('enabled: {0}' -f $name) -Status OK
+            }
+            catch {
+                Write-MyWarning ('Could not enable protocol logging on "{0}": {1}' -f $name, $_.Exception.Message)
+            }
+        }
+    }
+
     function Enable-AccessNamespaceMailConfig {
         # F26 — Configure the Access Namespace as an Accepted Domain and update the
         # default Email Address Policy so that mailboxes get a primary SMTP address

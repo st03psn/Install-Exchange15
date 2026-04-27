@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.3.0
+    Version:     1.3.1
     Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -89,6 +89,15 @@
 
     ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
+    1.3.1   Word doc: TLS rows removed from section 2 (→ chapter 8 reference); VDir table
+            removed from 5.x.4; DB Copy Status merged into 4.9 DAGs; section 4.14 removed;
+            auth-cert + doc-properties tables compact; DNS domain derived from namespace
+            parent; org version label fix; certificate collection fallback for local server.
+            Script: flat-projection ordering fixed (AccessNamespaceMail Condition now
+            evaluates after $State['Namespace'] is set); debug halt moved to before Phase 5
+            (was after); post-install verification (Test-PostInstallVerification) runs at
+            end of Phase 6 and reports PASS/WARN for services, DB mount, OWA URL, auth cert,
+            TLS 1.2 registry, and IIS app pools.
     1.3.0   License key activation: -LicenseKey param, ConfigFile LicenseKey key, Copilot
             prompt (5-min auto-skip); Set-ExchangeLicense activates Standard/Enterprise in
             Phase 6. Bugfixes: Add-ADPermission retry with backoff (P2); Default Frontend

@@ -50,7 +50,7 @@
             $rval = ($ExOrgContainer.PSBase.Children | Where-Object { $_.objectClass -eq 'msExchOrganizationContainer' }).Name
         }
         catch {
-            Write-MyVerbose "Can't find Exchange Organization object"
+            Write-MyDebug "Can't find Exchange Organization object"
             $rval = $null
         }
         return $rval

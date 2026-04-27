@@ -159,20 +159,19 @@
         }
 
         # Certificates — filter phantom entries (DateTime.MinValue from Get-ExchangeCertificate).
-        # -Server can fail after IIS restarts (implicit-remoting session state); fall back to no -Server
-        # for the local server (same result, more resilient).
+        # -Server can silently return 0 results when called from within an existing implicit-remoting
+        # session to the same server (session redirect interference). For the local server always try
+        # both approaches and use whichever returns data.
         $certFilter = { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }
-        try {
-            $srv.Certificates = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object $certFilter)
-        } catch {
-            Write-MyVerbose ('Get-ExchangeCertificate -Server {0} failed: {1}' -f $ServerName, $_)
-            if ($ServerName -ieq $env:COMPUTERNAME) {
-                try { $srv.Certificates = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
-                catch { Write-MyVerbose ('Get-ExchangeCertificate (local) failed: {0}' -f $_); $srv.Certificates = @() }
-            } else {
-                $srv.Certificates = @()
-            }
+        $certsWithServer = @()
+        $certsNoServer   = @()
+        try { $certsWithServer = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object $certFilter) }
+        catch { Write-MyVerbose ('Get-ExchangeCertificate -Server {0} failed: {1}' -f $ServerName, $_) }
+        if ($ServerName -ieq $env:COMPUTERNAME -and $certsWithServer.Count -eq 0) {
+            try { $certsNoServer = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
+            catch { Write-MyVerbose ('Get-ExchangeCertificate (local, no -Server) failed: {0}' -f $_) }
         }
+        $srv.Certificates = if ($certsNoServer.Count -gt $certsWithServer.Count) { $certsNoServer } else { $certsWithServer }
 
         # Transport agents (only present on servers with Hub Transport)
         try { $srv.TransportAgents = @(Get-TransportAgent -ErrorAction Stop) } catch { $srv.TransportAgents = @() }
@@ -185,12 +184,14 @@
         $srv.DefenderExclusions = $null
         if ($ServerName -ieq $env:COMPUTERNAME) {
             try {
-                $mp = Get-MpPreference -ErrorAction Stop
+                $mp       = Get-MpPreference    -ErrorAction Stop
+                $mpStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
                 $srv.DefenderExclusions = [pscustomobject]@{
                     ExclusionPath      = @($mp.ExclusionPath)
                     ExclusionProcess   = @($mp.ExclusionProcess)
                     ExclusionExtension = @($mp.ExclusionExtension)
-                    RealTimeEnabled    = -not $mp.DisableRealtimeMonitoring
+                    RealTimeEnabled    = if ($mpStatus) { $mpStatus.RealTimeProtectionEnabled } else { -not $mp.DisableRealtimeMonitoring }
+                    AMRunningMode      = if ($mpStatus) { [string]$mpStatus.AMRunningMode } else { $null }
                 }
             } catch { Write-MyVerbose ('Get-MpPreference failed for {0}: {1}' -f $ServerName, $_) }
         }

@@ -31,7 +31,7 @@
             if ($orgD -and $orgD.OrgConfig) {
                 $oc = $orgD.OrgConfig
                 $orgRows.Add(@((L 'Name' 'Name'), (SafeVal $oc.Name)))
-                $orgRows.Add(@((L 'Version' 'Version'), (SafeVal $oc.AdminDisplayVersion)))
+                $orgRows.Add(@((L 'Exchange-Version' 'Exchange version'), (SafeVal $oc.AdminDisplayVersion)))
                 $orgRows.Add(@((L 'MAPI/HTTP' 'MAPI/HTTP'), (SafeVal $oc.MapiHttpEnabled)))
                 $orgRows.Add(@((L 'Modern Auth (OAuth2)' 'Modern Auth (OAuth2)'), (SafeVal $oc.OAuth2ClientProfileEnabled)))
                 $orgRows.Add(@((L 'CEIP deaktiviert' 'CEIP disabled'), (SafeVal (-not $oc.CustomerFeedbackEnabled))))
@@ -106,7 +106,12 @@
                 $null = $Parts.Add((New-WdParagraph (L 'Konfigurierte Aufbewahrungs-Tags (Retention Tags) — definieren je Postfachordner oder benutzergewählt, nach welcher Frist welche Aktion (Verschieben ins Archiv, Löschen mit/ohne Wiederherstellung, MarkAsPastRetentionLimit) ausgeführt wird:' 'Configured retention tags — define per mailbox folder or user-selectable which action (move to archive, delete with/without recovery, MarkAsPastRetentionLimit) is executed after which retention period:')))
                 $rtRows = [System.Collections.Generic.List[object[]]]::new()
                 foreach ($rt in ($orgD.RetentionPolicyTags | Sort-Object Type, Name)) {
-                    $age = if ($null -ne $rt.AgeLimitForRetention) { ('{0} {1}' -f $rt.AgeLimitForRetention.Days, (L 'Tage' 'days')) } else { (L '(unbegrenzt)' '(unlimited)') }
+                    # AgeLimitForRetention is a deserialized EnhancedTimeSpan over implicit remoting —
+                    # CLR-inherited .Days returns $null on deserialized objects; parse from ToString() instead.
+                    $age = if ($null -ne $rt.AgeLimitForRetention) {
+                        $ageTs = try { [TimeSpan]::Parse($rt.AgeLimitForRetention.ToString()) } catch { $null }
+                        if ($null -ne $ageTs) { '{0} {1}' -f [int]$ageTs.TotalDays, (L 'Tage' 'days') } else { $rt.AgeLimitForRetention.ToString() }
+                    } else { (L '(unbegrenzt)' '(unlimited)') }
                     $rtRows.Add(@(
                         $rt.Name,
                         (SafeVal $rt.Type),
@@ -155,15 +160,19 @@
                         @((L 'Replikationsnetz' 'Replication networks'), (SafeVal ($dag2.ReplicationDagNetwork -join ', ')))
                     )
                     $null = $Parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $dagInfoRows))
-                    $copyRows = [System.Collections.Generic.List[object[]]]::new()
-                    try {
-                        Get-MailboxDatabaseCopyStatus -Server ($dag2.Servers | Select-Object -First 1) -ErrorAction SilentlyContinue | ForEach-Object {
-                            $copyRows.Add(@($_.Name, $_.Status, $_.CopyQueueLength, $_.ReplayQueueLength, (SafeVal $_.ContentIndexState)))
+                }
+                # Database copy status across all servers (consolidated view)
+                $anyCopies49 = @($ReportData.Servers | ForEach-Object { $_.DatabaseCopies } | Where-Object { $_ })
+                if ($anyCopies49.Count -gt 0) {
+                    $null = $Parts.Add((New-WdHeading (L 'Datenbank-Kopien-Status' 'Database Copy Status') 3))
+                    $null = $Parts.Add((New-WdParagraph (L 'CopyQueueLength = noch nicht replizierte Logs, ReplayQueueLength = noch nicht eingespielt. Im Normalbetrieb sollten beide Werte einstellig bleiben. ContentIndexState = "Healthy" ist Voraussetzung für die Postfachsuche.' 'CopyQueueLength = logs not yet replicated, ReplayQueueLength = logs not yet replayed. Both values should stay single-digit in normal operation. ContentIndexState = "Healthy" is required for mailbox search.')))
+                    $dcRows49 = [System.Collections.Generic.List[object[]]]::new()
+                    foreach ($srv2 in $ReportData.Servers) {
+                        foreach ($dc in $srv2.DatabaseCopies) {
+                            $dcRows49.Add(@($dc.DatabaseName, $dc.MailboxServer, $dc.Status, $dc.CopyQueueLength, $dc.ReplayQueueLength, (SafeVal $dc.ContentIndexState), (SafeVal $dc.ActivationPreference)))
                         }
-                    } catch { Write-MyVerbose ('Get-MailboxDatabaseCopyStatus failed: {0}' -f $_) }
-                    if ($copyRows.Count -gt 0) {
-                        $null = $Parts.Add((New-WdTable -Headers @((L 'DB-Kopie' 'DB copy'), (L 'Status' 'Status'), 'Copy-Q', 'Replay-Q', (L 'Suchindex' 'Content index')) -Rows $copyRows.ToArray()))
                     }
+                    $null = $Parts.Add((New-WdTable -Headers @((L 'Datenbank' 'Database'), (L 'Server' 'Server'), (L 'Status' 'Status'), 'Copy-Q', 'Replay-Q', (L 'Suchindex' 'Content index'), (L 'AktPref' 'ActPref')) -Rows $dcRows49.ToArray()))
                 }
             } else {
                 $null = $Parts.Add((New-WdParagraph (L '(Keine DAG konfiguriert — Standalone-Umgebung)' '(No DAG configured — standalone environment)')))
@@ -260,7 +269,7 @@
                 $authRows.Add(@((L 'Vorheriges Auth-Zertifikat' 'Previous Auth certificate'), $tpPrev))
                 $authRows.Add(@((L 'Realm' 'Realm'), (SafeVal $ac.Realm (L '(leer — Default)' '(empty — default)'))))
                 $authRows.Add(@((L 'Service Name' 'Service name'), (SafeVal $ac.ServiceName (L '(nicht gesetzt)' '(not set)'))))
-                $null = $Parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $authRows.ToArray()))
+                $null = $Parts.Add((New-WdTable -Compact -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $authRows.ToArray()))
             } else {
                 $null = $Parts.Add((New-WdParagraph (L '(AuthConfig nicht abrufbar)' '(AuthConfig not available)')))
             }
@@ -301,23 +310,9 @@
             }
             $null = $Parts.Add((New-WdTable -Headers @((L 'Dienst' 'Service'), (L 'Interne URL' 'Internal URL'), (L 'Externe URL' 'External URL'), (L 'Konsistenz' 'Consistency')) -Rows $nsRows.ToArray()))
 
-            # 4.14 Datenbank-Kopien-Status (DAG-übergreifend)
-            $anyCopies = @($ReportData.Servers | ForEach-Object { $_.DatabaseCopies } | Where-Object { $_ })
-            if ($anyCopies.Count -gt 0) {
-                $null = $Parts.Add((New-WdHeading (L '4.14 Datenbank-Kopien-Status' '4.14 Database Copy Status') 2))
-                $null = $Parts.Add((New-WdParagraph (L 'Der Status aller Datenbankkopien wird serverübergreifend erfasst. CopyQueueLength bezeichnet die Anzahl der noch nicht replizierten Log-Dateien auf die Kopie, ReplayQueueLength die Anzahl der noch nicht eingespielten Logs. Im Normalbetrieb sollten beide Werte einstellig bleiben. ContentIndexState = "Healthy" ist erforderlich für die Postfachsuche. Eine dauerhaft hohe Queue deutet auf Netzwerk- oder I/O-Probleme hin.' 'The status of all database copies is collected across all servers. CopyQueueLength is the number of log files not yet replicated to the copy, ReplayQueueLength the number of logs not yet replayed. In normal operation both values should stay single-digit. ContentIndexState = "Healthy" is required for mailbox search. A persistently high queue indicates network or I/O problems.')))
-                $dcRows = [System.Collections.Generic.List[object[]]]::new()
-                foreach ($srv2 in $ReportData.Servers) {
-                    foreach ($dc in $srv2.DatabaseCopies) {
-                        $dcRows.Add(@($dc.DatabaseName, $dc.MailboxServer, $dc.Status, $dc.CopyQueueLength, $dc.ReplayQueueLength, (SafeVal $dc.ContentIndexState), (SafeVal $dc.ActivationPreference)))
-                    }
-                }
-                $null = $Parts.Add((New-WdTable -Headers @((L 'Datenbank' 'Database'), (L 'Server' 'Server'), (L 'Status' 'Status'), 'Copy-Q', 'Replay-Q', (L 'Suchindex' 'Content index'), (L 'AktPref' 'ActPref')) -Rows $dcRows.ToArray()))
-            }
-
-            # 4.15 RBAC — Rollengruppen
+            # 4.14 RBAC — Rollengruppen (was 4.15 — 4.14 Database Copy Status merged into 4.9)
             if ($orgD.RoleGroups -and $orgD.RoleGroups.Count -gt 0) {
-                $null = $Parts.Add((New-WdHeading (L '4.15 RBAC — Rollengruppen' '4.15 RBAC — Role Groups') 2))
+                $null = $Parts.Add((New-WdHeading (L '4.14 RBAC — Rollengruppen' '4.14 RBAC — Role Groups') 2))
                 $null = $Parts.Add((New-WdParagraph (L 'Role-Based Access Control (RBAC) steuert, welche Exchange-Cmdlets und -Parameter ein Benutzer ausführen darf. Built-in-Rollengruppen wie "Organization Management", "Recipient Management" oder "View-Only Organization Management" werden von Exchange bereitgestellt. Benutzerdefinierte Rollengruppen erlauben feingranulare Delegation (z. B. Helpdesk ohne Zugriff auf Transport oder Hybrid). Diese Tabelle zeigt alle Rollengruppen mit ihren Mitgliedern — eine Dokumentation ist wichtig für Audits und Zugriffskontrollen.' 'Role-Based Access Control (RBAC) governs which Exchange cmdlets and parameters a user may run. Built-in role groups such as "Organization Management", "Recipient Management" or "View-Only Organization Management" are provided by Exchange. Custom role groups allow fine-grained delegation (e.g. helpdesk without access to transport or hybrid). This table lists all role groups with their members — documentation matters for audits and access reviews.')))
                 $rgRows = [System.Collections.Generic.List[object[]]]::new()
                 foreach ($rg in $orgD.RoleGroups) {
@@ -331,8 +326,8 @@
                 $null = $Parts.Add((New-WdParagraph (L 'Hinweis: Eine detaillierte RBAC-Aufstellung mit verwalteten Rollen liefert der Befehl Get-RoleGroup | Format-List und Get-ManagementRoleAssignment. EXpress legt optional einen separaten RBAC-Report (.txt) im Reports-Verzeichnis ab.' 'Note: A detailed RBAC listing with managed roles is available via Get-RoleGroup | Format-List and Get-ManagementRoleAssignment. EXpress optionally writes a separate RBAC report (.txt) to the reports directory.')))
             }
 
-            # 4.16 Audit-Konfiguration
-            $null = $Parts.Add((New-WdHeading (L '4.16 Audit-Konfiguration' '4.16 Audit Configuration') 2))
+            # 4.15 Audit-Konfiguration (was 4.16)
+            $null = $Parts.Add((New-WdHeading (L '4.15 Audit-Konfiguration' '4.15 Audit Configuration') 2))
             $null = $Parts.Add((New-WdParagraph (L 'Das Admin-Auditprotokoll zeichnet alle Exchange-Verwaltungscmdlets auf, die von Administratoren ausgeführt werden (wer hat wann was geändert). Es ist Grundlage für Compliance-Anforderungen wie ISO 27001, BSI-Grundschutz und DSGVO-Rechenschaftspflicht. Das Protokoll wird in einem dedizierten verborgenen Postfach in der Exchange-Organisation gespeichert und kann per Search-AdminAuditLog abgefragt werden. Die Aufbewahrungsfrist (AdminAuditLogAgeLimit) bestimmt, wie lange Einträge erhalten bleiben (Standard: 90 Tage).' 'The admin audit log records all Exchange management cmdlets executed by administrators (who changed what and when). It is the basis for compliance requirements such as ISO 27001, BSI baseline protection and GDPR accountability. The log is stored in a dedicated hidden mailbox in the Exchange organisation and can be queried via Search-AdminAuditLog. The retention period (AdminAuditLogAgeLimit) determines how long entries are kept (default: 90 days).')))
             if ($orgD.AdminAuditLog) {
                 $aal = $orgD.AdminAuditLog
@@ -351,8 +346,8 @@
                 $null = $Parts.Add((New-WdParagraph (L '(Admin-Auditprotokoll-Konfiguration nicht abrufbar)' '(Admin audit log configuration not available)')))
             }
 
-            # 4.17 Exchange AD-Sicherheitsgruppen und Dienstkonten
-            $null = $Parts.Add((New-WdHeading (L '4.17 Exchange AD-Sicherheitsgruppen und Dienstkonten' '4.17 Exchange AD Security Groups and Service Accounts') 2))
+            # 4.16 Exchange AD-Sicherheitsgruppen und Dienstkonten (was 4.17)
+            $null = $Parts.Add((New-WdHeading (L '4.16 Exchange AD-Sicherheitsgruppen und Dienstkonten' '4.16 Exchange AD Security Groups and Service Accounts') 2))
             $null = $Parts.Add((New-WdParagraph (L 'Exchange erstellt bei der Installation und PrepareAD automatisch universelle Sicherheitsgruppen im Active Directory. Diese Gruppen steuern die Exchange-internen AD-Berechtigungen und sollten niemals manuell verändert werden. Dedizierte Dienstkonten für externe Integrationen (Backup, Monitoring, Archivierung, Relay) sind nach dem Principle of Least Privilege zu erstellen und mit minimalen Exchange-Rechten auszustatten.' 'Exchange creates universal security groups in Active Directory automatically during installation and PrepareAD. These groups control Exchange-internal AD permissions and must never be modified manually. Dedicated service accounts for external integrations (backup, monitoring, archiving, relay) must be created following the Principle of Least Privilege and assigned minimum Exchange rights.')))
             $adSecGrpRows = [System.Collections.Generic.List[object[]]]::new()
             $adSecGrpRows.Add(@('Exchange Trusted Subsystem',        (L 'Exchange-Servercomputer — vollständige AD-Kontrolle über Exchange-Objekte' 'Exchange server computers — full AD control over Exchange objects')))

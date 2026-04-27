@@ -6,6 +6,27 @@ Full version history for EXpress. See [README.md](README.md) for overview and qu
 
 ---
 
+## v1.3.1 (2026-04-27) — bugfix release
+
+### Script fixes
+
+- **`AccessNamespaceMail` flat-projection ordering** — the AdvancedFeatures flat projection ran before `$State['Namespace']` was populated from the `-Namespace` parameter. The `AccessNamespaceMail` Condition (`$State['Namespace'] -and -not $State['ExistingOrg']`) evaluated `$null` for Namespace, persisted `$false` in state, and silently skipped `Enable-AccessNamespaceMailConfig` in Phase 6. Projection block moved to after all state assignments.
+- **Debug halt moved before Phase 5** — the Copilot debug-mode halt (after Phase 4 for VM snapshot) checked `LastSuccessfulPhase -eq 4` after Phase 5 had already completed. Moved to immediately before `$State['InstallPhase']++` where `InstallPhase` is still 4.
+- **Post-install verification (`Test-PostInstallVerification`)** — new function runs at the end of Phase 6 and reports PASS/WARN for: critical Exchange services (Transport, IS, ADTopology, ServiceHost), all databases mounted, OWA InternalUrl configured, auth certificate valid, TLS 1.2 Schannel server-side registry entries present, and IIS MSExchange app pools running.
+
+### Word document fixes
+
+- **TLS rows removed from section 2** — TLS 1.0/1.1/1.2/1.3 rows removed from the installation-parameters table in section 2; replaced with a one-line reference note pointing to chapter 8 (Schannel/TLS hardening) where the actual settings are documented.
+- **VDir table removed from section 5.x.4** — the per-server virtual-directory sub-section was a duplicate of the consolidated VDir overview in section 4.13. Removed; section 4.13 is the single source.
+- **Database Copy Status merged into 4.9** — section 4.14 (standalone DB copy status) merged as a H3 sub-section under 4.9 (DAGs). Sections 4.15–4.17 renumbered to 4.14–4.16.
+- **Auth-cert table compact** — section 4.12 auth-certificate table now uses `New-WdTable -Compact` (smaller font, tighter rows).
+- **Document-properties table compact** — section 1 document-properties table uses `New-WdTable -Compact`.
+- **DNS domain from namespace parent** — section 6.1 DNS record table now derives the mail domain from the namespace parent (`mail.example.com` → `example.com`) and filters non-routable accepted domains (`.local`, `.lan`, `.internal`, `.corp`). Previously included raw accepted domains such as the internal AD domain.
+- **Org version label** — section 4.1 "Version" row renamed to "Exchange version" to distinguish it from other version rows in the table.
+- **Certificate collection fallback** — `Get-ExchangeCertificate -Server <local>` can silently return 0 results due to implicit-remoting session interference. `Get-ServerReportData` now retries without `-Server` when running on the local machine and the first call returns empty; picks whichever result set is larger.
+
+---
+
 ## v1.3.0 (2026-04-27) — feature release
 
 ### License key activation (new)
