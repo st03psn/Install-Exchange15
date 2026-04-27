@@ -15,6 +15,17 @@ Full version history for EXpress. See [README.md](README.md) for overview and qu
 - **Copilot interactive prompt** — in Copilot mode a prompt appears after the Advanced Configuration menu with a 5-minute auto-skip countdown. Press Enter immediately to skip (Trial). PS2Exe / compiled mode falls back to `Read-Host`.
 - **`Set-ExchangeLicense` function** — activates the key via `Set-ExchangeServer -ProductKey`, verifies the resulting edition, and logs the outcome. Key is never written to the command register (redacted).
 
+### Word document improvements
+
+- **Org-wide placeholder notes** — sections that are empty on a fresh Exchange installation (4.5 Transport Rules, 4.9 DAG, 4.10 Send Connectors, 4.11 Federation/Hybrid) now emit a visible `📋 Note: …` paragraph when the table has no data, guiding the reviewer to populate the section after go-live.
+- **Section 4.17 replaced** — the "Service Accounts and Permissions" section contained a duplicate RBAC table identical to 4.15. Replaced with: (a) a table of Exchange built-in AD security groups (Exchange Trusted Subsystem, Exchange Windows Permissions, Exchange Servers, Managed Availability Servers, ExchangeLegacyInterop) with purpose descriptions; (b) a placeholder service-account table for the customer to fill in after installation (Backup, Monitoring, SMTP Relay, Archiving, Other integrations).
+- **VC++ Runtimes table removed** — section 7.x "Visual C++ Runtimes" offered no meaningful documentation value for the installation record and has been removed.
+- **Installation parameters table — all or none** — section 2 previously showed optional parameters (Namespace, Download Domain, DAG, Certificate path, Log retention, Relay subnets) conditionally. All parameters are now always present; unset values show `—` instead of being silently omitted.
+- **MSExchangePowerShellAppPool row removed** — the "Remote PowerShell pool — Started/Stopped" row was removed from the section 8 hardening table; EXpress disables this app pool as a security measure so the value is always "Stopped" and adds no information.
+- **Transport Agents removed from section 5.x** — the per-server Transport Agents sub-section was a duplicate of section 9 (Anti-Spam). Removed from the per-server block; section 9 remains the single authoritative source.
+- **Executed commands rendered as a table** — section 14 previously rendered each command as a monospace `New-WdCode` block that overflowed the page width on long cmdlets. Commands are now rendered in a three-column table (`#`, `Category`, `Command`) with a wide command column (`7200` twips) that wraps correctly; category sub-headings are replaced by the inline Category column.
+- **German strings fixed in English document** — the ports table (6.2) had a hardcoded German `'Protokoll'` column header; the acceptance-test table (16) had hardcoded `'SMTP eingehend'`/`'SMTP ausgehend'` row labels. All three are now properly wrapped in `L('DE', 'EN')`.
+
 ### Bugfixes
 
 - **Default Frontend `ProtocolLoggingLevel Verbose`** — when removing `AnonymousUsers` from the Default Frontend receive connector, protocol logging is now also enabled in the same `Set-ReceiveConnector` call (was silently skipped).

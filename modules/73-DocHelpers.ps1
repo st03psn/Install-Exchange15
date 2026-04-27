@@ -61,8 +61,13 @@
             $null = $Parts.Add((New-WdHeading (L '4.5 Transportregeln' '4.5 Transport Rules') 2))
             $trRows = [System.Collections.Generic.List[object[]]]::new()
             foreach ($tr in $orgD.TransportRules) { $trRows.Add(@($tr.Name, $tr.State, $tr.Priority, (SafeVal $tr.Comments))) }
-            if ($trRows.Count -eq 0) { $trRows.Add(@((L '(keine Regeln konfiguriert)' '(no rules configured)'), '', '', '')) }
-            $null = $Parts.Add((New-WdTable -Headers @((L 'Name' 'Name'), (L 'Status' 'State'), (L 'Priorität' 'Priority'), (L 'Kommentar' 'Comment')) -Rows $trRows.ToArray()))
+            if ($trRows.Count -eq 0) {
+                $trRows.Add(@((L '(keine Regeln konfiguriert)' '(no rules configured)'), '', '', ''))
+                $null = $Parts.Add((New-WdTable -Headers @((L 'Name' 'Name'), (L 'Status' 'State'), (L 'Priorität' 'Priority'), (L 'Kommentar' 'Comment')) -Rows $trRows.ToArray()))
+                $null = $Parts.Add((New-WdParagraph (L '📋 Hinweis: Auf einer neu installierten Exchange-Organisation sind Transportregeln typischerweise noch nicht konfiguriert. Dieser Abschnitt ist nach Einrichtung der Kundenumgebung zu ergänzen (z. B. Disclaimer, Routing-Regeln, Compliance-Regeln).' '📋 Note: Transport rules are typically not yet configured on a freshly installed Exchange organisation. This section should be completed after the customer environment has been set up (e.g. disclaimers, routing rules, compliance rules).')))
+            } else {
+                $null = $Parts.Add((New-WdTable -Headers @((L 'Name' 'Name'), (L 'Status' 'State'), (L 'Priorität' 'Priority'), (L 'Kommentar' 'Comment')) -Rows $trRows.ToArray()))
+            }
 
             # 4.6 Transport-Konfiguration (Org)
             $null = $Parts.Add((New-WdHeading (L '4.6 Transport-Konfiguration' '4.6 Transport Configuration') 2))
@@ -162,6 +167,7 @@
                 }
             } else {
                 $null = $Parts.Add((New-WdParagraph (L '(Keine DAG konfiguriert — Standalone-Umgebung)' '(No DAG configured — standalone environment)')))
+                $null = $Parts.Add((New-WdParagraph (L '📋 Hinweis: Bei einer neuen Installation ohne DAG ist dieser Abschnitt leer. Nach Einrichtung einer Database Availability Group ist dieser Abschnitt zu aktualisieren.' '📋 Note: This section is empty on a new installation without DAG. Update this section after a Database Availability Group has been configured.')))
             }
 
             # 4.10 Send Connectors
@@ -173,8 +179,12 @@
                 $maxMsgSc   = if ($sc.MaxMessageSize) { $sc.MaxMessageSize.ToString() } else { '—' }
                 $scRows.Add(@($sc.Name, ($sc.AddressSpaces -join ', '), (Mask-Ip (SafeVal ($sc.SmartHosts -join ', '))), (Mask-Ip ($sc.SourceTransportServers -join ', ')), (SafeVal $sc.Fqdn '—'), $reqTlsSc, $maxMsgSc, $enabledSc))
             }
-            if ($scRows.Count -eq 0) { $scRows.Add(@((L '(keine konfiguriert)' '(none configured)'), '', '', '', '', '', '', '')) }
+            $scEmpty = $scRows.Count -eq 0
+            if ($scEmpty) { $scRows.Add(@((L '(keine konfiguriert)' '(none configured)'), '', '', '', '', '', '', '')) }
             $null = $Parts.Add((New-WdTable -Headers @((L 'Name' 'Name'), (L 'Adressraum' 'Address space'), 'Smarthost', (L 'Quell-Server' 'Source servers'), 'FQDN', 'TLS', (L 'Max. Größe' 'Max size'), (L 'Status' 'Status')) -Rows $scRows.ToArray()))
+            if ($scEmpty) {
+                $null = $Parts.Add((New-WdParagraph (L '📋 Hinweis: Auf einer neuen Exchange-Installation ist noch kein Send Connector konfiguriert. EXpress legt auf Wunsch einen Standard-Send-Connector an (siehe Installationsparameter). Bitte nach Abschluss der Konfiguration ergänzen.' '📋 Note: No send connector is configured on a new Exchange installation. EXpress can create a default send connector on request (see installation parameters). Please update this section after completing the configuration.')))
+            }
 
             # 4.11 Federation / Hybrid / OAuth
             $null = $Parts.Add((New-WdHeading (L '4.11 Federation, Hybrid und OAuth' '4.11 Federation, Hybrid and OAuth') 2))
@@ -204,6 +214,7 @@
             }
             if (-not $orgD.FederationTrust -and -not $orgD.HybridConfig -and -not ($orgD.IntraOrgConnectors | Where-Object { $_ })) {
                 $null = $Parts.Add((New-WdParagraph (L '(Keine Federation/Hybrid-Konfiguration vorhanden — reine on-premises Umgebung)' '(No federation/hybrid configuration present — on-premises only environment)')))
+                $null = $Parts.Add((New-WdParagraph (L '📋 Hinweis: Federation Trust, Hybrid Configuration und IntraOrg-Connectoren werden erst nach Ausführung des Hybrid Configuration Wizard (HCW) oder einer manuellen Hybrid-Konfiguration angelegt. Dieser Abschnitt ist nach einer Cloud-Migration oder Hybrid-Einrichtung zu aktualisieren.' '📋 Note: Federation trust, hybrid configuration and intra-org connectors are only created after running the Hybrid Configuration Wizard (HCW) or a manual hybrid setup. Update this section after a cloud migration or hybrid setup.')))
             }
 
             # 4.12 AuthConfig + Auth-Zertifikat
@@ -340,22 +351,24 @@
                 $null = $Parts.Add((New-WdParagraph (L '(Admin-Auditprotokoll-Konfiguration nicht abrufbar)' '(Admin audit log configuration not available)')))
             }
 
-            # 4.17 Service-Accounts und Berechtigungen (Exchange RBAC)
-            $null = $Parts.Add((New-WdHeading (L '4.17 Service-Accounts und Berechtigungen' '4.17 Service Accounts and Permissions') 2))
-            $null = $Parts.Add((New-WdParagraph (L 'Exchange Server verwendet rollenbasierte Zugriffssteuerung (RBAC). Die folgende Tabelle dokumentiert die Mitglieder der wichtigsten Exchange-Rollengruppen. Privilegierte Konten sollten auf das Minimum beschränkt sein (Principle of Least Privilege). Dienstkonten für externe Integrationen (Backup, Monitoring, Archivierung) sollten dedizierte AD-Konten mit minimalen Exchange-Berechtigungen nutzen.' 'Exchange Server uses Role-Based Access Control (RBAC). The table below documents the members of the most important Exchange role groups. Privileged accounts should be limited to the minimum necessary (Principle of Least Privilege). Service accounts for external integrations (backup, monitoring, archiving) should use dedicated AD accounts with minimum Exchange permissions.')))
-            $rbacRoles2 = @('Organization Management','Server Management','Recipient Management','Hygiene Management','Compliance Management','View-Only Organization Management')
-            $rbacRows2 = [System.Collections.Generic.List[object[]]]::new()
-            foreach ($rg2 in $rbacRoles2) {
-                try {
-                    $rgMembers = @(Get-RoleGroupMember $rg2 -ErrorAction SilentlyContinue)
-                    $rgMemberList = if ($rgMembers -and $rgMembers.Count -gt 0) { ($rgMembers | ForEach-Object { if ($_.Name) { $_.Name } else { $_.DisplayName } }) -join "`n" } else { (L '(leer)' '(empty)') }
-                    $rbacRows2.Add(@($rg2, $rgMemberList))
-                } catch {
-                    $rbacRows2.Add(@($rg2, (L '(nicht abfragbar)' '(not available)')))
-                }
-            }
-            if ($rbacRows2.Count -eq 0) { $rbacRows2.Add(@((L '(RBAC-Daten nicht abrufbar)' '(RBAC data not available)'), '')) }
-            $null = $Parts.Add((New-WdTable -Headers @((L 'Rollengruppe' 'Role group'), (L 'Mitglieder' 'Members')) -Rows $rbacRows2.ToArray()))
+            # 4.17 Exchange AD-Sicherheitsgruppen und Dienstkonten
+            $null = $Parts.Add((New-WdHeading (L '4.17 Exchange AD-Sicherheitsgruppen und Dienstkonten' '4.17 Exchange AD Security Groups and Service Accounts') 2))
+            $null = $Parts.Add((New-WdParagraph (L 'Exchange erstellt bei der Installation und PrepareAD automatisch universelle Sicherheitsgruppen im Active Directory. Diese Gruppen steuern die Exchange-internen AD-Berechtigungen und sollten niemals manuell verändert werden. Dedizierte Dienstkonten für externe Integrationen (Backup, Monitoring, Archivierung, Relay) sind nach dem Principle of Least Privilege zu erstellen und mit minimalen Exchange-Rechten auszustatten.' 'Exchange creates universal security groups in Active Directory automatically during installation and PrepareAD. These groups control Exchange-internal AD permissions and must never be modified manually. Dedicated service accounts for external integrations (backup, monitoring, archiving, relay) must be created following the Principle of Least Privilege and assigned minimum Exchange rights.')))
+            $adSecGrpRows = [System.Collections.Generic.List[object[]]]::new()
+            $adSecGrpRows.Add(@('Exchange Trusted Subsystem',        (L 'Exchange-Servercomputer — vollständige AD-Kontrolle über Exchange-Objekte' 'Exchange server computers — full AD control over Exchange objects')))
+            $adSecGrpRows.Add(@('Exchange Windows Permissions',       (L 'Lese-/Schreibzugriff auf AD-Benutzerobjekte für Transport und EWS' 'Read/write access to AD user objects for transport and EWS')))
+            $adSecGrpRows.Add(@('Exchange Servers',                   (L 'Alle Exchange-Servercomputer in der Organisation' 'All Exchange server computers in the organisation')))
+            $adSecGrpRows.Add(@('Managed Availability Servers',       (L 'Managed-Availability-Überwachung (Health Monitoring)' 'Managed Availability monitoring (Health Monitoring)')))
+            $adSecGrpRows.Add(@('ExchangeLegacyInterop',              (L 'Interoperabilität mit Exchange 2010 und älter (kann leer sein)' 'Interoperability with Exchange 2010 and older (may be empty)')))
+            $null = $Parts.Add((New-WdTable -Headers @((L 'Gruppe' 'Group'), (L 'Zweck' 'Purpose')) -Rows $adSecGrpRows.ToArray() -ColWidths @(2800, 6460)))
+            $null = $Parts.Add((New-WdParagraph (L 'Dienstkonten — bitte nach der Installation ergänzen:' 'Service accounts — please fill in after installation:')))
+            $svcAcctRows = [System.Collections.Generic.List[object[]]]::new()
+            $svcAcctRows.Add(@((L 'Backup (z. B. Veeam, BackupExec)' 'Backup (e.g. Veeam, BackupExec)'), '— ', (L 'bitte eintragen' 'please fill in')))
+            $svcAcctRows.Add(@((L 'Monitoring (z. B. SCOM, Zabbix)' 'Monitoring (e.g. SCOM, Zabbix)'), '—', (L 'bitte eintragen' 'please fill in')))
+            $svcAcctRows.Add(@((L 'SMTP-Relay (Application Mail)' 'SMTP relay (application mail)'), '—', (L 'bitte eintragen' 'please fill in')))
+            $svcAcctRows.Add(@((L 'Archivierung / Journaling' 'Archiving / journaling'), '—', (L 'bitte eintragen' 'please fill in')))
+            $svcAcctRows.Add(@((L 'Sonstige Integrationen' 'Other integrations'), '—', (L 'bitte eintragen' 'please fill in')))
+            $null = $Parts.Add((New-WdTable -Headers @((L 'Integration' 'Integration'), (L 'Konto (sAMAccountName)' 'Account (sAMAccountName)'), (L 'Berechtigungen / Rolle' 'Permissions / Role')) -Rows $svcAcctRows.ToArray() -ColWidths @(3000, 2500, 3760)))
 
             # Exchange Online / Microsoft 365 was formerly 4.17 inside "Organisation".
             # Moved to its own top-level section 15 (before Operative Runbooks) — belongs

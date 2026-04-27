@@ -216,12 +216,13 @@
             $paramRows = [System.Collections.Generic.List[object[]]]::new()
             $paramRows.Add(@((L 'Setup-Version' 'Setup version'), (SafeVal (& { try { (Get-SetupTextVersion $State['SetupVersion']) } catch { $State['SetupVersion'] } }))))
             $paramRows.Add(@((L 'Installationspfad' 'Install path'), (SafeVal $State['InstallPath'])))
-            if ($State['Namespace'])        { $paramRows.Add(@('Namespace', (SafeVal $State['Namespace']))) }
-            if ($State['DownloadDomain'])   { $paramRows.Add(@('OWA Download Domain', (SafeVal $State['DownloadDomain']))) }
-            if ($State['DAGName'])          { $paramRows.Add(@('DAG', (SafeVal $State['DAGName']))) }
-            if ($State['CertificatePath'])  { $paramRows.Add(@((L 'Zertifikatspfad' 'Certificate path'), (Mask-Val (SafeVal $State['CertificatePath'])))) }
-            if ($State['LogRetentionDays']) { $paramRows.Add(@((L 'Log-Aufbewahrung' 'Log retention'), ('{0} {1}' -f $State['LogRetentionDays'], (L 'Tage' 'days')))) }
-            if ($State['RelaySubnets'])     { $paramRows.Add(@((L 'Relay-Subnetze' 'Relay subnets'), (Mask-Ip (($State['RelaySubnets'] -join ', '))))) }
+            $paramRows.Add(@('Namespace',                        (SafeVal $State['Namespace']       '—')))
+            $paramRows.Add(@('OWA Download Domain',              (SafeVal $State['DownloadDomain']  '—')))
+            $paramRows.Add(@('DAG',                              (SafeVal $State['DAGName']         '—')))
+            $paramRows.Add(@((L 'Zertifikatspfad' 'Certificate path'), (Mask-Val (SafeVal $State['CertificatePath'] '—'))))
+            $logRet = if ($State['LogRetentionDays']) { '{0} {1}' -f $State['LogRetentionDays'], (L 'Tage' 'days') } else { '—' }
+            $paramRows.Add(@((L 'Log-Aufbewahrung' 'Log retention'), $logRet))
+            $paramRows.Add(@((L 'Relay-Subnetze' 'Relay subnets'),   (if ($State['RelaySubnets']) { Mask-Ip (($State['RelaySubnets'] -join ', ')) } else { '—' })))
             $paramRows.Add(@((L 'Modus' 'Mode'), $modeText))
             $paramRows.Add(@('TLS 1.2', (Format-RegBool $State['EnableTLS12'])))
             $paramRows.Add(@('TLS 1.3', (Format-RegBool $State['EnableTLS13'])))
@@ -393,18 +394,7 @@
                 if ($certRows2.Count -eq 0) { $certRows2.Add(@((L '(keine)' '(none)'), '', '', '', '')) }
                 $null = $parts.Add((New-WdTable -Compact -Headers @('Subject', (L 'Ablauf' 'Expiry'), (L 'Verbleibend' 'Remaining'), (L 'Dienste' 'Services'), (L 'Fingerabdruck' 'Thumbprint')) -Rows $certRows2.ToArray()))
 
-                # 5.x.7 Transport Agents
-                if ($srvD.TransportAgents -and $srvD.TransportAgents.Count -gt 0) {
-                    $null = $parts.Add((New-WdHeading (L 'Transport Agents' 'Transport Agents') 3))
-                    $taRows = [System.Collections.Generic.List[object[]]]::new()
-                    foreach ($ta in $srvD.TransportAgents) {
-                        $taState = if ($ta.Enabled) { (L 'Aktiv' 'Enabled') } else { (L 'Inaktiv' 'Disabled') }
-                        # TransportAgent.Name can be empty after implicit remoting deserialization; fall back to Identity.
-                        $taName = if ($ta.Name) { [string]$ta.Name } elseif ($ta.Identity) { [string]$ta.Identity } else { '(unbenannt)' }
-                        $taRows.Add(@($taName, $taState, $ta.Priority))
-                    }
-                    $null = $parts.Add((New-WdTable -Headers @('Agent', (L 'Status' 'Status'), (L 'Priorität' 'Priority')) -Rows $taRows.ToArray()))
-                }
+                # Transport Agents are documented in section 9 (Anti-Spam) — not repeated here.
             }
         }
 
@@ -496,7 +486,7 @@
         # 6.2 Erforderliche Ports und Firewall-Regeln
         $null = $parts.Add((New-WdHeading (L '6.2 Erforderliche Ports und Firewall-Regeln' '6.2 Required Ports and Firewall Rules') 2))
         $null = $parts.Add((New-WdParagraph (L 'Die folgende Tabelle listet die für den Exchange Server-Betrieb erforderlichen TCP-Ports auf. Externe Ports müssen durch eine Firewall oder einen Reverse-Proxy abgesichert werden — Exchange Server sollte niemals direkt aus dem Internet erreichbar sein.' 'The table below lists the TCP ports required for Exchange Server operation. External ports must be secured by a firewall or reverse proxy — Exchange Server should never be directly reachable from the internet.')))
-        $null = $parts.Add((New-WdTable -Headers @('Port', 'Protokoll', (L 'Dienst / Verwendung' 'Service / Purpose'), (L 'Sichtbarkeit' 'Visibility')) -Rows @(
+        $null = $parts.Add((New-WdTable -Headers @('Port', (L 'Protokoll' 'Protocol'), (L 'Dienst / Verwendung' 'Service / Purpose'), (L 'Sichtbarkeit' 'Visibility')) -Rows @(
             ,@('25',    'TCP', (L 'SMTP eingehend (extern + intern)' 'SMTP inbound (external + internal)'),                                               (L 'extern + intern' 'external + internal'))
             ,@('587',   'TCP', (L 'SMTP Submission / AUTH (Client-Einlieferung)' 'SMTP Submission / AUTH (client submission)'),                             (L 'intern / auth. Clients' 'internal / auth. clients'))
             ,@('443',   'TCP', (L 'HTTPS: OWA, ECP, EWS, Autodiscover, MAPI/HTTP, ActiveSync, OAB' 'HTTPS: OWA, ECP, EWS, Autodiscover, MAPI/HTTP, ActiveSync, OAB'), (L 'extern + intern' 'external + internal'))
@@ -531,18 +521,6 @@
             } catch { Write-MyVerbose ('Get-ExchangeServer (local install info) failed: {0}' -f $_) }
             $exInstRows2.Add(@((L 'Installationspfad' 'Install path'), (SafeVal $State['InstallPath'])))
             $null = $parts.Add((New-WdTable -Headers @((L 'Eigenschaft' 'Property'), (L 'Wert' 'Value')) -Rows $exInstRows2.ToArray()))
-
-            # 7.x VC++ Runtimes
-            $null = $parts.Add((New-WdHeading (L '7.x Visual C++ Runtimes' '7.x Visual C++ Runtimes') 2))
-            $null = $parts.Add((New-WdParagraph (L 'Exchange Server setzt bestimmte Visual C++ Redistributable-Versionen voraus (VC++ 2012 und VC++ 2013 x64). HealthChecker prüft das Mindest-Build (VC++ 2013: 12.0.40664). Fehlende oder veraltete Redistributables führen zu Setup-Fehlern oder HC-Warnungen.' 'Exchange Server requires specific Visual C++ Redistributable versions (VC++ 2012 and VC++ 2013 x64). HealthChecker validates the minimum build (VC++ 2013: 12.0.40664). Missing or outdated redistributables cause setup errors or HC warnings.')))
-            $vcRows = [System.Collections.Generic.List[object[]]]::new()
-            $vcInstalled = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Microsoft Visual C++ *' } | Select-Object DisplayName, DisplayVersion, InstallDate | Sort-Object DisplayName)
-            foreach ($vc in $vcInstalled) {
-                $vcDate = if ($vc.InstallDate) { $vc.InstallDate } else { '—' }
-                $vcRows.Add(@((SafeVal $vc.DisplayName), (SafeVal $vc.DisplayVersion), $vcDate))
-            }
-            if ($vcRows.Count -eq 0) { $vcRows.Add(@((L '(keine VC++ Redistributables gefunden)' '(no VC++ redistributables found)'), '', '')) }
-            $null = $parts.Add((New-WdTable -Headers @((L 'Paket' 'Package'), (L 'Version' 'Version'), (L 'Installiert am' 'Install date')) -Rows $vcRows.ToArray()))
 
             # 7.1 Geplante Tasks (MEAC + Log Cleanup) — operative Exchange-Aufgaben, keine OS-Härtungen
             if ($rd.Org -and $rd.Org.ScheduledTasks -and $rd.Org.ScheduledTasks.Count -gt 0) {
@@ -681,9 +659,6 @@
         # Authentication flags on OWA/ECP
         $owaBasic = try { (Get-OwaVirtualDirectory -Server $env:COMPUTERNAME -ErrorAction Stop | Select-Object -First 1).BasicAuthentication.ToString() } catch { '(unknown)' }
         $exHardRows.Add(@('OWA Basic Authentication', (SafeVal $owaBasic), (L 'Basic-Auth auf OWA ist gegen Credential-Stuffing anfällig' 'Basic auth on OWA is vulnerable to credential stuffing')))
-        # PowerShell Autodiscover app pool (F19: disabled by EXpress; mitigates ProxyLogon-style vectors)
-        $psPool = try { (Get-Website | Where-Object { $_.Name -eq 'Default Web Site' } | Out-Null); (Get-WebAppPoolState -Name 'MSExchangePowerShellAppPool' -ErrorAction Stop).Value } catch { '(unknown)' }
-        $exHardRows.Add(@('MSExchangePowerShellAppPool', (SafeVal $psPool), (L 'Remote-PowerShell-Pool — Started/Stopped' 'Remote PowerShell pool — Started/Stopped')))
         # ECC certificate support (cipher modernization)
         $exHardRows.Add(@('ECC Certificate Support', (Format-RegBool (Get-SecReg 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Diagnostics' 'EnableEccCertificateSupport')), (L 'Moderne ECC-Zertifikate in Exchange zugelassen' 'Modern ECC certificates permitted in Exchange')))
         # Setup-Override files (SettingOverride framework) — CVE-bezogene Kill-Switches
@@ -954,18 +929,22 @@
             }
             else {
                 $null = $parts.Add((New-WdParagraph (L 'Die folgenden Befehle wurden in chronologischer Reihenfolge mit der angegebenen Syntax ausgeführt. Passwörter und Secure-Strings sind durch Platzhalter ersetzt.' 'The following commands were executed in chronological order with the shown syntax. Passwords and secure strings are replaced by placeholders.')))
-                $byCat = $execCmds | Group-Object -Property Category | Sort-Object Name
-                $catIdx = 0
+                # Render as a table grouped by category: #, Category, Command
+                # A table with text-wrap wraps long cmdlets correctly; code blocks overflow the page.
+                $cmdRows = [System.Collections.Generic.List[object[]]]::new()
+                $cmdNum  = 0
+                $byCat   = $execCmds | Group-Object -Property Category | Sort-Object Name
                 foreach ($g in $byCat) {
-                    $catIdx++
                     $catLabel = if ($g.Name) { $g.Name } else { (L 'Sonstige' 'Other') }
-                    $null = $parts.Add((New-WdHeading ('14.{0} {1}' -f $catIdx, $catLabel) 2))
                     foreach ($e in $g.Group) {
                         foreach ($cmd in ($e.Command -split '; ')) {
-                            $null = $parts.Add((New-WdCode $cmd.Trim()))
+                            $cmdNum++
+                            $cmdRows.Add(@([string]$cmdNum, $catLabel, $cmd.Trim()))
                         }
                     }
                 }
+                # ColWidths: # 380, Category 1680, Command 7200 — total 9260 twips
+                $null = $parts.Add((New-WdTable -Headers @('#', (L 'Kategorie' 'Category'), (L 'Befehl' 'Command')) -Rows $cmdRows.ToArray() -ColWidths @(380, 1680, 7200)))
             }
             $null = $parts.Add((New-WdParagraph (L 'Die vollständige Installationsausgabe (inkl. Statusmeldungen, Versionsprüfungen und Fehlern) steht in der EXpress-Logdatei (siehe Kapitel 1 "Dokumenteigenschaften" → "Logdatei").' 'The complete installation output (including status messages, version checks, and errors) is available in the EXpress log file (see chapter 1 "Document Properties" → "Log file").' )))
         }
@@ -1003,8 +982,8 @@
             ,@('ECP',         ('{0}/ecp — Admin-Login, Postfach erstellen / Admin login, create mailbox' -f $nsBase),                '', '')
             ,@('EWS',         ('{0}/ews/exchange.asmx — HTTP 200 / 401' -f $nsBase),                                                '', '')
             ,@('Autodiscover', ('{0}/autodiscover/autodiscover.xml — HTTP 200 / 401' -f $nsBase),                                   '', '')
-            ,@('SMTP eingehend', (L 'Testmail an internes Postfach senden (extern → Exchange)' 'Send test mail to internal mailbox (external → Exchange)'),   '', '')
-            ,@('SMTP ausgehend', (L 'Testmail vom Exchange nach extern senden' 'Send test mail from Exchange to external'),           '', '')
+            ,@((L 'SMTP eingehend' 'SMTP inbound'),  (L 'Testmail an internes Postfach senden (extern → Exchange)' 'Send test mail to internal mailbox (external → Exchange)'),   '', '')
+            ,@((L 'SMTP ausgehend' 'SMTP outbound'), (L 'Testmail vom Exchange nach extern senden' 'Send test mail from Exchange to external'),           '', '')
             ,@('MAPI/HTTP',     (L 'Outlook-Client verbinden (Autodiscover, kein TCP 135 erforderlich)' 'Connect Outlook client (Autodiscover, no TCP 135 required)'), '', '')
             ,@('ActiveSync',    (L 'Mobiles Gerät verbinden (EAS, HTTPS 443)' 'Connect mobile device (EAS, HTTPS 443)'),             '', '')
             ,@('Zertifikat',    (L 'TLS-Zertifikat gültig, kein Browser-Warning' 'TLS certificate valid, no browser warning'),       '', '')
