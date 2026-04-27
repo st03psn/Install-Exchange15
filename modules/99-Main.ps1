@@ -294,7 +294,8 @@
             $RecipientMgmtCleanup       = [switch](Get-CfgValue 'RecipientMgmtCleanup'       ([bool]$RecipientMgmtCleanup))
 
             # Security / TLS switches
-            $Autopilot      = [switch](Get-CfgValue 'Autopilot'      ([bool]$Autopilot))
+            # ConfigFile implies Autopilot=true — override with Autopilot=$false to keep Copilot prompts.
+            $Autopilot      = [switch](Get-CfgValue 'Autopilot'      $true)
             $IncludeFixes   = [switch](Get-CfgValue 'IncludeFixes'   ([bool]$IncludeFixes))
             $DisableSSL3    = [switch](Get-CfgValue 'DisableSSL3'    ([bool]$DisableSSL3))
             $DisableRC4     = [switch](Get-CfgValue 'DisableRC4'     ([bool]$DisableRC4))
@@ -321,7 +322,8 @@
             $DownloadDomain       = Get-CfgValue 'DownloadDomain' $DownloadDomain
             $RunEOMT              = [switch](Get-CfgValue 'RunEOMT'              ([bool]$RunEOMT))
             $WaitForADSync        = [switch](Get-CfgValue 'WaitForADSync'        ([bool]$WaitForADSync))
-            $LogRetentionDays     = Get-CfgValue 'LogRetentionDays' $LogRetentionDays
+            # ConfigFile implies log cleanup active — default 30 days unless explicitly set or set to 0.
+            $LogRetentionDays     = Get-CfgValue 'LogRetentionDays' 30
             $RelaySubnets         = Get-CfgValue 'RelaySubnets'         $RelaySubnets
             $ExternalRelaySubnets = Get-CfgValue 'ExternalRelaySubnets' $ExternalRelaySubnets
             $NoWordDoc            = [switch](Get-CfgValue 'NoWordDoc'        ([bool]$NoWordDoc))
@@ -421,6 +423,14 @@
                         Write-MyWarning ("Config AdvancedFeatures.{0}: unknown feature name — ignored" -f $k)
                     }
                 }
+            }
+
+            # Namespace is required for a functional deployment — abort early rather than
+            # silently installing Exchange with server-FQDN-based VDir URLs.
+            if (-not $Namespace -and -not $InstallEdge -and -not $NoSetup -and
+                -not $InstallManagementTools -and -not $InstallRecipientManagement) {
+                Write-Error "Config file is missing 'Namespace'. Add: Namespace = 'mail.yourdomain.com'"
+                exit 1
             }
 
             # Recalculate state file path with potentially overridden InstallPath
@@ -906,7 +916,7 @@
                         Set-HSTSHeader
                     }
 
-                    if ($State['RelaySubnets'] -or $State['ExternalRelaySubnets']) {
+                    if ($State['AnonymousRelay']) {
                         New-AnonymousRelayConnector
                     }
 
@@ -1501,7 +1511,7 @@
                 }
 
                 # Anonymous relay connector
-                if (($State['RelaySubnets'] -or $State['ExternalRelaySubnets']) -and -not $State['InstallEdge']) {
+                if ($State['AnonymousRelay'] -and -not $State['InstallEdge']) {
                     Write-PhaseProgress -Activity 'Exchange Installation' -Status 'Phase 6 of 6: Anonymous relay connector' -PercentComplete 78
                     New-AnonymousRelayConnector
                 }

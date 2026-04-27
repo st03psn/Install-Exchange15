@@ -6,6 +6,17 @@ Full version history for EXpress. See [README.md](README.md) for overview and qu
 
 ---
 
+## v1.2.2 (2026-04-27) — bugfix release
+
+- **ConfigFile implies Autopilot** — using `-ConfigFile` now automatically enables Autopilot (auto-reboot + resume) without requiring `Autopilot = $true` in the config file. Add `Autopilot = $false` explicitly to keep Copilot prompts while still loading parameters from a config file.
+- **`AnonymousRelay = $false` now suppresses connector creation** — previously the relay connector gate in Phase 6 only checked `RelaySubnets` / `ExternalRelaySubnets`; the `AnonymousRelay` AdvancedFeatures flag was used solely for RFC 5737 placeholder seeding. Gate changed to `$State['AnonymousRelay']` (flat projection of `Test-Feature 'AnonymousRelay'`) so an explicit `AnonymousRelay = $false` in the config actually prevents connector creation even when subnet keys are present.
+- **ConfigFile without `Namespace` aborts early** — a config-file run missing the `Namespace` key now exits with `Write-Error` + exit 1 instead of silently installing Exchange with server-FQDN-based Virtual Directory URLs. Edge, NoSetup, and management-tools-only modes are exempt.
+- **ConfigFile `LogRetentionDays` defaults to 30** — when `LogRetentionDays` is omitted from a config file, the value now defaults to 30 at config-load time (State and log both show 30). Previously the 30-day fallback was hidden inside `Register-ExchangeLogCleanup`; the State carried 0 and the default was invisible.
+- **deploy-example.psd1 relay section restructured** — `AnonymousRelay = $true` is now the documented master switch in the dedicated relay section (top-level key, alongside `RelaySubnets` / `ExternalRelaySubnets`). Three modes (subnets set, no subnets → RFC 5737 placeholders, `$false` → no connectors) are explained inline. The `AnonymousRelay` comment in the AdvancedFeatures block now cross-references the relay section.
+- **deploy-example.psd1 log cleanup section** — split from the namespace section; comment corrected to "default 30 days when using -ConfigFile; set to 0 to disable" (was: "omit to skip").
+
+---
+
 ## v1.2 (2026-04-26) — feature release
 
 ### Debug-mode overhaul
