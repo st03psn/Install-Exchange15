@@ -4557,9 +4557,10 @@ Write-Log 'Exchange log cleanup finished'
                 }
                 Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Add-ADPermission -Identity '$server\$extName' -User '$anonLogon' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'")
                 # Add-ADPermission can fail immediately after New-ReceiveConnector because Exchange AD objects
-                # may not yet be visible to the current DC. Retry up to 5 times with increasing backoff.
+                # may not yet be visible to the current DC. Retry up to 10 times, 10 s apart
+                # (max 90 s total) — AD replication to the local DC can take up to ~60-90 s.
                 $adpErr = $null
-                for ($adpRetry = 1; $adpRetry -le 5; $adpRetry++) {
+                for ($adpRetry = 1; $adpRetry -le 10; $adpRetry++) {
                     try {
                         Add-ADPermission -Identity "$server\$extName" -User $anonLogon `
                             -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
@@ -4568,9 +4569,9 @@ Write-Log 'Exchange log cleanup finished'
                     }
                     catch {
                         $adpErr = $_
-                        if ($adpRetry -lt 5) {
-                            Write-MyVerbose ('Add-ADPermission attempt {0}/5 failed — retrying in {1}s ({2})' -f $adpRetry, ($adpRetry * 5), $_.Exception.Message)
-                            Start-Sleep -Seconds ($adpRetry * 5)
+                        if ($adpRetry -lt 10) {
+                            Write-MyVerbose ('Add-ADPermission attempt {0}/10 failed — retrying in 10s ({1})' -f $adpRetry, $_.Exception.Message)
+                            Start-Sleep -Seconds 10
                         }
                     }
                 }
