@@ -405,7 +405,7 @@
             # servers the FrontendTransport and MailboxSubmission/Delivery scopes each expose a
             # separate agent list). Deduplicate by Identity to keep the table compact.
             $seenAg = @{}
-            $scopes = @('TransportService','FrontendTransport','MailboxSubmission','MailboxDelivery')
+            $scopes = @('Hub','FrontEnd','MailboxSubmission','MailboxDelivery')
             $collected = @()
             foreach ($sc in $scopes) {
                 try { $collected += @(Get-TransportAgent -TransportService $sc -ErrorAction SilentlyContinue) } catch { Write-MyVerbose ('Get-TransportAgent -TransportService {0} failed: {1}' -f $sc, $_) }

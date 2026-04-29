@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.3.2
+    Version:     1.3.3
     Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -89,6 +89,9 @@
 
     ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
+    1.3.3   Get-TransportAgent enum values corrected: 'TransportService'→'Hub', 'Frontend-
+            Transport'→'FrontEnd' (Word doc transport-agent table); preflight null guard on
+            serialNumber[0] for Exchange 2016 coexistence check (SE RTM path).
     1.3.2   Report: PowerShell VDir EP=None green (expected by design); Defender realtime
             re-enable gated on RealTimeProtectionEnabled not DisableRealtimeMonitoring pref;
             SMBv1 null-feature guard for WS2025; Add-ADPermission identity via DN (implicit

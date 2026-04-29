@@ -3,7 +3,7 @@
 PowerShell script for fully unattended installation of Microsoft Exchange Server 2016, 2019, and Exchange SE — including prerequisites, Active Directory preparation, post-configuration, security hardening, and Word installation documentation.
 
 **Maintainer:** st03psn | **Original author:** Michel de Rooij (michel@eightwone.com) · [eightwone.com](http://eightwone.com)
-**Version:** 1.3.2 (April 2026)
+**Version:** 1.3.3 (April 2026)
 **License:** As-Is, without warranty
 
 **Versioning scheme:** `MAJOR.MINOR` = feature release · `MAJOR.MINOR.PATCH` = bugfix / maintenance release. Example: `1.1` introduces features, `1.1.1` contains only bugfixes on top of `1.1`.

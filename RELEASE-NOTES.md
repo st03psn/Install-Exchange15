@@ -6,6 +6,15 @@ Full version history for EXpress. See [README.md](README.md) for overview and qu
 
 ---
 
+## v1.3.3 (2026-04-29) — bugfix release
+
+### Script fixes
+
+- **`Get-TransportAgent` enum values** — the Transport Agent section of the Word installation document queried `Get-TransportAgent -TransportService` with `'TransportService'` and `'FrontendTransport'` — both rejected by Exchange with "Cannot convert value… Specify one of: Hub, Edge, FrontEnd, MailboxSubmission, MailboxDelivery". Corrected to `'Hub'` and `'FrontEnd'`. The fallback to `Get-TransportAgent` without a scope masked the error, but only Hub-scope agents appeared in the document.
+- **Preflight null guard — Exchange 2016 coexistence check** — the SE RTM path that warns about Exchange 2016 co-existence (`$_.serialNumber[0] -like 'Version 15.1*'`) lacked the `$_.serialNumber -and` guard present on the adjacent Exchange 2013 check. Any AD Exchange server object with a missing `serialNumber` attribute (e.g. a partially decommissioned server tombstone) caused "Cannot index into a null array". Guard added to match the 2013 check pattern.
+
+---
+
 ## v1.3.2 (2026-04-29) — bugfix release
 
 ### Script fixes

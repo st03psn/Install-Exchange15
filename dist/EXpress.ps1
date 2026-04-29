@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.3.2
+    Version:     1.3.3
     Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -89,6 +89,9 @@
 
     ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
+    1.3.3   Get-TransportAgent enum values corrected: 'TransportService'→'Hub', 'Frontend-
+            Transport'→'FrontEnd' (Word doc transport-agent table); preflight null guard on
+            serialNumber[0] for Exchange 2016 coexistence check (SE RTM path).
     1.3.2   Report: PowerShell VDir EP=None green (expected by design); Defender realtime
             re-enable gated on RealTimeProtectionEnabled not DisableRealtimeMonitoring pref;
             SMBv1 null-feature guard for WS2025; Add-ADPermission identity via DN (implicit
@@ -1186,7 +1189,7 @@ process {
     # variable to build the Autopilot RunOnce command correctly.
     $EXpressEntryScript = $MyInvocation.MyCommand.Path
 
-    $ScriptVersion = '1.3.2'
+    $ScriptVersion = '1.3.3'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -3316,7 +3319,7 @@ process {
 
         # Exchange SE coexistence: SE RTM/CU1 supports EX2016 CU23 and EX2019 CU14+, but SE CU2+ does not
         if ( [System.Version]$SetupVersion -ge [System.Version]$EXSESETUPEXE_RTM) {
-            $Ex2016Exists = Get-ExchangeServerObjects | Where-Object { $_.serialNumber[0] -like 'Version 15.1*' }
+            $Ex2016Exists = Get-ExchangeServerObjects | Where-Object { $_.serialNumber -and $_.serialNumber[0] -like 'Version 15.1*' }
             if ( $Ex2016Exists) {
                 Write-MyWarning ('Exchange 2016 server(s) detected: {0}. Exchange SE RTM/CU1 supports coexistence with Exchange 2016 CU23, but SE CU2+ will not. Plan decommissioning.' -f (($Ex2016Exists | Select-Object -ExpandProperty Name) -join ', '))
             }
@@ -7269,7 +7272,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             # servers the FrontendTransport and MailboxSubmission/Delivery scopes each expose a
             # separate agent list). Deduplicate by Identity to keep the table compact.
             $seenAg = @{}
-            $scopes = @('TransportService','FrontendTransport','MailboxSubmission','MailboxDelivery')
+            $scopes = @('Hub','FrontEnd','MailboxSubmission','MailboxDelivery')
             $collected = @()
             foreach ($sc in $scopes) {
                 try { $collected += @(Get-TransportAgent -TransportService $sc -ErrorAction SilentlyContinue) } catch { Write-MyVerbose ('Get-TransportAgent -TransportService {0} failed: {1}' -f $sc, $_) }
