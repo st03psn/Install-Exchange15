@@ -125,12 +125,16 @@
         Write-MyStep -Label 'SMBv1' -Value 'disabled' -Status OK
         try {
             $feature = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -ErrorAction SilentlyContinue
-            if ($feature -and $feature.State -eq 'Enabled') {
+            if ($null -eq $feature) {
+                # WS2025 and later: SMBv1 optional feature was removed from the OS entirely
+                Write-MyVerbose 'SMBv1 Windows feature not present (removed by OS) — skipping feature step'
+            }
+            elseif ($feature.State -eq 'Enabled') {
                 Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart -ErrorAction Stop | Out-Null
                 Write-MyVerbose 'SMBv1 Windows feature disabled'
             }
             else {
-                Write-MyVerbose 'SMBv1 Windows feature already disabled or not present'
+                Write-MyVerbose 'SMBv1 Windows feature already disabled'
             }
         }
         catch {
@@ -138,7 +142,7 @@
         }
         try {
             Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -ErrorAction Stop
-            Write-MyVerbose 'SMBv1 server protocol disabled'
+            Write-MyVerbose 'SMBv1 server protocol disabled via SmbServerConfiguration'
         }
         catch {
             Write-MyWarning ('Problem disabling SMBv1 server config: {0}' -f $_.Exception.Message)
@@ -1074,17 +1078,22 @@
         $shouldAct = $State['DefenderRealtimeDisabledByEXpress']
         if ($shouldAct) {
             try {
-                $pref = Get-MpPreference -ErrorAction Stop
-                if (-not $pref.DisableRealtimeMonitoring) {
-                    Write-MyVerbose 'Defender realtime monitoring already enabled'
+                # Gate on actual scan status (RealTimeProtectionEnabled), NOT on the
+                # preference (DisableRealtimeMonitoring). After a phase reboot, Windows may
+                # reset the preference to $false while the scanning component is still
+                # inactive — checking only the preference would then take the "already
+                # enabled" path and call Set-MpPreference never.
+                $rtStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
+                if ($rtStatus -and $rtStatus.RealTimeProtectionEnabled) {
+                    Write-MyVerbose 'Defender realtime monitoring already active'
                 }
                 else {
                     Write-MyStep -Label 'Defender realtime' -Value 're-enabled' -Status OK
                     Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop
-                    Start-Sleep -Seconds 1
-                    $post = Get-MpPreference -ErrorAction SilentlyContinue
-                    if ($post -and $post.DisableRealtimeMonitoring) {
-                        Write-MyWarning 'Realtime monitoring still disabled after set — Tamper Protection or policy override active.'
+                    Start-Sleep -Seconds 3
+                    $rtStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
+                    if (-not ($rtStatus -and $rtStatus.RealTimeProtectionEnabled)) {
+                        Write-MyWarning 'Realtime monitoring still not active after re-enable — Tamper Protection or policy override active.'
                     }
                 }
                 if ($State['DefenderRealtimeDisabledByEXpress']) {

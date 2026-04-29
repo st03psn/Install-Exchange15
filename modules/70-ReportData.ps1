@@ -158,20 +158,46 @@
             try { $srv.PopSettings  = Get-PopSettings  -Server $ServerName -ErrorAction Stop } catch { Write-MyVerbose ('Get-PopSettings failed for {0}: {1}' -f $ServerName, $_) }
         }
 
-        # Certificates — filter phantom entries (DateTime.MinValue from Get-ExchangeCertificate).
-        # -Server can silently return 0 results when called from within an existing implicit-remoting
-        # session to the same server (session redirect interference). For the local server always try
-        # both approaches and use whichever returns data.
-        $certFilter = { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }
-        $certsWithServer = @()
-        $certsNoServer   = @()
-        try { $certsWithServer = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object $certFilter) }
-        catch { Write-MyVerbose ('Get-ExchangeCertificate -Server {0} failed: {1}' -f $ServerName, $_) }
-        if ($ServerName -ieq $env:COMPUTERNAME -and $certsWithServer.Count -eq 0) {
-            try { $certsNoServer = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
-            catch { Write-MyVerbose ('Get-ExchangeCertificate (local, no -Server) failed: {0}' -f $_) }
+        # Certificates — query Cert:\LocalMachine\My directly (immune to implicit-remoting
+        # re-entrant session interference that silently empties Get-ExchangeCertificate -Server results).
+        # Get-ExchangeCertificate is called without -Server to build a thumbprint→Services map;
+        # -Server variant is the fallback. Only Exchange-managed thumbprints are shown when the map
+        # is populated; all non-phantom store certs are shown as fallback if both Exchange calls fail.
+        $certStoreRaw = @()
+        try {
+            $certStoreRaw = @(Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop |
+                Where-Object { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' })
+        } catch { Write-MyVerbose ('Cert:\LocalMachine\My query failed: {0}' -f $_) }
+
+        $exSvcMap = @{}   # thumbprint -> Services string
+        try {
+            Get-ExchangeCertificate -ErrorAction Stop | ForEach-Object {
+                if ($_.Thumbprint) { $exSvcMap[$_.Thumbprint] = "$($_.Services)" }
+            }
+        } catch {
+            Write-MyVerbose ('Get-ExchangeCertificate (services) failed, trying -Server {0}: {1}' -f $ServerName, $_)
+            try {
+                Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | ForEach-Object {
+                    if ($_.Thumbprint) { $exSvcMap[$_.Thumbprint] = "$($_.Services)" }
+                }
+            } catch { Write-MyVerbose ('Get-ExchangeCertificate -Server {0} (services) failed: {1}' -f $ServerName, $_) }
         }
-        $srv.Certificates = if ($certsNoServer.Count -gt $certsWithServer.Count) { $certsNoServer } else { $certsWithServer }
+
+        # Filter to Exchange-managed certs when possible; fall back to full store list.
+        $certBase = if ($exSvcMap.Count -gt 0) {
+            @($certStoreRaw | Where-Object { $exSvcMap.ContainsKey($_.Thumbprint) })
+        } else {
+            $certStoreRaw
+        }
+        $srv.Certificates = @($certBase | ForEach-Object {
+            [PSCustomObject]@{
+                Thumbprint   = $_.Thumbprint
+                Subject      = $_.Subject
+                NotAfter     = $_.NotAfter
+                Services     = if ($exSvcMap.ContainsKey($_.Thumbprint)) { $exSvcMap[$_.Thumbprint] } else { '—' }
+                IsSelfSigned = ($_.Subject -eq $_.Issuer)
+            }
+        })
 
         # Transport agents (only present on servers with Hub Transport)
         try { $srv.TransportAgents = @(Get-TransportAgent -ErrorAction Stop) } catch { $srv.TransportAgents = @() }

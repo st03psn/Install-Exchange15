@@ -510,13 +510,20 @@
                     }
                 }
                 Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Add-ADPermission -Identity '$server\$extName' -User '$anonLogon' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'")
-                # Add-ADPermission can fail immediately after New-ReceiveConnector because Exchange AD objects
-                # may not yet be visible to the current DC. Retry up to 10 times, 10 s apart
-                # (max 90 s total) — AD replication to the local DC can take up to ~60-90 s.
+                # Add-ADPermission's -Identity is ADRawEntryIdParameter and cannot accept a deserialized
+                # Exchange object (Deserialized.Microsoft.Exchange.Data.Directory.SystemConfiguration.ReceiveConnector)
+                # returned by implicit remoting. Use the DistinguishedName string from the object (a plain PS
+                # string even on deserialized objects), which is accepted as an ADRawEntryIdParameter DN.
+                # Fall back to "server\name" string if the DN is absent.
+                $adpIdentity = if ($connObj -and $connObj.DistinguishedName) {
+                    [string]$connObj.DistinguishedName
+                } else {
+                    "$server\$extName"
+                }
                 $adpErr = $null
                 for ($adpRetry = 1; $adpRetry -le 10; $adpRetry++) {
                     try {
-                        Add-ADPermission -Identity "$server\$extName" -User $anonLogon `
+                        Add-ADPermission -Identity $adpIdentity -User $anonLogon `
                             -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
                         $adpErr = $null
                         break
@@ -648,7 +655,9 @@
             else {
                 New-AcceptedDomain -Name $ns -DomainName $ns -DomainType Authoritative -ErrorAction Stop | Out-Null
                 Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("New-AcceptedDomain -Name '{0}' -DomainName '{0}' -DomainType Authoritative" -f $ns)
-                Write-MyStep -Label 'Accepted domain' -Value ('{0} (Authoritative)' -f $ns) -Status OK
+                Set-AcceptedDomain -Identity $ns -MakeDefault $true -ErrorAction Stop
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Set-AcceptedDomain -Identity '{0}' -MakeDefault `$true" -f $ns)
+                Write-MyStep -Label 'Accepted domain' -Value ('{0} (Authoritative, Default)' -f $ns) -Status OK
             }
         }
         catch {

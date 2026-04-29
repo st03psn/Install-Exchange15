@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.3.1
+    Version:     1.3.2
     Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -89,6 +89,14 @@
 
     ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
+    1.3.2   Report: PowerShell VDir EP=None green (expected by design); Defender realtime
+            re-enable gated on RealTimeProtectionEnabled not DisableRealtimeMonitoring pref;
+            SMBv1 null-feature guard for WS2025; Add-ADPermission identity via DN (implicit
+            remoting); accepted domain MakeDefault; cert data from Cert:\LocalMachine\My;
+            EAP Priority column; ByteQuantifiedSize string parse; tables -Compact; SU
+            LastSuccessfulPhase pre-set; debug halt Phase4DebugHalted one-shot; CopyServer-
+            Config/DAGName suppressed on new-org; cert+HSTS step counter fix; DAG/Copy
+            menu only when existing org; VDir cmdlets -WarningAction SilentlyContinue.
     1.3.1   Word doc: TLS rows removed from section 2 (→ chapter 8 reference); VDir table
             removed from 5.x.4; DB Copy Status merged into 4.9 DAGs; section 4.14 removed;
             auth-cert + doc-properties tables compact; DNS domain derived from namespace

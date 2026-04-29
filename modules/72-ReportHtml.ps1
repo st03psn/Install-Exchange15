@@ -396,7 +396,9 @@
                             $epv = [string]$vd.ExtendedProtectionTokenChecking
                             if ([string]::IsNullOrEmpty($epv)) { $epv = 'None' }
                             if ($epv -eq '2') { $epv = 'Require' } elseif ($epv -eq '1') { $epv = 'Allow' } elseif ($epv -eq '0') { $epv = 'None' }
-                            $epvBadge = if ($epv -in 'Require','Allow') { Format-Badge $epv 'ok' } else { Format-Badge "$epv" 'warn' }
+                            $epvBadge = if ($epv -in 'Require','Allow') { Format-Badge $epv 'ok' }
+                                        elseif ($ep.Name -eq 'PowerShell' -and $epv -eq 'None') { Format-Badge 'None (expected)' 'ok' }
+                                        else { Format-Badge "$epv" 'warn' }
                             $epVdirRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f $ep.Name, $epv, $epvBadge))
                         }
                     } catch { Write-MyVerbose ('Extended Protection per-VDir check failed for {0}: {1}' -f $ep.Name, $_) }

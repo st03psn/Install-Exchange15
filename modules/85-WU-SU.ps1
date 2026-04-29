@@ -477,12 +477,18 @@
                     # B15: In Autopilot mode, pre-set RunOnce + save state before launching the
                     # installer. Exchange SU installers (.exe) may call ExitWindowsEx internally
                     # and reboot the machine before this script's phase-end logic runs, leaving
-                    # LastSuccessfulPhase = 4 and no RunOnce set — so the script would not
-                    # auto-resume. Pre-setting RunOnce here ensures the script always restarts.
+                    # LastSuccessfulPhase at the previous phase and no RunOnce set — so the
+                    # script would not auto-resume, and the current phase would re-run entirely.
+                    # Pre-setting LastSuccessfulPhase = InstallPhase ensures that on SU-direct-
+                    # reboot resume, the script advances to the next phase rather than re-running
+                    # the current one. Note: post-SU steps (EOMT, server config import) may be
+                    # skipped when the installer reboots directly; they are idempotent and can
+                    # be re-run manually if needed.
                     if ($State['Autopilot']) {
                         Disable-UAC
                         Enable-AutoLogon
                         Enable-RunOnce
+                        $State['LastSuccessfulPhase'] = $State['InstallPhase']
                         Save-State $State
                     }
                     # Exchange SU installers only accept /passive or /silent — /norestart is not supported.

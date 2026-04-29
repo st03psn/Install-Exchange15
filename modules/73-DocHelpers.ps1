@@ -54,8 +54,8 @@
             # 4.4 E-Mail-Adressrichtlinien
             $null = $Parts.Add((New-WdHeading (L '4.4 E-Mail-Adressrichtlinien' '4.4 Email Address Policies') 2))
             $eapRows = [System.Collections.Generic.List[object[]]]::new()
-            foreach ($pol in $orgD.EmailAddressPolicies) { $eapRows.Add(@($pol.Name, (SafeVal $pol.RecipientFilter), (SafeVal ($pol.EnabledEmailAddressTemplates -join ', ')))) }
-            $null = $Parts.Add((New-WdTable -Headers @((L 'Name' 'Name'), (L 'Empfängerfilter' 'Recipient filter'), (L 'Adressvorlagen' 'Address templates')) -Rows $eapRows.ToArray()))
+            foreach ($pol in ($orgD.EmailAddressPolicies | Sort-Object Priority)) { $eapRows.Add(@((SafeVal $pol.Priority), $pol.Name, (SafeVal $pol.RecipientFilter), (SafeVal ($pol.EnabledEmailAddressTemplates -join ', ')))) }
+            $null = $Parts.Add((New-WdTable -Headers @((L 'Prio' 'Prio'), (L 'Name' 'Name'), (L 'Empfängerfilter' 'Recipient filter'), (L 'Adressvorlagen' 'Address templates')) -Rows $eapRows.ToArray()))
 
             # 4.5 Transport Rules
             $null = $Parts.Add((New-WdHeading (L '4.5 Transportregeln' '4.5 Transport Rules') 2))
@@ -79,6 +79,14 @@
                 $fmtSize = {
                     param($sz)
                     if ($null -eq $sz) { return (L 'nicht gesetzt' 'not set') }
+                    # Over implicit remoting, ByteQuantifiedSize deserializes as its string representation
+                    # e.g. "150 MB (157,286,400 bytes)". Parse bytes from the string first; only fall
+                    # back to .Value.ToBytes() in direct-session (non-remoted) contexts.
+                    $str = "$sz"
+                    if ($str -match 'Unlimited' -or $str -eq '') { return (L 'unbegrenzt' 'Unlimited') }
+                    if ($str -match '([\d,]+)\s+bytes\)') {
+                        return ('{0} MB' -f [math]::Round(([long]($Matches[1] -replace ',', '')) / 1MB, 0))
+                    }
                     if ($null -eq $sz.Value) { return (L 'unbegrenzt' 'Unlimited') }
                     '{0} MB' -f [math]::Round($sz.Value.ToBytes() / 1MB, 0)
                 }
@@ -308,7 +316,7 @@
                 $adC  = if (($autodiscoverUrls | Select-Object -Unique).Count -le 1) { (L 'konsistent' 'consistent') } else { (L 'ABWEICHUNG' 'DIVERGENT') }
                 $nsRows.Add(@('Autodiscover SCP', (Mask-Ip $adIn), '—', $adC))
             }
-            $null = $Parts.Add((New-WdTable -Headers @((L 'Dienst' 'Service'), (L 'Interne URL' 'Internal URL'), (L 'Externe URL' 'External URL'), (L 'Konsistenz' 'Consistency')) -Rows $nsRows.ToArray()))
+            $null = $Parts.Add((New-WdTable -Compact -Headers @((L 'Dienst' 'Service'), (L 'Interne URL' 'Internal URL'), (L 'Externe URL' 'External URL'), (L 'Konsistenz' 'Consistency')) -Rows $nsRows.ToArray()))
 
             # 4.14 RBAC — Rollengruppen (was 4.15 — 4.14 Database Copy Status merged into 4.9)
             if ($orgD.RoleGroups -and $orgD.RoleGroups.Count -gt 0) {

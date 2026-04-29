@@ -233,7 +233,7 @@
                 Set-ImapSettings -Server $server `
                     -ExternalConnectionSettings @($imapTarget) `
                     -InternalConnectionSettings @($imapTarget) `
-                    -ErrorAction Stop
+                    -WarningAction SilentlyContinue -ErrorAction Stop
                 Write-MyVerbose ('IMAP4 connection settings configured: {0}' -f $imapTarget)
                 $changed++
             }
@@ -253,7 +253,7 @@
                 Set-PopSettings -Server $server `
                     -ExternalConnectionSettings @($popTarget) `
                     -InternalConnectionSettings @($popTarget) `
-                    -ErrorAction Stop
+                    -WarningAction SilentlyContinue -ErrorAction Stop
                 Write-MyVerbose ('POP3 connection settings configured: {0}' -f $popTarget)
                 $changed++
             }

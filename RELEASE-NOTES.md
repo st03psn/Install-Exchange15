@@ -6,6 +6,34 @@ Full version history for EXpress. See [README.md](README.md) for overview and qu
 
 ---
 
+## v1.3.2 (2026-04-29) — bugfix release
+
+### Script fixes
+
+- **Defender realtime re-enable gate** — `Enable-DefenderRealtimeMonitoring` previously checked `Get-MpPreference.DisableRealtimeMonitoring` (the preference setting) to decide whether to act. After a phase reboot, Windows may reset this preference to `$false` while the scanning component is still inactive; the function then took the "already enabled" path and never called `Set-MpPreference`. Gate changed to `Get-MpComputerStatus.RealTimeProtectionEnabled` (actual scan status).
+- **SMBv1 WS2025 `$null` feature guard** — `Get-WindowsOptionalFeature -FeatureName SMB1Protocol` returns `$null` on Windows Server 2025 (feature removed from the OS entirely). Previous code only tested `State -eq 'Enabled'`, leaving a null-dereference gap. Explicit `$null` branch added; `Disable-WindowsOptionalFeature` is skipped with a verbose note.
+- **`Add-ADPermission` identity via DN (implicit remoting)** — the `-Identity` value was `"$server\$connName"` (composite string). Over implicit remoting, `New-ReceiveConnector` returns a deserialized object; `ADRawEntryIdParameter` rejects deserialized objects but accepts a plain DN string. Identity now uses `$connObj.DistinguishedName` (a plain string even on deserialized objects), with fallback to the composite string.
+- **Accepted domain `MakeDefault`** — `Enable-AccessNamespaceMailConfig` now calls `Set-AcceptedDomain -MakeDefault $true` after creating the namespace accepted domain. Previously the domain was created as Authoritative but not set as the default, leaving the old domain as default.
+- **`CopyServerConfig`/`DAGName` suppressed on new-org install** — both parameters are only valid when joining an existing Exchange organisation. On a new-org install (`ExistingOrg = $false`), both are now cleared with a warning at startup instead of silently applying or failing later in Phase 6.
+- **`LastSuccessfulPhase` pre-set before SU reboot** — when an Exchange SU triggers a direct reboot (exit code 3010), `$State['LastSuccessfulPhase']` is now set to `InstallPhase` before the reboot. Without this, on resume the current phase would re-run entirely instead of advancing.
+- **Debug halt `Phase4DebugHalted` one-shot flag** — the Copilot debug-mode halt after Phase 4 (VM snapshot opportunity) now sets a `Phase4DebugHalted` state flag on first trigger. Subsequent resumes skip the halt and advance to Phase 5. Previously the halt re-triggered on every launch while `InstallPhase` was still 4.
+- **Certificate import + HSTS step counter fix** — when no `CertificatePath` is specified, both the cert-import and HSTS steps are skipped, but the Phase 5 step counter (`$script:p5Step`) was only advanced by 1. Fixed to advance by 2 so subsequent progress-bar steps remain accurate.
+- **VDir cmdlets `-WarningAction SilentlyContinue`** — `Set-*VirtualDirectory` cmdlets emit harmless attribute-not-found warnings on some Exchange versions/CUs. Added `-WarningAction SilentlyContinue` to suppress noise in the transcript.
+
+### Report fixes
+
+- **PowerShell VDir EP=None shown green** — the Extended Protection per-VDir table in the HTML installation report showed the PowerShell virtual directory EP=None with an orange warning badge. EP=None is correct and expected for the PowerShell VDir (WinRM does not support channel binding tokens). Badge changed to green `None (expected)`.
+- **Certificate data from `Cert:\LocalMachine\My`** — `Get-ExchangeCertificate -Server <local>` silently returns 0 results inside an active implicit-remoting session (re-entrant session interference). `Get-ServerReportData` now reads certificates from `Cert:\LocalMachine\My` and maps Exchange `Services` via a separate `Get-ExchangeCertificate` call (without `-Server`).
+
+### Word document fixes
+
+- **ByteQuantifiedSize string parse (implicit remoting)** — over implicit remoting, `ByteQuantifiedSize` deserializes as its string representation (e.g. `150 MB (157,286,400 bytes)`). Calling `.Value.ToBytes()` on the string threw "cannot call method on null-valued expression". The `TransportConfig` send/receive size formatter now parses bytes from the string via regex; `.Value.ToBytes()` is the fallback for direct-session contexts.
+- **Email address policies: Priority column + sorted** — the EAP table in the Word document now includes a Priority column and is sorted by `Priority` ascending. Previously columns were Name / RecipientFilter / AddressTemplates with no ordering.
+- **VDir and Commands tables `-Compact`** — the namespace VDir overview table (section 4.13) and the executed commands table (section 14) now use `New-WdTable -Compact` (8 pt font, tighter row padding). The commands table ColWidths are adjusted to `360 / 1500 / 7140` twips to fit within A4 1-inch margins.
+- **Menu: DAG/CopyServerConfig only for existing-org** — the interactive Copilot menu now shows DAG name and Copy config from server prompts only when an existing Exchange organisation is detected in AD. On new-org installs these prompts were irrelevant and confusing.
+
+---
+
 ## v1.3.1 (2026-04-27) — bugfix release
 
 ### Script fixes

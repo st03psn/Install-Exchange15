@@ -704,14 +704,16 @@
                 $cfg['SCP']          = Read-MenuInput -Prompt 'Autodiscover SCP URL   (blank = let Setup set, - = remove)'
             }
             $cfg['TargetPath']       = Read-MenuInput -Prompt 'Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'
-            $knownDAGs = Get-ExchangeDAGNames
-            if ($knownDAGs.Count -gt 0) {
-                Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs -join ', ')) -ForegroundColor DarkGray
-                $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs -join ' / ')) -Default ($knownDAGs[0])
-            } else {
-                $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+            if ($detectedOrg) {
+                $knownDAGs = Get-ExchangeDAGNames
+                if ($knownDAGs.Count -gt 0) {
+                    Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs -join ', ')) -ForegroundColor DarkGray
+                    $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs -join ' / ')) -Default ($knownDAGs[0])
+                } else {
+                    $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+                }
+                $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. ex01.contoso.com)'
             }
-            $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none) [not tested]' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. ex01.contoso.com)'
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)' -Validate $validatePfxPath -ValidateMessage 'File not found or not a .pfx file — enter a valid path or leave blank'
             $cfg['Namespace']        = Read-MenuInput -Prompt 'Access namespace       (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
@@ -752,6 +754,17 @@
             $cfg['CustomerDocument'] = ($custInput -imatch '^[Yy]$')
         }
         elseif ($selectedMode -eq 6) {
+            # Detect existing Exchange organisation (same probe as mode 1 — required to gate DAG join)
+            $detectedOrg = ''
+            try {
+                $configNC6 = ([ADSI]'LDAP://RootDSE').configurationNamingContext
+                $srch6     = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://$configNC6")
+                $srch6.Filter = '(objectClass=msExchOrganizationContainer)'
+                $srch6.PropertiesToLoad.Add('name') | Out-Null
+                $res6 = $srch6.FindOne()
+                if ($res6) { $detectedOrg = $res6.Properties['name'][0] }
+            } catch { Write-MyVerbose ('AD Exchange organisation detection failed (mode 6): {0}' -f $_) }
+
             $cfg['Namespace']        = Read-MenuInput -Prompt 'Access namespace       (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
                 $defaultMailDomain2 = ($cfg['Namespace'] -split '\.', 2)[1]
@@ -760,12 +773,14 @@
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)' -Validate $validatePfxPath -ValidateMessage 'File not found or not a .pfx file — enter a valid path or leave blank'
-            $knownDAGs2 = Get-ExchangeDAGNames
-            if ($knownDAGs2.Count -gt 0) {
-                Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs2 -join ', ')) -ForegroundColor DarkGray
-                $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs2 -join ' / ')) -Default ($knownDAGs2[0])
-            } else {
-                $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+            if ($detectedOrg) {
+                $knownDAGs2 = Get-ExchangeDAGNames
+                if ($knownDAGs2.Count -gt 0) {
+                    Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs2 -join ', ')) -ForegroundColor DarkGray
+                    $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs2 -join ' / ')) -Default ($knownDAGs2[0])
+                } else {
+                    $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+                }
             }
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days     (1-3650)' -Default '30' -Required $true -Validate $validateRetDays -ValidateMessage 'Enter a number between 1 and 3650'
@@ -807,7 +822,7 @@
                 $editFields.Add(@{ Key='MDBLogPath';    Label='Mailbox log path';     Prompt='Mailbox log path       (blank = Exchange default)';              Required=$false; Validate=$null;           ValidateMsg='' })
                 $editFields.Add(@{ Key='SCP';           Label='Autodiscover SCP URL'; Prompt='Autodiscover SCP URL   (blank = let Setup set, - = remove)';    Required=$false; Validate=$null;           ValidateMsg='' })
                 $editFields.Add(@{ Key='TargetPath';    Label='Exchange install path';Prompt='Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'; Required=$false; Validate=$null; ValidateMsg='' })
-                $editFields.Add(@{ Key='DAGName';       Label='DAG name';             Prompt='DAG name               (blank = no DAG join)';                  Required=$false; Validate=$validateFQDN;   ValidateMsg='Not a valid FQDN (e.g. dag01.contoso.com)' })
+                if ($detectedOrg) { $editFields.Add(@{ Key='DAGName'; Label='DAG name'; Prompt='DAG name               (blank = no DAG join)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. dag01.contoso.com)' }) }
                 $editFields.Add(@{ Key='CertificatePath'; Label='PFX certificate';   Prompt='PFX certificate path   (blank = none)';                          Required=$false; Validate=$validatePfxPath; ValidateMsg='File not found or not a .pfx file — enter a valid path or leave blank' })
             }
             $editFields.Add(@{ Key='Namespace';      Label='Access Namespace';        Prompt='Access namespace       (e.g. mail.contoso.com, blank = skip URL config)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. mail.contoso.com)' })

@@ -560,6 +560,20 @@
             }
         }
 
+        # CopyServerConfig and DAGName require an existing Exchange organisation.
+        # Suppress both when ExistingOrg is not $true — prevents stale config-file entries
+        # from triggering join/copy logic on a first-server (new-org) install.
+        if (-not $State['ExistingOrg']) {
+            if ($CopyServerConfig) {
+                Write-MyWarning ('CopyServerConfig ignored — no existing Exchange organisation detected (was: {0})' -f $CopyServerConfig)
+                $CopyServerConfig = $null
+            }
+            if ($DAGName) {
+                Write-MyWarning ('DAGName ignored — no existing Exchange organisation detected (was: {0})' -f $DAGName)
+                $DAGName = $null
+            }
+        }
+
         # -- Advanced Configuration catalog ---------------------------------------
         # Merge explicitly cmdline-bound switches into $State['AdvancedFeatures']
         # (backwards compat for scripts still passing -DisableSSL3, -EnableECC …).
@@ -733,10 +747,10 @@
         $State["InstallPhase"] = $State["LastSuccessfulPhase"]
     }
 
-    # Debug mode (Copilot only): halt before Phase 5 starts so the user can take a VM
-    # snapshot. LastSuccessfulPhase is still 4 here (not yet incremented). State already
-    # has InstallPhase=4; next launch increments to 5 and continues normally.
-    if ($State['LogDebug'] -and $State['InstallPhase'] -eq 4 -and -not $PSBoundParameters.ContainsKey('Phase') -and -not $State['Autopilot']) {
+    # Debug mode (Copilot only): halt once after Phase 4 completes so the user can take a
+    # VM snapshot. On first hit: set Phase4DebugHalted flag + save state + exit. On the
+    # next run the flag is present → skip halt → InstallPhase++ advances to 5 → continues.
+    if ($State['LogDebug'] -and $State['InstallPhase'] -eq 4 -and -not $State['Phase4DebugHalted'] -and -not $PSBoundParameters.ContainsKey('Phase') -and -not $State['Autopilot']) {
         Write-Host ''
         Write-Host '  ============================================================' -ForegroundColor Magenta
         Write-Host '   DEBUG MODE: Phase 4 complete - HALT for snapshot           ' -ForegroundColor Magenta -BackgroundColor Black
@@ -747,6 +761,8 @@
         Write-Host '  ============================================================' -ForegroundColor Magenta
         Write-Host ''
         Write-MyOutput 'DEBUG MODE: halted after Phase 4 for snapshot. Re-run to continue.'
+        $State['Phase4DebugHalted'] = $true
+        Save-State $State
         exit $ERR_OK
     }
 
@@ -848,9 +864,6 @@
     else {
 
         Write-MyVerbose "Current phase is $($State["InstallPhase"]) of $MAX_PHASE"
-
-        Write-MyVerbose 'Disabling Server Manager at logon'
-        Set-RegistryValue -Path 'HKCU:\Software\Microsoft\ServerManager' -Name DoNotOpenServerManagerAtLogon -Value 1
 
         # Create System Restore checkpoint before each phase.
         # Checkpoint-Computer is only supported on client OS (ProductType=1).
@@ -1342,23 +1355,21 @@
                     Set-MAPIEncryptionRequired
                 }
 
-                # Import PFX certificate — must run BEFORE Exchange SU; the SU installer restarts
-                # Exchange services (and possibly W3SVC) which kills the EMS session. Certificate
-                # import uses Import-ExchangeCertificate / Enable-ExchangeCertificate (EMS cmdlets)
-                # so it must complete while the session established above is still alive.
-                Step-P5 'PFX certificate import'
+                # Import PFX certificate + HSTS — must run BEFORE Exchange SU; the SU installer
+                # restarts Exchange services (and possibly W3SVC) which kills the EMS session.
+                # Certificate import uses Import-ExchangeCertificate / Enable-ExchangeCertificate
+                # (EMS cmdlets) so it must complete while the session established above is alive.
+                # Both steps are skipped together when no CertificatePath is specified; the step
+                # counter is advanced manually so the progress bar remains accurate.
                 if ($State['CertificatePath']) {
+                    Step-P5 'PFX certificate import'
                     Import-ExchangeCertificateFromPFX
-                }
-
-                # HSTS header — only when a certificate was imported (avoid browser lockout with self-signed cert)
-                # Kept immediately after cert import; no EMS required (WebAdministration module).
-                Step-P5 'HSTS header'
-                if ($State['CertificatePath']) {
+                    Step-P5 'HSTS header'
                     Set-HSTSHeader
                 }
                 else {
-                    Write-MyVerbose 'No CertificatePath specified — skipping HSTS (requires valid certificate to avoid browser lockout)'
+                    $script:p5Step += 2
+                    Write-MyVerbose 'No CertificatePath specified — skipping certificate import and HSTS'
                 }
 
                 # Exchange Security Updates — installer restarts Exchange services (and may restart
@@ -1394,9 +1405,13 @@
                 Install-ExchangeSecurityUpdate
 
                 # Import server configuration from source server (no EMS required)
-                Step-P5 'Server configuration import'
                 if ($State['CopyServerConfig'] -and $State['ServerConfigExportPath']) {
+                    Step-P5 'Server configuration import'
                     Import-ServerConfig
+                }
+                else {
+                    $script:p5Step++
+                    Write-MyVerbose 'No server configuration import configured — skipping'
                 }
 
                 # EOMT — optional CVE mitigation tool (no EMS required)

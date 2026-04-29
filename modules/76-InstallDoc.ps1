@@ -951,8 +951,9 @@
                         }
                     }
                 }
-                # ColWidths: # 380, Category 1680, Command 7200 — total 9260 twips
-                $null = $parts.Add((New-WdTable -Headers @('#', (L 'Kategorie' 'Category'), (L 'Befehl' 'Command')) -Rows $cmdRows.ToArray() -ColWidths @(380, 1680, 7200)))
+                # ColWidths: # 360, Category 1500, Command 7140 — total 9000 twips (fits A4 1-inch margins)
+                # -Compact: 8pt font gives ~40% more characters per line for long cmdlet strings.
+                $null = $parts.Add((New-WdTable -Compact -Headers @('#', (L 'Kategorie' 'Category'), (L 'Befehl' 'Command')) -Rows $cmdRows.ToArray() -ColWidths @(360, 1500, 7140)))
             }
             $null = $parts.Add((New-WdParagraph (L 'Die vollständige Installationsausgabe (inkl. Statusmeldungen, Versionsprüfungen und Fehlern) steht in der EXpress-Logdatei (siehe Kapitel 1 "Dokumenteigenschaften" → "Logdatei").' 'The complete installation output (including status messages, version checks, and errors) is available in the EXpress log file (see chapter 1 "Document Properties" → "Log file").' )))
         }

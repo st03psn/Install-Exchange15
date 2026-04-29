@@ -4,7 +4,7 @@
     post-configuration, documentation, and day-2 standalone modes.
 
     Script file: EXpress.ps1
-    Version:     1.3.1
+    Version:     1.3.2
     Maintainer:  st03psn
 
     Original author: Michel de Rooij (michel@eightwone.com).
@@ -89,6 +89,14 @@
 
     ── EXpress (st03psn, 2026—) — newest first ──────────────────────────────────
 
+    1.3.2   Report: PowerShell VDir EP=None green (expected by design); Defender realtime
+            re-enable gated on RealTimeProtectionEnabled not DisableRealtimeMonitoring pref;
+            SMBv1 null-feature guard for WS2025; Add-ADPermission identity via DN (implicit
+            remoting); accepted domain MakeDefault; cert data from Cert:\LocalMachine\My;
+            EAP Priority column; ByteQuantifiedSize string parse; tables -Compact; SU
+            LastSuccessfulPhase pre-set; debug halt Phase4DebugHalted one-shot; CopyServer-
+            Config/DAGName suppressed on new-org; cert+HSTS step counter fix; DAG/Copy
+            menu only when existing org; VDir cmdlets -WarningAction SilentlyContinue.
     1.3.1   Word doc: TLS rows removed from section 2 (→ chapter 8 reference); VDir table
             removed from 5.x.4; DB Copy Status merged into 4.9 DAGs; section 4.14 removed;
             auth-cert + doc-properties tables compact; DNS domain derived from namespace
@@ -1178,7 +1186,7 @@ process {
     # variable to build the Autopilot RunOnce command correctly.
     $EXpressEntryScript = $MyInvocation.MyCommand.Path
 
-    $ScriptVersion = '1.3.1'
+    $ScriptVersion = '1.3.2'
 
     $ERR_OK = 0
     $ERR_PROBLEMADPREPARE = 1001
@@ -4571,13 +4579,20 @@ Write-Log 'Exchange log cleanup finished'
                     }
                 }
                 Register-ExecutedCommand -Category 'ReceiveConnector' -Command ("Add-ADPermission -Identity '$server\$extName' -User '$anonLogon' -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient'")
-                # Add-ADPermission can fail immediately after New-ReceiveConnector because Exchange AD objects
-                # may not yet be visible to the current DC. Retry up to 10 times, 10 s apart
-                # (max 90 s total) — AD replication to the local DC can take up to ~60-90 s.
+                # Add-ADPermission's -Identity is ADRawEntryIdParameter and cannot accept a deserialized
+                # Exchange object (Deserialized.Microsoft.Exchange.Data.Directory.SystemConfiguration.ReceiveConnector)
+                # returned by implicit remoting. Use the DistinguishedName string from the object (a plain PS
+                # string even on deserialized objects), which is accepted as an ADRawEntryIdParameter DN.
+                # Fall back to "server\name" string if the DN is absent.
+                $adpIdentity = if ($connObj -and $connObj.DistinguishedName) {
+                    [string]$connObj.DistinguishedName
+                } else {
+                    "$server\$extName"
+                }
                 $adpErr = $null
                 for ($adpRetry = 1; $adpRetry -le 10; $adpRetry++) {
                     try {
-                        Add-ADPermission -Identity "$server\$extName" -User $anonLogon `
+                        Add-ADPermission -Identity $adpIdentity -User $anonLogon `
                             -ExtendedRights 'Ms-Exch-SMTP-Accept-Any-Recipient' -ErrorAction Stop -WarningAction SilentlyContinue | Out-Null
                         $adpErr = $null
                         break
@@ -4709,7 +4724,9 @@ Write-Log 'Exchange log cleanup finished'
             else {
                 New-AcceptedDomain -Name $ns -DomainName $ns -DomainType Authoritative -ErrorAction Stop | Out-Null
                 Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("New-AcceptedDomain -Name '{0}' -DomainName '{0}' -DomainType Authoritative" -f $ns)
-                Write-MyStep -Label 'Accepted domain' -Value ('{0} (Authoritative)' -f $ns) -Status OK
+                Set-AcceptedDomain -Identity $ns -MakeDefault $true -ErrorAction Stop
+                Register-ExecutedCommand -Category 'ExchangePolicy' -Command ("Set-AcceptedDomain -Identity '{0}' -MakeDefault `$true" -f $ns)
+                Write-MyStep -Label 'Accepted domain' -Value ('{0} (Authoritative, Default)' -f $ns) -Status OK
             }
         }
         catch {
@@ -5145,7 +5162,7 @@ Write-Log 'Exchange log cleanup finished'
                 Set-ImapSettings -Server $server `
                     -ExternalConnectionSettings @($imapTarget) `
                     -InternalConnectionSettings @($imapTarget) `
-                    -ErrorAction Stop
+                    -WarningAction SilentlyContinue -ErrorAction Stop
                 Write-MyVerbose ('IMAP4 connection settings configured: {0}' -f $imapTarget)
                 $changed++
             }
@@ -5165,7 +5182,7 @@ Write-Log 'Exchange log cleanup finished'
                 Set-PopSettings -Server $server `
                     -ExternalConnectionSettings @($popTarget) `
                     -InternalConnectionSettings @($popTarget) `
-                    -ErrorAction Stop
+                    -WarningAction SilentlyContinue -ErrorAction Stop
                 Write-MyVerbose ('POP3 connection settings configured: {0}' -f $popTarget)
                 $changed++
             }
@@ -5707,20 +5724,46 @@ Write-Log 'Exchange log cleanup finished'
             try { $srv.PopSettings  = Get-PopSettings  -Server $ServerName -ErrorAction Stop } catch { Write-MyVerbose ('Get-PopSettings failed for {0}: {1}' -f $ServerName, $_) }
         }
 
-        # Certificates — filter phantom entries (DateTime.MinValue from Get-ExchangeCertificate).
-        # -Server can silently return 0 results when called from within an existing implicit-remoting
-        # session to the same server (session redirect interference). For the local server always try
-        # both approaches and use whichever returns data.
-        $certFilter = { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' }
-        $certsWithServer = @()
-        $certsNoServer   = @()
-        try { $certsWithServer = @(Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | Where-Object $certFilter) }
-        catch { Write-MyVerbose ('Get-ExchangeCertificate -Server {0} failed: {1}' -f $ServerName, $_) }
-        if ($ServerName -ieq $env:COMPUTERNAME -and $certsWithServer.Count -eq 0) {
-            try { $certsNoServer = @(Get-ExchangeCertificate -ErrorAction Stop | Where-Object $certFilter) }
-            catch { Write-MyVerbose ('Get-ExchangeCertificate (local, no -Server) failed: {0}' -f $_) }
+        # Certificates — query Cert:\LocalMachine\My directly (immune to implicit-remoting
+        # re-entrant session interference that silently empties Get-ExchangeCertificate -Server results).
+        # Get-ExchangeCertificate is called without -Server to build a thumbprint→Services map;
+        # -Server variant is the fallback. Only Exchange-managed thumbprints are shown when the map
+        # is populated; all non-phantom store certs are shown as fallback if both Exchange calls fail.
+        $certStoreRaw = @()
+        try {
+            $certStoreRaw = @(Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop |
+                Where-Object { $_.Thumbprint -and $_.NotAfter -gt [datetime]'1970-01-01' })
+        } catch { Write-MyVerbose ('Cert:\LocalMachine\My query failed: {0}' -f $_) }
+
+        $exSvcMap = @{}   # thumbprint -> Services string
+        try {
+            Get-ExchangeCertificate -ErrorAction Stop | ForEach-Object {
+                if ($_.Thumbprint) { $exSvcMap[$_.Thumbprint] = "$($_.Services)" }
+            }
+        } catch {
+            Write-MyVerbose ('Get-ExchangeCertificate (services) failed, trying -Server {0}: {1}' -f $ServerName, $_)
+            try {
+                Get-ExchangeCertificate -Server $ServerName -ErrorAction Stop | ForEach-Object {
+                    if ($_.Thumbprint) { $exSvcMap[$_.Thumbprint] = "$($_.Services)" }
+                }
+            } catch { Write-MyVerbose ('Get-ExchangeCertificate -Server {0} (services) failed: {1}' -f $ServerName, $_) }
         }
-        $srv.Certificates = if ($certsNoServer.Count -gt $certsWithServer.Count) { $certsNoServer } else { $certsWithServer }
+
+        # Filter to Exchange-managed certs when possible; fall back to full store list.
+        $certBase = if ($exSvcMap.Count -gt 0) {
+            @($certStoreRaw | Where-Object { $exSvcMap.ContainsKey($_.Thumbprint) })
+        } else {
+            $certStoreRaw
+        }
+        $srv.Certificates = @($certBase | ForEach-Object {
+            [PSCustomObject]@{
+                Thumbprint   = $_.Thumbprint
+                Subject      = $_.Subject
+                NotAfter     = $_.NotAfter
+                Services     = if ($exSvcMap.ContainsKey($_.Thumbprint)) { $exSvcMap[$_.Thumbprint] } else { '—' }
+                IsSelfSigned = ($_.Subject -eq $_.Issuer)
+            }
+        })
 
         # Transport agents (only present on servers with Hub Transport)
         try { $srv.TransportAgents = @(Get-TransportAgent -ErrorAction Stop) } catch { $srv.TransportAgents = @() }
@@ -6356,7 +6399,9 @@ Write-Log 'Exchange log cleanup finished'
                             $epv = [string]$vd.ExtendedProtectionTokenChecking
                             if ([string]::IsNullOrEmpty($epv)) { $epv = 'None' }
                             if ($epv -eq '2') { $epv = 'Require' } elseif ($epv -eq '1') { $epv = 'Allow' } elseif ($epv -eq '0') { $epv = 'None' }
-                            $epvBadge = if ($epv -in 'Require','Allow') { Format-Badge $epv 'ok' } else { Format-Badge "$epv" 'warn' }
+                            $epvBadge = if ($epv -in 'Require','Allow') { Format-Badge $epv 'ok' }
+                                        elseif ($ep.Name -eq 'PowerShell' -and $epv -eq 'None') { Format-Badge 'None (expected)' 'ok' }
+                                        else { Format-Badge "$epv" 'warn' }
                             $epVdirRows.Add(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f $ep.Name, $epv, $epvBadge))
                         }
                     } catch { Write-MyVerbose ('Extended Protection per-VDir check failed for {0}: {1}' -f $ep.Name, $_) }
@@ -6873,8 +6918,8 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
             # 4.4 E-Mail-Adressrichtlinien
             $null = $Parts.Add((New-WdHeading (L '4.4 E-Mail-Adressrichtlinien' '4.4 Email Address Policies') 2))
             $eapRows = [System.Collections.Generic.List[object[]]]::new()
-            foreach ($pol in $orgD.EmailAddressPolicies) { $eapRows.Add(@($pol.Name, (SafeVal $pol.RecipientFilter), (SafeVal ($pol.EnabledEmailAddressTemplates -join ', ')))) }
-            $null = $Parts.Add((New-WdTable -Headers @((L 'Name' 'Name'), (L 'Empfängerfilter' 'Recipient filter'), (L 'Adressvorlagen' 'Address templates')) -Rows $eapRows.ToArray()))
+            foreach ($pol in ($orgD.EmailAddressPolicies | Sort-Object Priority)) { $eapRows.Add(@((SafeVal $pol.Priority), $pol.Name, (SafeVal $pol.RecipientFilter), (SafeVal ($pol.EnabledEmailAddressTemplates -join ', ')))) }
+            $null = $Parts.Add((New-WdTable -Headers @((L 'Prio' 'Prio'), (L 'Name' 'Name'), (L 'Empfängerfilter' 'Recipient filter'), (L 'Adressvorlagen' 'Address templates')) -Rows $eapRows.ToArray()))
 
             # 4.5 Transport Rules
             $null = $Parts.Add((New-WdHeading (L '4.5 Transportregeln' '4.5 Transport Rules') 2))
@@ -6898,6 +6943,14 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $fmtSize = {
                     param($sz)
                     if ($null -eq $sz) { return (L 'nicht gesetzt' 'not set') }
+                    # Over implicit remoting, ByteQuantifiedSize deserializes as its string representation
+                    # e.g. "150 MB (157,286,400 bytes)". Parse bytes from the string first; only fall
+                    # back to .Value.ToBytes() in direct-session (non-remoted) contexts.
+                    $str = "$sz"
+                    if ($str -match 'Unlimited' -or $str -eq '') { return (L 'unbegrenzt' 'Unlimited') }
+                    if ($str -match '([\d,]+)\s+bytes\)') {
+                        return ('{0} MB' -f [math]::Round(([long]($Matches[1] -replace ',', '')) / 1MB, 0))
+                    }
                     if ($null -eq $sz.Value) { return (L 'unbegrenzt' 'Unlimited') }
                     '{0} MB' -f [math]::Round($sz.Value.ToBytes() / 1MB, 0)
                 }
@@ -7127,7 +7180,7 @@ footer{background:var(--primary);color:#888;padding:16px 40px;font-size:12px;tex
                 $adC  = if (($autodiscoverUrls | Select-Object -Unique).Count -le 1) { (L 'konsistent' 'consistent') } else { (L 'ABWEICHUNG' 'DIVERGENT') }
                 $nsRows.Add(@('Autodiscover SCP', (Mask-Ip $adIn), '—', $adC))
             }
-            $null = $Parts.Add((New-WdTable -Headers @((L 'Dienst' 'Service'), (L 'Interne URL' 'Internal URL'), (L 'Externe URL' 'External URL'), (L 'Konsistenz' 'Consistency')) -Rows $nsRows.ToArray()))
+            $null = $Parts.Add((New-WdTable -Compact -Headers @((L 'Dienst' 'Service'), (L 'Interne URL' 'Internal URL'), (L 'Externe URL' 'External URL'), (L 'Konsistenz' 'Consistency')) -Rows $nsRows.ToArray()))
 
             # 4.14 RBAC — Rollengruppen (was 4.15 — 4.14 Database Copy Status merged into 4.9)
             if ($orgD.RoleGroups -and $orgD.RoleGroups.Count -gt 0) {
@@ -8729,8 +8782,9 @@ $body
                         }
                     }
                 }
-                # ColWidths: # 380, Category 1680, Command 7200 — total 9260 twips
-                $null = $parts.Add((New-WdTable -Headers @('#', (L 'Kategorie' 'Category'), (L 'Befehl' 'Command')) -Rows $cmdRows.ToArray() -ColWidths @(380, 1680, 7200)))
+                # ColWidths: # 360, Category 1500, Command 7140 — total 9000 twips (fits A4 1-inch margins)
+                # -Compact: 8pt font gives ~40% more characters per line for long cmdlet strings.
+                $null = $parts.Add((New-WdTable -Compact -Headers @('#', (L 'Kategorie' 'Category'), (L 'Befehl' 'Command')) -Rows $cmdRows.ToArray() -ColWidths @(360, 1500, 7140)))
             }
             $null = $parts.Add((New-WdParagraph (L 'Die vollständige Installationsausgabe (inkl. Statusmeldungen, Versionsprüfungen und Fehlern) steht in der EXpress-Logdatei (siehe Kapitel 1 "Dokumenteigenschaften" → "Logdatei").' 'The complete installation output (including status messages, version checks, and errors) is available in the EXpress log file (see chapter 1 "Document Properties" → "Log file").' )))
         }
@@ -9698,12 +9752,18 @@ $body
                     # B15: In Autopilot mode, pre-set RunOnce + save state before launching the
                     # installer. Exchange SU installers (.exe) may call ExitWindowsEx internally
                     # and reboot the machine before this script's phase-end logic runs, leaving
-                    # LastSuccessfulPhase = 4 and no RunOnce set — so the script would not
-                    # auto-resume. Pre-setting RunOnce here ensures the script always restarts.
+                    # LastSuccessfulPhase at the previous phase and no RunOnce set — so the
+                    # script would not auto-resume, and the current phase would re-run entirely.
+                    # Pre-setting LastSuccessfulPhase = InstallPhase ensures that on SU-direct-
+                    # reboot resume, the script advances to the next phase rather than re-running
+                    # the current one. Note: post-SU steps (EOMT, server config import) may be
+                    # skipped when the installer reboots directly; they are idempotent and can
+                    # be re-run manually if needed.
                     if ($State['Autopilot']) {
                         Disable-UAC
                         Enable-AutoLogon
                         Enable-RunOnce
+                        $State['LastSuccessfulPhase'] = $State['InstallPhase']
                         Save-State $State
                     }
                     # Exchange SU installers only accept /passive or /silent — /norestart is not supported.
@@ -10034,12 +10094,16 @@ $body
         Write-MyStep -Label 'SMBv1' -Value 'disabled' -Status OK
         try {
             $feature = Get-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -ErrorAction SilentlyContinue
-            if ($feature -and $feature.State -eq 'Enabled') {
+            if ($null -eq $feature) {
+                # WS2025 and later: SMBv1 optional feature was removed from the OS entirely
+                Write-MyVerbose 'SMBv1 Windows feature not present (removed by OS) — skipping feature step'
+            }
+            elseif ($feature.State -eq 'Enabled') {
                 Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol -NoRestart -ErrorAction Stop | Out-Null
                 Write-MyVerbose 'SMBv1 Windows feature disabled'
             }
             else {
-                Write-MyVerbose 'SMBv1 Windows feature already disabled or not present'
+                Write-MyVerbose 'SMBv1 Windows feature already disabled'
             }
         }
         catch {
@@ -10047,7 +10111,7 @@ $body
         }
         try {
             Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -ErrorAction Stop
-            Write-MyVerbose 'SMBv1 server protocol disabled'
+            Write-MyVerbose 'SMBv1 server protocol disabled via SmbServerConfiguration'
         }
         catch {
             Write-MyWarning ('Problem disabling SMBv1 server config: {0}' -f $_.Exception.Message)
@@ -10983,17 +11047,22 @@ $body
         $shouldAct = $State['DefenderRealtimeDisabledByEXpress']
         if ($shouldAct) {
             try {
-                $pref = Get-MpPreference -ErrorAction Stop
-                if (-not $pref.DisableRealtimeMonitoring) {
-                    Write-MyVerbose 'Defender realtime monitoring already enabled'
+                # Gate on actual scan status (RealTimeProtectionEnabled), NOT on the
+                # preference (DisableRealtimeMonitoring). After a phase reboot, Windows may
+                # reset the preference to $false while the scanning component is still
+                # inactive — checking only the preference would then take the "already
+                # enabled" path and call Set-MpPreference never.
+                $rtStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
+                if ($rtStatus -and $rtStatus.RealTimeProtectionEnabled) {
+                    Write-MyVerbose 'Defender realtime monitoring already active'
                 }
                 else {
                     Write-MyStep -Label 'Defender realtime' -Value 're-enabled' -Status OK
                     Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop
-                    Start-Sleep -Seconds 1
-                    $post = Get-MpPreference -ErrorAction SilentlyContinue
-                    if ($post -and $post.DisableRealtimeMonitoring) {
-                        Write-MyWarning 'Realtime monitoring still disabled after set — Tamper Protection or policy override active.'
+                    Start-Sleep -Seconds 3
+                    $rtStatus = Get-MpComputerStatus -ErrorAction SilentlyContinue
+                    if (-not ($rtStatus -and $rtStatus.RealTimeProtectionEnabled)) {
+                        Write-MyWarning 'Realtime monitoring still not active after re-enable — Tamper Protection or policy override active.'
                     }
                 }
                 if ($State['DefenderRealtimeDisabledByEXpress']) {
@@ -12003,14 +12072,16 @@ $body
                 $cfg['SCP']          = Read-MenuInput -Prompt 'Autodiscover SCP URL   (blank = let Setup set, - = remove)'
             }
             $cfg['TargetPath']       = Read-MenuInput -Prompt 'Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'
-            $knownDAGs = Get-ExchangeDAGNames
-            if ($knownDAGs.Count -gt 0) {
-                Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs -join ', ')) -ForegroundColor DarkGray
-                $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs -join ' / ')) -Default ($knownDAGs[0])
-            } else {
-                $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+            if ($detectedOrg) {
+                $knownDAGs = Get-ExchangeDAGNames
+                if ($knownDAGs.Count -gt 0) {
+                    Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs -join ', ')) -ForegroundColor DarkGray
+                    $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs -join ' / ')) -Default ($knownDAGs[0])
+                } else {
+                    $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+                }
+                $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. ex01.contoso.com)'
             }
-            $cfg['CopyServerConfig'] = Read-MenuInput -Prompt 'Copy config from server (FQDN, blank = none) [not tested]' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. ex01.contoso.com)'
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)' -Validate $validatePfxPath -ValidateMessage 'File not found or not a .pfx file — enter a valid path or leave blank'
             $cfg['Namespace']        = Read-MenuInput -Prompt 'Access namespace       (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
@@ -12051,6 +12122,17 @@ $body
             $cfg['CustomerDocument'] = ($custInput -imatch '^[Yy]$')
         }
         elseif ($selectedMode -eq 6) {
+            # Detect existing Exchange organisation (same probe as mode 1 — required to gate DAG join)
+            $detectedOrg = ''
+            try {
+                $configNC6 = ([ADSI]'LDAP://RootDSE').configurationNamingContext
+                $srch6     = New-Object System.DirectoryServices.DirectorySearcher([ADSI]"LDAP://$configNC6")
+                $srch6.Filter = '(objectClass=msExchOrganizationContainer)'
+                $srch6.PropertiesToLoad.Add('name') | Out-Null
+                $res6 = $srch6.FindOne()
+                if ($res6) { $detectedOrg = $res6.Properties['name'][0] }
+            } catch { Write-MyVerbose ('AD Exchange organisation detection failed (mode 6): {0}' -f $_) }
+
             $cfg['Namespace']        = Read-MenuInput -Prompt 'Access namespace       (e.g. mail.contoso.com, blank = skip URL config)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. mail.contoso.com)'
             if ($cfg['Namespace']) {
                 $defaultMailDomain2 = ($cfg['Namespace'] -split '\.', 2)[1]
@@ -12059,12 +12141,14 @@ $body
                 $cfg['DownloadDomain'] = Read-MenuInput -Prompt 'OWA download domain     (e.g. download.contoso.com, blank = skip CVE-2021-1730)' -Validate $validateFQDN -ValidateMessage 'Not a valid FQDN (e.g. download.contoso.com)'
             }
             $cfg['CertificatePath']  = Read-MenuInput -Prompt 'PFX certificate path   (blank = none)' -Validate $validatePfxPath -ValidateMessage 'File not found or not a .pfx file — enter a valid path or leave blank'
-            $knownDAGs2 = Get-ExchangeDAGNames
-            if ($knownDAGs2.Count -gt 0) {
-                Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs2 -join ', ')) -ForegroundColor DarkGray
-                $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs2 -join ' / ')) -Default ($knownDAGs2[0])
-            } else {
-                $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+            if ($detectedOrg) {
+                $knownDAGs2 = Get-ExchangeDAGNames
+                if ($knownDAGs2.Count -gt 0) {
+                    Write-Host ("  DAGs found in AD: {0}" -f ($knownDAGs2 -join ', ')) -ForegroundColor DarkGray
+                    $cfg['DAGName'] = Read-MenuInput -Prompt ('DAG name               ({0}, blank = no DAG join)' -f ($knownDAGs2 -join ' / ')) -Default ($knownDAGs2[0])
+                } else {
+                    $cfg['DAGName'] = Read-MenuInput -Prompt 'DAG name               (blank = no DAG join)'
+                }
             }
             if ((Read-MenuInput -Prompt 'Enable log cleanup task? [Y/N]' -Default 'Y') -imatch '^[Yy]$') {
                 $retDays = Read-MenuInput -Prompt 'Log retention days     (1-3650)' -Default '30' -Required $true -Validate $validateRetDays -ValidateMessage 'Enter a number between 1 and 3650'
@@ -12106,7 +12190,7 @@ $body
                 $editFields.Add(@{ Key='MDBLogPath';    Label='Mailbox log path';     Prompt='Mailbox log path       (blank = Exchange default)';              Required=$false; Validate=$null;           ValidateMsg='' })
                 $editFields.Add(@{ Key='SCP';           Label='Autodiscover SCP URL'; Prompt='Autodiscover SCP URL   (blank = let Setup set, - = remove)';    Required=$false; Validate=$null;           ValidateMsg='' })
                 $editFields.Add(@{ Key='TargetPath';    Label='Exchange install path';Prompt='Exchange install path  (blank = C:\Program Files\Microsoft\Exchange Server\V15)'; Required=$false; Validate=$null; ValidateMsg='' })
-                $editFields.Add(@{ Key='DAGName';       Label='DAG name';             Prompt='DAG name               (blank = no DAG join)';                  Required=$false; Validate=$validateFQDN;   ValidateMsg='Not a valid FQDN (e.g. dag01.contoso.com)' })
+                if ($detectedOrg) { $editFields.Add(@{ Key='DAGName'; Label='DAG name'; Prompt='DAG name               (blank = no DAG join)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. dag01.contoso.com)' }) }
                 $editFields.Add(@{ Key='CertificatePath'; Label='PFX certificate';   Prompt='PFX certificate path   (blank = none)';                          Required=$false; Validate=$validatePfxPath; ValidateMsg='File not found or not a .pfx file — enter a valid path or leave blank' })
             }
             $editFields.Add(@{ Key='Namespace';      Label='Access Namespace';        Prompt='Access namespace       (e.g. mail.contoso.com, blank = skip URL config)'; Required=$false; Validate=$validateFQDN; ValidateMsg='Not a valid FQDN (e.g. mail.contoso.com)' })
@@ -12745,6 +12829,20 @@ $body
             }
         }
 
+        # CopyServerConfig and DAGName require an existing Exchange organisation.
+        # Suppress both when ExistingOrg is not $true — prevents stale config-file entries
+        # from triggering join/copy logic on a first-server (new-org) install.
+        if (-not $State['ExistingOrg']) {
+            if ($CopyServerConfig) {
+                Write-MyWarning ('CopyServerConfig ignored — no existing Exchange organisation detected (was: {0})' -f $CopyServerConfig)
+                $CopyServerConfig = $null
+            }
+            if ($DAGName) {
+                Write-MyWarning ('DAGName ignored — no existing Exchange organisation detected (was: {0})' -f $DAGName)
+                $DAGName = $null
+            }
+        }
+
         # -- Advanced Configuration catalog ---------------------------------------
         # Merge explicitly cmdline-bound switches into $State['AdvancedFeatures']
         # (backwards compat for scripts still passing -DisableSSL3, -EnableECC …).
@@ -12918,10 +13016,10 @@ $body
         $State["InstallPhase"] = $State["LastSuccessfulPhase"]
     }
 
-    # Debug mode (Copilot only): halt before Phase 5 starts so the user can take a VM
-    # snapshot. LastSuccessfulPhase is still 4 here (not yet incremented). State already
-    # has InstallPhase=4; next launch increments to 5 and continues normally.
-    if ($State['LogDebug'] -and $State['InstallPhase'] -eq 4 -and -not $PSBoundParameters.ContainsKey('Phase') -and -not $State['Autopilot']) {
+    # Debug mode (Copilot only): halt once after Phase 4 completes so the user can take a
+    # VM snapshot. On first hit: set Phase4DebugHalted flag + save state + exit. On the
+    # next run the flag is present → skip halt → InstallPhase++ advances to 5 → continues.
+    if ($State['LogDebug'] -and $State['InstallPhase'] -eq 4 -and -not $State['Phase4DebugHalted'] -and -not $PSBoundParameters.ContainsKey('Phase') -and -not $State['Autopilot']) {
         Write-Host ''
         Write-Host '  ============================================================' -ForegroundColor Magenta
         Write-Host '   DEBUG MODE: Phase 4 complete - HALT for snapshot           ' -ForegroundColor Magenta -BackgroundColor Black
@@ -12932,6 +13030,8 @@ $body
         Write-Host '  ============================================================' -ForegroundColor Magenta
         Write-Host ''
         Write-MyOutput 'DEBUG MODE: halted after Phase 4 for snapshot. Re-run to continue.'
+        $State['Phase4DebugHalted'] = $true
+        Save-State $State
         exit $ERR_OK
     }
 
@@ -13033,9 +13133,6 @@ $body
     else {
 
         Write-MyVerbose "Current phase is $($State["InstallPhase"]) of $MAX_PHASE"
-
-        Write-MyVerbose 'Disabling Server Manager at logon'
-        Set-RegistryValue -Path 'HKCU:\Software\Microsoft\ServerManager' -Name DoNotOpenServerManagerAtLogon -Value 1
 
         # Create System Restore checkpoint before each phase.
         # Checkpoint-Computer is only supported on client OS (ProductType=1).
@@ -13527,23 +13624,21 @@ $body
                     Set-MAPIEncryptionRequired
                 }
 
-                # Import PFX certificate — must run BEFORE Exchange SU; the SU installer restarts
-                # Exchange services (and possibly W3SVC) which kills the EMS session. Certificate
-                # import uses Import-ExchangeCertificate / Enable-ExchangeCertificate (EMS cmdlets)
-                # so it must complete while the session established above is still alive.
-                Step-P5 'PFX certificate import'
+                # Import PFX certificate + HSTS — must run BEFORE Exchange SU; the SU installer
+                # restarts Exchange services (and possibly W3SVC) which kills the EMS session.
+                # Certificate import uses Import-ExchangeCertificate / Enable-ExchangeCertificate
+                # (EMS cmdlets) so it must complete while the session established above is alive.
+                # Both steps are skipped together when no CertificatePath is specified; the step
+                # counter is advanced manually so the progress bar remains accurate.
                 if ($State['CertificatePath']) {
+                    Step-P5 'PFX certificate import'
                     Import-ExchangeCertificateFromPFX
-                }
-
-                # HSTS header — only when a certificate was imported (avoid browser lockout with self-signed cert)
-                # Kept immediately after cert import; no EMS required (WebAdministration module).
-                Step-P5 'HSTS header'
-                if ($State['CertificatePath']) {
+                    Step-P5 'HSTS header'
                     Set-HSTSHeader
                 }
                 else {
-                    Write-MyVerbose 'No CertificatePath specified — skipping HSTS (requires valid certificate to avoid browser lockout)'
+                    $script:p5Step += 2
+                    Write-MyVerbose 'No CertificatePath specified — skipping certificate import and HSTS'
                 }
 
                 # Exchange Security Updates — installer restarts Exchange services (and may restart
@@ -13579,9 +13674,13 @@ $body
                 Install-ExchangeSecurityUpdate
 
                 # Import server configuration from source server (no EMS required)
-                Step-P5 'Server configuration import'
                 if ($State['CopyServerConfig'] -and $State['ServerConfigExportPath']) {
+                    Step-P5 'Server configuration import'
                     Import-ServerConfig
+                }
+                else {
+                    $script:p5Step++
+                    Write-MyVerbose 'No server configuration import configured — skipping'
                 }
 
                 # EOMT — optional CVE mitigation tool (no EMS required)
